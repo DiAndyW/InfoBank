@@ -1,0 +1,53 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"notebank/server"
+)
+
+func main() {
+	databaseURL := os.Getenv(server.EnvDatabaseURL)
+	listenAddr := os.Getenv(server.EnvListenAddr)
+	if listenAddr == "" {
+		listenAddr = server.DefaultListenAddr
+	}
+	if databaseURL == "" {
+		log.Fatalf("%s is required", server.EnvDatabaseURL)
+	}
+	handler, err := server.New(server.Config{Secret: os.Getenv(server.EnvSecret), Now: time.Now})
+	if err != nil {
+		log.Fatalf("%s: %v", server.EnvSecret, err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := server.Migrate(ctx, databaseURL); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: server.ReadHeaderTimeout,
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), server.ShutdownTimeout)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	log.Printf("listening on %s", listenAddr)
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
