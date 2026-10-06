@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -846,5 +847,79 @@ func TestFutureTimestampsAreCappedAtServerTime(t *testing.T) {
 
 	if got := textOf(e.item(itemID)); got != "desktop, 2 minutes later" {
 		t.Fatalf("text = %q, want the desktop's genuinely later edit", got)
+	}
+}
+
+// A Device pulling while others push must never move its cursor past a change that commits later.
+func TestConcurrentPushesNeverSkipAPullingDevice(t *testing.T) {
+	e := newSyncEnv(t)
+	const devices, pushesEach, opsPerPush = 20, 5, 5
+
+	want := map[string]bool{}
+	batches := make([][]op, devices*pushesEach)
+	for i := range batches {
+		for range opsPerPush {
+			id := uuid.NewString()
+			want[id] = true
+			batches[i] = append(batches[i], op{"id": uuid.NewString(), "type": "CaptureItem", "at": e.at(0), "item_id": id, "text": "x"})
+		}
+		// Items and Topics are read by separate queries; a change to each in one push catches a pull mixing two snapshots.
+		topicID := uuid.NewString()
+		want[topicID] = true
+		batches[i] = append(batches[i], op{"id": uuid.NewString(), "type": "CreateTopic", "at": e.at(0), "topic_id": topicID, "name": topicID})
+	}
+
+	seen := map[string]int{}
+	var cursor int64
+	pullOnce := func() bool {
+		rec := e.do("GET", fmt.Sprintf("/sync/pull?cursor=%d", cursor), nil)
+		var page pullPage
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &page) != nil {
+			t.Errorf("pull = %d %s", rec.Code, rec.Body)
+			return false
+		}
+		for _, it := range page.Items {
+			seen[it.ID]++
+		}
+		for _, tp := range page.Topics {
+			seen[tp.ID]++
+		}
+		cursor = page.Cursor
+		return page.HasMore
+	}
+
+	var pushers sync.WaitGroup
+	for d := range devices {
+		pushers.Go(func() {
+			device := fmt.Sprintf("00000000-0000-4000-8000-%012d", d+10)
+			for p := range pushesEach {
+				body, _ := json.Marshal(map[string]any{"device_id": device, "ops": batches[d*pushesEach+p]})
+				if rec := e.do("POST", "/sync/push", body); rec.Code != http.StatusOK {
+					t.Errorf("push = %d %s", rec.Code, rec.Body)
+				}
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() { pushers.Wait(); close(done) }()
+	for pulling := true; pulling; {
+		select {
+		case <-done:
+			pulling = false
+		default:
+			pullOnce()
+		}
+	}
+	for pullOnce() {
+	}
+
+	missed := 0
+	for id := range want {
+		if seen[id] != 1 {
+			missed++
+		}
+	}
+	if missed > 0 || len(seen) != len(want) {
+		t.Fatalf("puller saw %d of %d changes, %d not exactly once", len(seen), len(want), missed)
 	}
 }
