@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Secret string
 	Now    func() time.Time
+	DB     *sql.DB
 }
 
 func New(cfg Config) (http.Handler, error) {
@@ -24,6 +26,9 @@ func New(cfg Config) (http.Handler, error) {
 	authed.HandleFunc("GET /auth/check", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
+	api := &syncAPI{db: cfg.DB, now: cfg.Now}
+	authed.HandleFunc("POST /sync/push", api.push)
+	authed.HandleFunc("GET /sync/pull", api.pull)
 
 	// Hashing first makes the comparison constant-time regardless of input length.
 	secretHash := sha256.Sum256([]byte(cfg.Secret))

@@ -6,21 +6,14 @@ import (
 	"embed"
 	"io/fs"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Migrate brings the database at databaseURL up to the latest schema.
-func Migrate(ctx context.Context, databaseURL string) error {
-	db, err := sql.Open("pgx", databaseURL)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
+// Migrate brings db up to the latest schema.
+func Migrate(ctx context.Context, db *sql.DB) error {
 	dir, err := fs.Sub(migrations, "migrations")
 	if err != nil {
 		return err

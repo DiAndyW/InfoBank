@@ -3,14 +3,12 @@ package server
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -58,17 +56,18 @@ func openDB(t *testing.T, databaseURL string) *sql.DB {
 
 func TestMigrateTwiceKeepsData(t *testing.T) {
 	ctx := context.Background()
-	databaseURL := newTestDatabase(t)
+	db := openDB(t, newTestDatabase(t))
 
-	if err := Migrate(ctx, databaseURL); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("first migrate: %v", err)
 	}
-	db := openDB(t, databaseURL)
-	if _, err := db.Exec(`INSERT INTO topics (id, name) VALUES (gen_random_uuid(), 'Mosaic')`); err != nil {
+	if _, err := db.Exec(`
+		INSERT INTO topics (id, name, name_updated_at, name_updated_by, archive_updated_at, archive_updated_by, seq)
+		VALUES (gen_random_uuid(), 'Mosaic', now(), gen_random_uuid(), now(), gen_random_uuid(), nextval('sync_seq'))`); err != nil {
 		t.Fatalf("insert topic: %v", err)
 	}
 
-	if err := Migrate(ctx, databaseURL); err != nil {
+	if err := Migrate(ctx, db); err != nil {
 		t.Fatalf("second migrate: %v", err)
 	}
 	var count int
@@ -77,24 +76,5 @@ func TestMigrateTwiceKeepsData(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("topics named Mosaic after second migrate = %d, want 1", count)
-	}
-}
-
-// Direct inserts until the sync API exists to create Topics through.
-func TestTopicNamesAreUniqueIgnoringCase(t *testing.T) {
-	ctx := context.Background()
-	databaseURL := newTestDatabase(t)
-	if err := Migrate(ctx, databaseURL); err != nil {
-		t.Fatal(err)
-	}
-	db := openDB(t, databaseURL)
-
-	if _, err := db.Exec(`INSERT INTO topics (id, name) VALUES (gen_random_uuid(), 'CS 111')`); err != nil {
-		t.Fatalf("insert CS 111: %v", err)
-	}
-	_, err := db.Exec(`INSERT INTO topics (id, name) VALUES (gen_random_uuid(), 'cs 111')`)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-		t.Fatalf("insert cs 111 = %v, want unique violation (23505)", err)
 	}
 }

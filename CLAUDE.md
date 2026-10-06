@@ -29,6 +29,8 @@ Never test changes through git either (no stash/checkout to compare); copy files
 - Validate at trust boundaries only (the HTTP API, import input). Prefer APIs and schemas that encode the invariant.
 - Nothing has shipped: columns are `NOT NULL` unless null carries meaning (e.g. `topic_id` null = Inbox). No fallbacks for data that never existed.
 - A time cutoff that gates two things (e.g. Trash's 30 days: Server purge and clients' "days remaining") comes from one definition.
+- Time zones: UTC is the ground truth. Store instants (`timestamptz`), compare instants, and emit every API timestamp in UTC (RFC 3339, `Z`) whatever the machine's zone. Accept any offset on input. Only display converts to the Device's local zone.
+- Device clocks decide conflicts (last-write-wins), but any time that starts a countdown (Trash's 30 days) is Server time, so a late sync never shortens it.
 - Put units in ambiguous names: `size_bytes`, `max_attachment_bytes`, `failure_window`.
 - Comments: only the non-obvious why, one line. Never restate the code or narrate history.
 - Don't mix `sed -i` and the Edit tool on the same file.

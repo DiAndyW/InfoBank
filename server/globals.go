@@ -9,6 +9,17 @@ const (
 	maxAuthFailures   = 10
 	authFailureWindow = 15 * time.Minute
 
+	// Sync
+	maxPushOps        = 500
+	maxPushBodyBytes  = 16 << 20
+	pullPageSize      = 500
+	maxItemTextBytes  = 1 << 20
+	maxTopicNameBytes = 200
+
+	// Attachments
+	maxAttachmentBytes      = 100 << 20
+	maxAttachmentFieldBytes = 255 // filename and mime type
+
 	// HTTP server (used by cmd/notebank-server)
 	DefaultListenAddr = "127.0.0.1:8080"
 	ReadHeaderTimeout = 10 * time.Second
