@@ -3,18 +3,19 @@ package server
 import (
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Config struct {
 	Secret string
 	Now    func() time.Time
-	DB     *sql.DB
+	DB     *pgxpool.Pool
 }
 
 func New(cfg Config) (http.Handler, error) {

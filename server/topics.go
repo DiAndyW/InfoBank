@@ -1,13 +1,13 @@
 package server
 
 import (
-	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type topic struct {
@@ -31,7 +31,7 @@ func (b *batch) createTopic(o pushOp, s stamp) (opResult, error) {
 	if err != nil {
 		return opResult{}, err
 	}
-	_, err = b.tx.ExecContext(b.ctx, `
+	_, err = b.tx.Exec(b.ctx, `
 		INSERT INTO topics (id, name, name_updated_at, name_updated_by, archive_updated_at, archive_updated_by, seq)
 		VALUES ($1, $2, $3, $4, $3, $4, nextval('sync_seq'))`,
 		*o.TopicID, free, s.at, s.by)
@@ -94,21 +94,9 @@ func (b *batch) emptyDeletedTopic(topicID uuid.UUID, trash []uuid.UUID, s stamp)
 	for _, id := range trash {
 		toTrash[id] = true
 	}
-	rows, err := b.tx.QueryContext(b.ctx, `SELECT id FROM items WHERE topic_id = $1`, topicID)
+	rows, _ := b.tx.Query(b.ctx, `SELECT id FROM items WHERE topic_id = $1`, topicID) // CollectRows returns Query's error
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
 	if err != nil {
-		return err
-	}
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 
@@ -137,7 +125,7 @@ func (b *batch) freeName(name string, self uuid.UUID) (string, error) {
 			candidate = fmt.Sprintf("%s (%d)", name, n)
 		}
 		var taken bool
-		err := b.tx.QueryRowContext(b.ctx, `
+		err := b.tx.QueryRow(b.ctx, `
 			SELECT EXISTS (SELECT 1 FROM topics WHERE lower(name) = lower($1) AND deleted_at IS NULL AND id <> $2)`,
 			candidate, self).Scan(&taken)
 		if err != nil || !taken {
@@ -149,7 +137,7 @@ func (b *batch) freeName(name string, self uuid.UUID) (string, error) {
 // topicOpen reports whether the Topic with id exists and can take Items: not archived or deleted.
 func (b *batch) topicOpen(id uuid.UUID) (bool, error) {
 	var open bool
-	err := b.tx.QueryRowContext(b.ctx, `
+	err := b.tx.QueryRow(b.ctx, `
 		SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1 AND archived_at IS NULL AND deleted_at IS NULL)`, id).Scan(&open)
 	return open, err
 }
@@ -157,18 +145,18 @@ func (b *batch) topicOpen(id uuid.UUID) (bool, error) {
 // loadTopic returns nil if there is no Topic with id.
 func (b *batch) loadTopic(id uuid.UUID) (*topic, error) {
 	tp := topic{id: id}
-	err := b.tx.QueryRowContext(b.ctx, `
+	err := b.tx.QueryRow(b.ctx, `
 		SELECT name, archived_at, deleted_at, name_updated_at, name_updated_by, archive_updated_at, archive_updated_by
 		FROM topics WHERE id = $1`, id).Scan(
 		&tp.name, &tp.archivedAt, &tp.deletedAt, &tp.nameStamp.at, &tp.nameStamp.by, &tp.archiveStamp.at, &tp.archiveStamp.by)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return &tp, err
 }
 
 func (b *batch) saveTopic(tp *topic) error {
-	_, err := b.tx.ExecContext(b.ctx, `
+	_, err := b.tx.Exec(b.ctx, `
 		UPDATE topics SET name = $2, archived_at = $3, deleted_at = $4, name_updated_at = $5, name_updated_by = $6,
 			archive_updated_at = $7, archive_updated_by = $8, seq = nextval('sync_seq')
 		WHERE id = $1`,

@@ -3,23 +3,24 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Types shared by more than one file. A type used by a single file lives in that file.
 
 type syncAPI struct {
-	db  *sql.DB
+	db  *pgxpool.Pool
 	now func() time.Time
 }
 
 // batch applies one push's ops inside its transaction.
 type batch struct {
 	ctx    context.Context
-	tx     *sql.Tx
+	tx     pgx.Tx
 	device uuid.UUID
 	now    time.Time // also an Item's deleted_at, so a late-syncing Trash still gets its full 30 days
 }
@@ -77,6 +78,6 @@ type item struct {
 type attachment struct {
 	ID        uuid.UUID `json:"id"`
 	Filename  string    `json:"filename"`
-	MimeType  string    `json:"mime_type"`
-	SizeBytes int64     `json:"size_bytes"`
+	MimeType  string    `json:"mime_type" db:"mime_type"`
+	SizeBytes int64     `json:"size_bytes" db:"size_bytes"`
 }

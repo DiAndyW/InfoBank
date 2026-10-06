@@ -1,10 +1,10 @@
 package server
 
 import (
-	"database/sql"
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 func validText(text *string) bool {
@@ -38,7 +38,7 @@ func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
 		}
 	}
 
-	res, err := b.tx.ExecContext(b.ctx, `
+	res, err := b.tx.Exec(b.ctx, `
 		INSERT INTO items (id, topic_id, text, capture_time,
 			text_updated_at, text_updated_by, topic_updated_at, topic_updated_by,
 			trash_updated_at, trash_updated_by, seq)
@@ -48,7 +48,7 @@ func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
 	if err != nil {
 		return opResult{}, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if res.RowsAffected() == 0 {
 		return rejected("exists"), nil
 	}
 	for _, a := range o.Attachments {
@@ -141,20 +141,20 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 // loadItem returns nil if there is no Item with id.
 func (b *batch) loadItem(id uuid.UUID) (*item, error) {
 	it := item{id: id}
-	err := b.tx.QueryRowContext(b.ctx, `
+	err := b.tx.QueryRow(b.ctx, `
 		SELECT topic_id, text, deleted_at, text_updated_at, text_updated_by,
 			topic_updated_at, topic_updated_by, trash_updated_at, trash_updated_by
 		FROM items WHERE id = $1`, id).Scan(
 		&it.topicID, &it.text, &it.deletedAt, &it.textStamp.at, &it.textStamp.by,
 		&it.topicStamp.at, &it.topicStamp.by, &it.trashStamp.at, &it.trashStamp.by)
-	if errors.Is(err, sql.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return &it, err
 }
 
 func (b *batch) saveItem(it *item) error {
-	_, err := b.tx.ExecContext(b.ctx, `
+	_, err := b.tx.Exec(b.ctx, `
 		UPDATE items SET topic_id = $2, text = $3, deleted_at = $4,
 			text_updated_at = $5, text_updated_by = $6, topic_updated_at = $7, topic_updated_by = $8,
 			trash_updated_at = $9, trash_updated_by = $10, seq = nextval('sync_seq')

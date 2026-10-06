@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // pushLock serializes pushes so sync_seq values commit in order and a pull cursor never skips one.
@@ -45,12 +45,12 @@ func (a *syncAPI) push(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *syncAPI) applyAll(ctx context.Context, device uuid.UUID, ops []json.RawMessage) ([]opResult, error) {
-	tx, err := a.db.BeginTx(ctx, nil)
+	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, pushLock); err != nil {
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, pushLock); err != nil {
 		return nil, err
 	}
 
@@ -68,18 +68,18 @@ func (a *syncAPI) applyAll(ctx context.Context, device uuid.UUID, ops []json.Raw
 		}
 		results[i] = res
 	}
-	return results, tx.Commit()
+	return results, tx.Commit(ctx)
 }
 
 // applyOnce returns a replayed op's first result instead of applying it again.
 func (b *batch) applyOnce(o pushOp) (opResult, error) {
 	var stored []byte
-	err := b.tx.QueryRowContext(b.ctx, `SELECT result FROM applied_ops WHERE op_id = $1`, o.ID).Scan(&stored)
+	err := b.tx.QueryRow(b.ctx, `SELECT result FROM applied_ops WHERE op_id = $1`, o.ID).Scan(&stored)
 	if err == nil {
 		var res opResult
 		return res, json.Unmarshal(stored, &res)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return opResult{}, err
 	}
 
@@ -92,7 +92,7 @@ func (b *batch) applyOnce(o pushOp) (opResult, error) {
 	if err != nil {
 		return opResult{}, err
 	}
-	_, err = b.tx.ExecContext(b.ctx, `INSERT INTO applied_ops (op_id, result) VALUES ($1, $2)`, o.ID, stored)
+	_, err = b.tx.Exec(b.ctx, `INSERT INTO applied_ops (op_id, result) VALUES ($1, $2)`, o.ID, stored)
 	return res, err
 }
 

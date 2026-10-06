@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log"
 	"net/http"
@@ -11,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"notebank/server"
 )
@@ -25,20 +24,20 @@ func main() {
 	if databaseURL == "" {
 		log.Fatalf("%s is required", server.EnvDatabaseURL)
 	}
-	db, err := sql.Open("pgx", databaseURL)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		log.Fatalf("%s: %v", server.EnvDatabaseURL, err)
 	}
-	defer db.Close()
-	handler, err := server.New(server.Config{Secret: os.Getenv(server.EnvSecret), Now: time.Now, DB: db})
+	defer pool.Close()
+	handler, err := server.New(server.Config{Secret: os.Getenv(server.EnvSecret), Now: time.Now, DB: pool})
 	if err != nil {
 		log.Fatalf("%s: %v", server.EnvSecret, err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := server.Migrate(ctx, db); err != nil {
+	if err := server.Migrate(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
 

@@ -2,18 +2,23 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"embed"
 	"io/fs"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Migrate brings db up to the latest schema.
-func Migrate(ctx context.Context, db *sql.DB) error {
+// Migrate brings the database behind pool up to the latest schema.
+func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	// goose speaks database/sql; this wraps the pool without opening new connections.
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+
 	dir, err := fs.Sub(migrations, "migrations")
 	if err != nil {
 		return err

@@ -28,7 +28,7 @@ type syncEnv struct {
 
 func newSyncEnv(t *testing.T) *syncEnv {
 	t.Helper()
-	db := openDB(t, newTestDatabase(t))
+	db := openPool(t, newTestDatabase(t))
 	if err := Migrate(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
