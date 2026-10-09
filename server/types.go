@@ -13,8 +13,9 @@ import (
 // Types shared by more than one file. A type used by a single file lives in that file.
 
 type syncAPI struct {
-	db  *pgxpool.Pool
-	now func() time.Time
+	db    *pgxpool.Pool
+	now   func() time.Time
+	files *attachmentStore
 }
 
 // batch applies one push's ops inside its transaction.

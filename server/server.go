@@ -16,6 +16,8 @@ type Config struct {
 	Secret string
 	Now    func() time.Time
 	DB     *pgxpool.Pool
+	// AttachmentDir must already exist; the Server never creates it, so a typo can't hide files somewhere new.
+	AttachmentDir string
 }
 
 func New(cfg Config) (http.Handler, error) {
@@ -23,13 +25,21 @@ func New(cfg Config) (http.Handler, error) {
 		return nil, fmt.Errorf("secret must be at least %d characters (try: openssl rand -base64 32)", minSecretChars)
 	}
 
+	files, err := openAttachmentStore(cfg.AttachmentDir)
+	if err != nil {
+		return nil, fmt.Errorf("attachment directory: %w", err)
+	}
+
 	authed := http.NewServeMux()
 	authed.HandleFunc("GET /auth/check", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	api := &syncAPI{db: cfg.DB, now: cfg.Now}
+	api := &syncAPI{db: cfg.DB, now: cfg.Now, files: files}
 	authed.HandleFunc("POST /sync/push", api.push)
 	authed.HandleFunc("GET /sync/pull", api.pull)
+	authed.HandleFunc("PUT /attachments/{id}", api.upload)
+	authed.HandleFunc("GET /attachments/{id}", api.download)
+	authed.HandleFunc("GET /attachments/{id}/thumbnail", api.thumbnail)
 
 	// Hashing first makes the comparison constant-time regardless of input length.
 	secretHash := sha256.Sum256([]byte(cfg.Secret))

@@ -18,7 +18,7 @@ func (c *testClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 func newTestServer(t *testing.T) (http.Handler, *testClock) {
 	t.Helper()
 	clock := &testClock{now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
-	h, err := New(Config{Secret: testSecret, Now: clock.Now})
+	h, err := New(Config{Secret: testSecret, Now: clock.Now, AttachmentDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (http.Handler, *testClock) {
 
 func TestShortSecretIsRefused(t *testing.T) {
 	for _, secret := range []string{"", "short", testSecret[:31]} {
-		if _, err := New(Config{Secret: secret, Now: time.Now}); err == nil {
+		if _, err := New(Config{Secret: secret, Now: time.Now, AttachmentDir: t.TempDir()}); err == nil {
 			t.Errorf("New with %d-char secret succeeded, want error", len(secret))
 		}
 	}

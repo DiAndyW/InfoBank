@@ -35,7 +35,7 @@ func newSyncEnv(t *testing.T) *syncEnv {
 	}
 	// A day after at(0), so tests' Device timestamps are in the past unless a test means otherwise.
 	clock := &testClock{now: syncBase.Add(24 * time.Hour)}
-	h, err := New(Config{Secret: testSecret, Now: clock.Now, DB: db})
+	h, err := New(Config{Secret: testSecret, Now: clock.Now, DB: db, AttachmentDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,10 +58,12 @@ type pushResult struct {
 }
 
 type pulledAttachment struct {
-	ID        string `json:"id"`
-	Filename  string `json:"filename"`
-	MimeType  string `json:"mime_type"`
-	SizeBytes int64  `json:"size_bytes"`
+	ID           string `json:"id"`
+	Filename     string `json:"filename"`
+	MimeType     string `json:"mime_type"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Uploaded     bool   `json:"uploaded"`
+	HasThumbnail bool   `json:"has_thumbnail"`
 }
 
 type pulledItem struct {

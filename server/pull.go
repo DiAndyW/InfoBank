@@ -12,13 +12,20 @@ import (
 )
 
 type itemOut struct {
-	ID          uuid.UUID    `json:"id"`
-	TopicID     *uuid.UUID   `json:"topic_id" db:"topic_id"`
-	Text        *string      `json:"text"`
-	CaptureTime time.Time    `json:"capture_time" db:"capture_time"`
-	DeletedAt   *time.Time   `json:"deleted_at" db:"deleted_at"`
-	Attachments []attachment `json:"attachments" db:"-"`
-	Seq         int64        `json:"-"`
+	ID          uuid.UUID       `json:"id"`
+	TopicID     *uuid.UUID      `json:"topic_id" db:"topic_id"`
+	Text        *string         `json:"text"`
+	CaptureTime time.Time       `json:"capture_time" db:"capture_time"`
+	DeletedAt   *time.Time      `json:"deleted_at" db:"deleted_at"`
+	Attachments []attachmentOut `json:"attachments" db:"-"`
+	Seq         int64           `json:"-"`
+}
+
+// attachmentOut adds what only the Server knows, kept off attachment so a push can't set it.
+type attachmentOut struct {
+	attachment
+	Uploaded     bool `json:"uploaded"`
+	HasThumbnail bool `json:"has_thumbnail" db:"has_thumbnail"`
 }
 
 type topicOut struct {
@@ -86,7 +93,7 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 	ids := []uuid.UUID{}
 	for i := range items {
 		it := &items[i]
-		it.CaptureTime, it.DeletedAt, it.Attachments = it.CaptureTime.UTC(), utc(it.DeletedAt), []attachment{}
+		it.CaptureTime, it.DeletedAt, it.Attachments = it.CaptureTime.UTC(), utc(it.DeletedAt), []attachmentOut{}
 		byID[it.ID] = it
 		ids = append(ids, it.ID)
 	}
@@ -96,17 +103,19 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 
 	type itemAttachment struct {
 		ItemID uuid.UUID `db:"item_id"`
-		attachment
+		attachmentOut
 	}
 	rows, _ = tx.Query(ctx, `
-		SELECT item_id, id, filename, mime_type, size_bytes FROM attachments
+		SELECT item_id, id, filename, mime_type, size_bytes,
+			uploaded_at IS NOT NULL AS uploaded, thumbnail_key IS NOT NULL AS has_thumbnail
+		FROM attachments
 		WHERE item_id = ANY($1) AND deleted_at IS NULL ORDER BY created_at, id`, ids)
 	attachments, err := pgx.CollectRows(rows, pgx.RowToStructByName[itemAttachment])
 	if err != nil {
 		return nil, err
 	}
 	for _, ia := range attachments {
-		byID[ia.ItemID].Attachments = append(byID[ia.ItemID].Attachments, ia.attachment)
+		byID[ia.ItemID].Attachments = append(byID[ia.ItemID].Attachments, ia.attachmentOut)
 	}
 	return map[string]any{"items": items, "topics": topics, "cursor": cursor, "has_more": hasMore}, nil
 }

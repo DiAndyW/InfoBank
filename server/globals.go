@@ -17,8 +17,11 @@ const (
 	maxTopicNameBytes = 200
 
 	// Attachments
-	maxAttachmentBytes      = 100 << 20
-	maxAttachmentFieldBytes = 255 // filename and mime type
+	maxAttachmentBytes       = 100 << 20
+	maxAttachmentFieldBytes  = 255 // filename and mime type
+	thumbnailEdgePixels      = 400
+	thumbnailJPEGQuality     = 80
+	maxThumbnailSourcePixels = 64 << 20 // above a 48 MP phone photo; decoding takes 4–8 bytes per pixel
 
 	// HTTP server (used by cmd/notebank-server)
 	DefaultListenAddr = "127.0.0.1:8080"
@@ -28,7 +31,8 @@ const (
 
 // Environment variable names. Values are per-installation and never live in code.
 const (
-	EnvDatabaseURL = "NOTEBANK_DATABASE_URL"
-	EnvSecret      = "NOTEBANK_SECRET"
-	EnvListenAddr  = "NOTEBANK_LISTEN_ADDR"
+	EnvDatabaseURL   = "NOTEBANK_DATABASE_URL"
+	EnvSecret        = "NOTEBANK_SECRET"
+	EnvListenAddr    = "NOTEBANK_LISTEN_ADDR"
+	EnvAttachmentDir = "NOTEBANK_ATTACHMENT_DIR"
 )

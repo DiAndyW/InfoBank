@@ -21,8 +21,9 @@ func main() {
 	if listenAddr == "" {
 		listenAddr = server.DefaultListenAddr
 	}
-	if databaseURL == "" {
-		log.Fatalf("%s is required", server.EnvDatabaseURL)
+	attachmentDir := os.Getenv(server.EnvAttachmentDir)
+	if databaseURL == "" || attachmentDir == "" {
+		log.Fatalf("%s and %s are required", server.EnvDatabaseURL, server.EnvAttachmentDir)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -32,9 +33,9 @@ func main() {
 		log.Fatalf("%s: %v", server.EnvDatabaseURL, err)
 	}
 	defer pool.Close()
-	handler, err := server.New(server.Config{Secret: os.Getenv(server.EnvSecret), Now: time.Now, DB: pool})
+	handler, err := server.New(server.Config{Secret: os.Getenv(server.EnvSecret), Now: time.Now, DB: pool, AttachmentDir: attachmentDir})
 	if err != nil {
-		log.Fatalf("%s: %v", server.EnvSecret, err)
+		log.Fatalf("check %s and %s: %v", server.EnvSecret, server.EnvAttachmentDir, err)
 	}
 
 	if err := server.Migrate(ctx, pool); err != nil {

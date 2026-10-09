@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// pushLock serializes pushes so sync_seq values commit in order and a pull cursor never skips one.
-const pushLock = 7001
+// syncLock serializes every write that takes a sync_seq value, so they commit in order and a pull cursor never skips one.
+const syncLock = 7001
 
 func (a *syncAPI) push(w http.ResponseWriter, r *http.Request) {
 	// Ops stay raw so one malformed op is rejected on its own instead of failing the batch on every retry.
@@ -50,7 +50,7 @@ func (a *syncAPI) applyAll(ctx context.Context, device uuid.UUID, ops []json.Raw
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, pushLock); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, syncLock); err != nil {
 		return nil, err
 	}
 
