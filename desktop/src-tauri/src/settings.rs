@@ -1,0 +1,140 @@
+use keyring_core::Entry;
+use rusqlite::Connection;
+
+#[derive(serde::Serialize)]
+pub struct Settings {
+    pub server_url: Option<String>,
+    pub has_secret: bool,
+}
+
+pub fn get(conn: &Connection, secret: &Entry) -> Result<Settings, String> {
+    let server_url = conn
+        .query_row("SELECT server_url FROM device", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let has_secret = match secret.get_password() {
+        Ok(_) => true,
+        Err(keyring_core::Error::NoEntry) => false,
+        Err(e) => return Err(format!("Couldn't read the keychain: {e}")),
+    };
+    Ok(Settings { server_url, has_secret })
+}
+
+pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Option<&str>) -> Result<(), String> {
+    let url = url::Url::parse(server_url.trim())
+        .map_err(|_| "Enter the Server URL, starting with https://".to_string())?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    if !(url.scheme() == "https" || (url.scheme() == "http" && local)) || url.host_str().is_none() {
+        return Err("The Server URL must start with https://".into());
+    }
+    let url = url.as_str().trim_end_matches('/').to_string();
+
+    // The secret goes first so a keychain failure leaves Settings as they were.
+    match new_secret.map(str::trim) {
+        Some("") => return Err("The secret can't be blank".into()),
+        Some(s) => secret.set_password(s).map_err(|e| format!("Couldn't save to the keychain: {e}"))?,
+        None if !get(conn, secret)?.has_secret => return Err("Enter the shared secret".into()),
+        None => {}
+    }
+    // A cursor only means something to the Server that issued it.
+    conn.execute(
+        "UPDATE device SET pull_cursor = CASE WHEN server_url IS ?1 THEN pull_cursor ELSE 0 END, server_url = ?1",
+        [&url],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keyring_core::api::CredentialStoreApi;
+
+    fn env() -> (tempfile::TempDir, Connection, Entry) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        // A fresh in-memory keychain per test; nothing touches the real Keychain.
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        (dir, conn, secret)
+    }
+
+    fn cursor(conn: &Connection) -> i64 {
+        conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn first_launch_has_nothing_set() {
+        let (_d, conn, secret) = env();
+        let s = get(&conn, &secret).unwrap();
+        assert_eq!(s.server_url, None);
+        assert!(!s.has_secret);
+    }
+
+    #[test]
+    fn url_validation() {
+        let ok = [
+            ("https://notes.example.com", "https://notes.example.com"),
+            ("  https://notes.example.com/  ", "https://notes.example.com"),
+            ("HTTPS://Notes.Example.com", "https://notes.example.com"),
+            ("http://localhost:8080", "http://localhost:8080"),
+            ("http://127.0.0.1:8080/", "http://127.0.0.1:8080"),
+        ];
+        for (input, stored) in ok {
+            let (_d, conn, secret) = env();
+            save(&conn, &secret, input, Some("s3cret")).unwrap_or_else(|e| panic!("{input:?} rejected: {e}"));
+            assert_eq!(get(&conn, &secret).unwrap().server_url.as_deref(), Some(stored), "input {input:?}");
+        }
+        for input in ["http://notes.example.com", "notes.example.com", "", "ftp://localhost", "https://"] {
+            let (_d, conn, secret) = env();
+            assert!(save(&conn, &secret, input, Some("s3cret")).is_err(), "{input:?} accepted");
+            assert_eq!(get(&conn, &secret).unwrap().server_url, None, "{input:?} was stored");
+        }
+    }
+
+    #[test]
+    fn secret_round_trips_trimmed_and_is_never_returned() {
+        let (_d, conn, secret) = env();
+        save(&conn, &secret, "https://notes.example.com", Some("  s3cret\n")).unwrap();
+        assert_eq!(secret.get_password().unwrap(), "s3cret");
+        let json = serde_json::to_string(&get(&conn, &secret).unwrap()).unwrap();
+        assert!(json.contains("\"has_secret\":true"), "{json}");
+        assert!(!json.contains("s3cret"), "settings leaked the secret: {json}");
+    }
+
+    #[test]
+    fn saving_without_a_secret_keeps_the_stored_one() {
+        let (_d, conn, secret) = env();
+        save(&conn, &secret, "https://a.example.com", Some("s3cret")).unwrap();
+        save(&conn, &secret, "https://b.example.com", None).unwrap();
+        assert_eq!(secret.get_password().unwrap(), "s3cret");
+    }
+
+    #[test]
+    fn a_secret_is_required_the_first_time() {
+        let (_d, conn, secret) = env();
+        assert!(save(&conn, &secret, "https://notes.example.com", None).is_err());
+        assert!(save(&conn, &secret, "https://notes.example.com", Some("   ")).is_err());
+        assert_eq!(get(&conn, &secret).unwrap().server_url, None);
+    }
+
+    #[test]
+    fn keychain_failure_saves_nothing() {
+        let (_d, conn, secret) = env();
+        let mock: &keyring_core::mock::Cred = secret.as_any().downcast_ref().unwrap();
+        mock.set_error(keyring_core::Error::Invalid("keychain".into(), "denied".into()));
+        assert!(save(&conn, &secret, "https://notes.example.com", Some("s3cret")).is_err());
+        assert_eq!(get(&conn, &secret).unwrap().server_url, None);
+    }
+
+    #[test]
+    fn changing_the_url_resets_the_pull_cursor() {
+        let (_d, conn, secret) = env();
+        save(&conn, &secret, "https://a.example.com", Some("s3cret")).unwrap();
+        conn.execute("UPDATE device SET pull_cursor = 42", []).unwrap();
+
+        save(&conn, &secret, "https://a.example.com/", None).unwrap();
+        assert_eq!(cursor(&conn), 42, "the same Server reset the cursor");
+
+        save(&conn, &secret, "https://b.example.com", None).unwrap();
+        assert_eq!(cursor(&conn), 0, "a new Server kept the old cursor");
+    }
+}
