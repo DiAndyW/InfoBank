@@ -23,8 +23,9 @@ const (
 
 type syncEnv struct {
 	t     *testing.T
-	h     http.Handler
+	h     *Server
 	clock *testClock
+	dir   string // the Attachment directory
 }
 
 func newSyncEnv(t *testing.T) *syncEnv {
@@ -35,11 +36,12 @@ func newSyncEnv(t *testing.T) *syncEnv {
 	}
 	// A day after at(0), so tests' Device timestamps are in the past unless a test means otherwise.
 	clock := &testClock{now: syncBase.Add(24 * time.Hour)}
-	h, err := New(Config{Secret: testSecret, Now: clock.Now, DB: db, AttachmentDir: t.TempDir()})
+	dir := t.TempDir()
+	h, err := New(Config{Secret: testSecret, Now: clock.Now, DB: db, AttachmentDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &syncEnv{t: t, h: h, clock: clock}
+	return &syncEnv{t: t, h: h, clock: clock, dir: dir}
 }
 
 var syncBase = time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
@@ -72,6 +74,7 @@ type pulledItem struct {
 	Text        *string            `json:"text"`
 	CaptureTime time.Time          `json:"capture_time"`
 	DeletedAt   *time.Time         `json:"deleted_at"`
+	PurgeAt     *time.Time         `json:"purge_at"`
 	Attachments []pulledAttachment `json:"attachments"`
 }
 
@@ -83,10 +86,11 @@ type pulledTopic struct {
 }
 
 type pullPage struct {
-	Items   []pulledItem  `json:"items"`
-	Topics  []pulledTopic `json:"topics"`
-	Cursor  int64         `json:"cursor"`
-	HasMore bool          `json:"has_more"`
+	Items      []pulledItem  `json:"items"`
+	Topics     []pulledTopic `json:"topics"`
+	Tombstones []string      `json:"tombstones"` // ids of purged Items
+	Cursor     int64         `json:"cursor"`
+	HasMore    bool          `json:"has_more"`
 }
 
 func (e *syncEnv) do(method, path string, body []byte) *httptest.ResponseRecorder {
@@ -200,7 +204,7 @@ func TestPulledTimesAreUTC(t *testing.T) {
 	if err := json.Unmarshal(e.do("GET", "/sync/pull?cursor=0", nil).Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}
-	got := []any{page.Items[0]["capture_time"], page.Items[0]["deleted_at"], page.Topics[0]["archived_at"]}
+	got := []any{page.Items[0]["capture_time"], page.Items[0]["deleted_at"], page.Items[0]["purge_at"], page.Topics[0]["archived_at"]}
 	if got[0] != "2026-10-04T12:00:00Z" {
 		t.Errorf("capture_time = %v, want 2026-10-04T12:00:00Z", got[0])
 	}
@@ -558,8 +562,8 @@ func TestTrashAndRestore(t *testing.T) {
 	}
 
 	e.push(desktopID, op{"type": "RestoreItem", "at": e.at(20), "item_id": itemID})
-	if e.item(itemID).DeletedAt != nil {
-		t.Fatalf("Item still in Trash after a later restore")
+	if it := e.item(itemID); it.DeletedAt != nil || it.PurgeAt != nil {
+		t.Fatalf("after a later restore deleted_at = %v purge_at = %v, want both null", it.DeletedAt, it.PurgeAt)
 	}
 }
 

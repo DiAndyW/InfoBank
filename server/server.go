@@ -20,7 +20,13 @@ type Config struct {
 	AttachmentDir string
 }
 
-func New(cfg Config) (http.Handler, error) {
+// Server answers the HTTP API and runs the purge job.
+type Server struct {
+	http.Handler
+	api *syncAPI
+}
+
+func New(cfg Config) (*Server, error) {
 	if len(cfg.Secret) < minSecretChars {
 		return nil, fmt.Errorf("secret must be at least %d characters (try: openssl rand -base64 32)", minSecretChars)
 	}
@@ -64,7 +70,7 @@ func New(cfg Config) (http.Handler, error) {
 		}
 		authed.ServeHTTP(w, r)
 	})
-	return root, nil
+	return &Server{Handler: root, api: api}, nil
 }
 
 // clientIP trusts X-Forwarded-For only from loopback (Caddy), and only its last entry, which Caddy appends.

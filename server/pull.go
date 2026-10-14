@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -17,6 +18,7 @@ type itemOut struct {
 	Text        *string         `json:"text"`
 	CaptureTime time.Time       `json:"capture_time" db:"capture_time"`
 	DeletedAt   *time.Time      `json:"deleted_at" db:"deleted_at"`
+	PurgeAt     *time.Time      `json:"purge_at" db:"-"`
 	Attachments []attachmentOut `json:"attachments" db:"-"`
 	Seq         int64           `json:"-"`
 }
@@ -75,25 +77,54 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 		return nil, err
 	}
 
-	// Keep the pullPageSize lowest seqs across both lists; the cursor is the last one kept.
-	var i, j int
-	for i+j < pullPageSize && (i < len(items) || j < len(topics)) {
-		if j == len(topics) || (i < len(items) && items[i].Seq < topics[j].Seq) {
-			cursor = items[i].Seq
-			i++
-		} else {
-			cursor = topics[j].Seq
-			j++
+	type tombstone struct {
+		ItemID uuid.UUID `db:"item_id"`
+		Seq    int64
+	}
+	rows, _ = tx.Query(ctx, `
+		SELECT item_id, seq FROM tombstones WHERE seq > $1 ORDER BY seq LIMIT $2`, cursor, pullPageSize+1)
+	tombstones, err := pgx.CollectRows(rows, pgx.RowToStructByName[tombstone])
+	if err != nil {
+		return nil, err
+	}
+
+	// Keep the pullPageSize lowest seqs across the lists; the cursor is the last one kept.
+	var seqs []int64
+	for _, it := range items {
+		seqs = append(seqs, it.Seq)
+	}
+	for _, tp := range topics {
+		seqs = append(seqs, tp.Seq)
+	}
+	for _, ts := range tombstones {
+		seqs = append(seqs, ts.Seq)
+	}
+	slices.Sort(seqs)
+	hasMore := len(seqs) > pullPageSize
+	if hasMore {
+		seqs = seqs[:pullPageSize]
+	}
+	if len(seqs) > 0 {
+		cursor = seqs[len(seqs)-1]
+	}
+	items = slices.DeleteFunc(items, func(it itemOut) bool { return it.Seq > cursor })
+	topics = slices.DeleteFunc(topics, func(tp topicOut) bool { return tp.Seq > cursor })
+	purged := []uuid.UUID{}
+	for _, ts := range tombstones {
+		if ts.Seq <= cursor {
+			purged = append(purged, ts.ItemID)
 		}
 	}
-	hasMore := i < len(items) || j < len(topics)
-	items, topics = items[:i], topics[:j]
 
 	byID := map[uuid.UUID]*itemOut{}
 	ids := []uuid.UUID{}
 	for i := range items {
 		it := &items[i]
 		it.CaptureTime, it.DeletedAt, it.Attachments = it.CaptureTime.UTC(), utc(it.DeletedAt), []attachmentOut{}
+		if it.DeletedAt != nil {
+			purgeAt := it.DeletedAt.Add(trashRetention)
+			it.PurgeAt = &purgeAt
+		}
 		byID[it.ID] = it
 		ids = append(ids, it.ID)
 	}
@@ -117,7 +148,7 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 	for _, ia := range attachments {
 		byID[ia.ItemID].Attachments = append(byID[ia.ItemID].Attachments, ia.attachmentOut)
 	}
-	return map[string]any{"items": items, "topics": topics, "cursor": cursor, "has_more": hasMore}, nil
+	return map[string]any{"items": items, "topics": topics, "tombstones": purged, "cursor": cursor, "has_more": hasMore}, nil
 }
 
 // utc puts an optional time in UTC; the database driver returns times in the machine's local zone.

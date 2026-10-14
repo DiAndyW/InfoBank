@@ -23,6 +23,12 @@ const (
 	thumbnailJPEGQuality     = 80
 	maxThumbnailSourcePixels = 64 << 20 // above a 48 MP phone photo; decoding takes 4–8 bytes per pixel
 
+	// Purge
+	PurgeInterval      = time.Hour
+	trashRetention     = 30 * 24 * time.Hour
+	appliedOpRetention = 90 * 24 * time.Hour // a push is only retried within minutes
+	leftoverFileMinAge = 24 * time.Hour      // spares uploads in progress
+
 	// HTTP server (used by cmd/notebank-server)
 	DefaultListenAddr = "127.0.0.1:8080"
 	ReadHeaderTimeout = 10 * time.Second

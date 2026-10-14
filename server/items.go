@@ -38,11 +38,13 @@ func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
 		}
 	}
 
+	// A purged id stays used, so a replay older than applied_ops can't bring the Item back.
 	res, err := b.tx.Exec(b.ctx, `
 		INSERT INTO items (id, topic_id, text, capture_time,
 			text_updated_at, text_updated_by, topic_updated_at, topic_updated_by,
 			trash_updated_at, trash_updated_by, seq)
-		VALUES ($1, $2, $3, $4, $4, $5, $4, $5, $4, $5, nextval('sync_seq'))
+		SELECT $1, $2, $3, $4, $4, $5, $4, $5, $4, $5, nextval('sync_seq')
+		WHERE NOT EXISTS (SELECT 1 FROM tombstones WHERE item_id = $1)
 		ON CONFLICT (id) DO NOTHING`,
 		o.ItemID, topicID, o.Text, s.at, s.by)
 	if err != nil {

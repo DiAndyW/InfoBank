@@ -4,7 +4,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 // attachmentStore keeps Attachment files and thumbnails in one directory, named by opaque keys.
@@ -54,4 +59,29 @@ func (s *attachmentStore) Put(key string, r io.Reader, sizeBytes int64) (err err
 
 func (s *attachmentStore) Open(key string) (*os.File, error) {
 	return s.root.Open(key)
+}
+
+// RemoveLeftovers deletes files not in keep and last written before cutoff. It only touches names the Server
+// makes (a UUID key, or one with a .partial- suffix), so a mistyped directory setting can't destroy other files.
+func (s *attachmentStore) RemoveLeftovers(keep map[string]bool, cutoff time.Time) error {
+	entries, err := fs.ReadDir(s.root.FS(), ".")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		name := entry.Name()
+		key, _, _ := strings.Cut(name, ".partial-")
+		if id, err := uuid.Parse(key); err != nil || id.String() != key || !entry.Type().IsRegular() || keep[name] {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			err = s.root.Remove(name)
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

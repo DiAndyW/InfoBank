@@ -92,7 +92,7 @@ func (b *batch) applyOnce(o pushOp) (opResult, error) {
 	if err != nil {
 		return opResult{}, err
 	}
-	_, err = b.tx.Exec(b.ctx, `INSERT INTO applied_ops (op_id, result) VALUES ($1, $2)`, o.ID, stored)
+	_, err = b.tx.Exec(b.ctx, `INSERT INTO applied_ops (op_id, result, created_at) VALUES ($1, $2, $3)`, o.ID, stored, b.now)
 	return res, err
 }
 

@@ -41,6 +41,18 @@ func main() {
 	if err := server.Migrate(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
+	go func() {
+		for {
+			if err := handler.Purge(ctx); err != nil {
+				log.Printf("purge: %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(server.PurgeInterval):
+			}
+		}
+	}()
 
 	srv := &http.Server{
 		Addr:              listenAddr,
