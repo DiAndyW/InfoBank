@@ -3,6 +3,8 @@ mod commands;
 mod feed;
 mod settings;
 mod store;
+#[cfg_attr(not(test), allow(dead_code))]
+mod sync;
 
 use std::sync::Mutex;
 
