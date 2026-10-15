@@ -22,10 +22,6 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-pub fn device_id(conn: &Connection) -> rusqlite::Result<String> {
-    conn.query_row("SELECT device_id FROM device", [], |r| r.get(0))
-}
-
 #[derive(serde::Serialize)]
 pub struct Topic {
     pub id: String,
@@ -42,6 +38,10 @@ pub fn list_topics(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device_id(conn: &Connection) -> rusqlite::Result<String> {
+        conn.query_row("SELECT device_id FROM device", [], |r| r.get(0))
+    }
 
     #[test]
     fn reopening_keeps_device_id_and_skips_migrations() {
