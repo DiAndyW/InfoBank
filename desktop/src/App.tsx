@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
-import { getSettings, listTopics, type Settings as SettingsData, type Topic } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { getSettings, listTopics, syncStatus, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
+import Feed from "./Feed";
 import Settings from "./Settings";
+
+const STATUS_LABELS: Record<SyncStatus, string> = {
+  synced: "● Synced",
+  syncing: "↻ Syncing…",
+  offline: "○ Offline, retrying",
+  unauthorized: "⚠ Secret rejected",
+  not_configured: "",
+};
 
 export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -10,12 +20,21 @@ export default function App() {
   const [feed, setFeed] = useState("all");
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [status, setStatus] = useState<SyncStatus>("synced");
+
+  useEffect(() => {
+    const unlisten = listen<SyncStatus>("sync-status", (e) => setStatus(e.payload));
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, []);
 
   async function load() {
     try {
-      const [s, t] = await Promise.all([getSettings(), listTopics()]);
+      const [s, t, st] = await Promise.all([getSettings(), listTopics(), syncStatus()]);
       setSettings(s);
       setTopics(t);
+      setStatus(st);
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -62,22 +81,18 @@ export default function App() {
         {entry("inbox", "Inbox")}
         <h2>Topics</h2>
         {topics.length === 0 ? <p className="hint">None yet</p> : topics.map((t) => entry(t.id, t.name))}
+        {status === "unauthorized" ? (
+          <button className="status warn" onClick={() => setEditing(true)}>
+            ⚠ Secret rejected
+          </button>
+        ) : (
+          <p className="status">{STATUS_LABELS[status]}</p>
+        )}
         <button className="settings-button" onClick={() => setEditing(true)}>
           Settings
         </button>
       </nav>
-      <main className="feed">
-        <div className="empty">
-          <p>Nothing here yet.</p>
-          <p className="hint">Capture something below.</p>
-        </div>
-        <form className="composer" onSubmit={(e) => e.preventDefault()}>
-          <textarea placeholder="Write something…" rows={2} />
-          <button type="submit" disabled>
-            Send
-          </button>
-        </form>
-      </main>
+      <Feed view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }} />
     </div>
   );
 }

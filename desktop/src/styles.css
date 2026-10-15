@@ -43,11 +43,21 @@ button, input, textarea { font: inherit; color: inherit; }
 .sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 16px 8px 4px; }
 .sidebar button { text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 8px; cursor: pointer; }
 .sidebar button.selected { background: var(--selected); }
-.sidebar .settings-button { margin-top: auto; color: var(--muted); }
+.sidebar .settings-button { color: var(--muted); }
 
 .feed { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.items { flex: 1; overflow-y: auto; display: flex; flex-direction: column; padding: 12px 16px; }
 .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .empty p { margin: 2px; }
+.day { text-align: center; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
+.item { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; }
+.item time { color: var(--muted); font-size: 12px; min-width: 64px; }
+.item .text { margin: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.item a { color: var(--accent); }
+.pending { color: var(--muted); }
+.composer-error { color: var(--error); margin: 0 12px; }
+.sidebar .status { margin: auto 8px 4px; font-size: 12px; color: var(--muted); }
+.sidebar .status.warn { color: var(--error); padding: 6px 8px; margin: auto 0 4px; }
 .load-error { height: 100vh; gap: 8px; }
 .load-error [role="alert"] { color: var(--error); }
 .hint { color: var(--muted); font-size: 12px; }
