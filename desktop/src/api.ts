@@ -17,7 +17,7 @@ export type FeedItem = {
   pending: boolean;
 };
 export type View = { kind: "all" } | { kind: "inbox" } | { kind: "topic"; id: string };
-export type SyncStatus = "synced" | "syncing" | "offline" | "unauthorized" | "not_configured";
+export type SyncStatus = "synced" | "syncing" | "offline" | "unauthorized" | "keychain" | "not_configured";
 
 export const capture = (text: string) => invoke<void>("capture", { text });
 // Nested keys aren't renamed by Tauri, so `before` keeps Rust's snake_case.

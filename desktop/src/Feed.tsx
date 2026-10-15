@@ -14,9 +14,12 @@ export default function Feed({ view }: { view: View }) {
   const atBottom = useRef(true);
   // scrollHeight before older Items were prepended, so the view doesn't jump.
   const heightBeforeOlder = useRef<number | null>(null);
+  // Loads can finish out of order (a view switch, overlapping refetches); only the latest may render.
+  const latestLoad = useRef(0);
   const viewKey = JSON.stringify(view);
 
   async function load(pageCount: number) {
+    const id = ++latestLoad.current;
     let all: FeedItem[] = [];
     let page: FeedItem[] = [];
     for (let i = 0; i < pageCount; i++) {
@@ -25,6 +28,7 @@ export default function Feed({ view }: { view: View }) {
       all = all.concat(page);
       if (page.length === 0) break;
     }
+    if (id !== latestLoad.current) return;
     pages.current = pageCount;
     setItems(all);
     setExhausted(page.length === 0);

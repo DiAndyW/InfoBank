@@ -9,6 +9,7 @@ const STATUS_LABELS: Record<SyncStatus, string> = {
   syncing: "↻ Syncing…",
   offline: "○ Offline, retrying",
   unauthorized: "⚠ Secret rejected",
+  keychain: "⚠ Keychain access needed",
   not_configured: "",
 };
 

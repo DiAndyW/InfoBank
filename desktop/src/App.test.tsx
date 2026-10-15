@@ -10,7 +10,7 @@ type Options = {
   topics?: Topic[];
   saveError?: string;
   captureError?: string;
-  items?: (args: any) => FeedItem[];
+  items?: (args: any) => FeedItem[] | Promise<FeedItem[]>;
   status?: SyncStatus;
 };
 
@@ -224,4 +224,28 @@ test("the status line follows sync-status events", async () => {
   expect(await screen.findByText("● Synced")).toBeInTheDocument();
   await act(() => emit("sync-status", "offline"));
   expect(await screen.findByText("○ Offline, retrying")).toBeInTheDocument();
+});
+
+test("a slow load for the previous view doesn't replace the current one", async () => {
+  let release!: () => void;
+  const slowAll = new Promise<void>((resolve) => (release = resolve));
+  backend(configured, {
+    items: async (args) => {
+      if (args.view.kind === "inbox") return [feedItem("2", "inbox item", at(2026, 10, 14, 9, 41))];
+      await slowAll;
+      return [feedItem("1", "all items item", at(2026, 10, 14, 9, 40))];
+    },
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Inbox" }));
+  expect(await screen.findByText("inbox item")).toBeInTheDocument();
+  await act(async () => release());
+  expect(screen.queryByText("all items item")).not.toBeInTheDocument();
+  expect(screen.getByText("inbox item")).toBeInTheDocument();
+});
+
+test("a Keychain problem shows in the sidebar", async () => {
+  backend(configured, { status: "keychain" });
+  render(<App />);
+  expect(await screen.findByText("⚠ Keychain access needed")).toBeInTheDocument();
 });

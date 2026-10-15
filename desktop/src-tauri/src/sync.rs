@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Deserialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::AppState;
 
@@ -15,7 +15,17 @@ const MAX_BACKOFF: Duration = Duration::from_secs(300);
 pub enum SyncError {
     NotConfigured,
     Unauthorized,
+    // Includes the user denying the macOS access prompt.
+    Keychain(String),
     Failed(String),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Wait {
+    For(Duration),
+    UntilSettingsSaved,
+    // Window focus, a Capture or saved Settings.
+    UntilWoken,
 }
 
 #[derive(Deserialize)]
@@ -105,13 +115,15 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     Ok(!(page.items.is_empty() && page.topics.is_empty() && page.tombstones.is_empty()))
 }
 
-/// The status to show after a cycle and how long to wait before the next; None waits for Settings to be saved.
-pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str, Option<Duration>) {
+/// The status to show after a cycle and what to wait for before the next.
+pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str, Wait) {
     match result {
-        Ok(_) => ("synced", Some(POLL_INTERVAL)),
-        Err(SyncError::Failed(_)) => ("offline", Some(Duration::from_secs(2u64.saturating_pow(failures)).min(MAX_BACKOFF))),
-        Err(SyncError::Unauthorized) => ("unauthorized", None),
-        Err(SyncError::NotConfigured) => ("not_configured", None),
+        Ok(_) => ("synced", Wait::For(POLL_INTERVAL)),
+        Err(SyncError::Failed(_)) => ("offline", Wait::For(Duration::from_secs(2u64.saturating_pow(failures)).min(MAX_BACKOFF))),
+        Err(SyncError::Unauthorized) => ("unauthorized", Wait::UntilSettingsSaved),
+        Err(SyncError::NotConfigured) => ("not_configured", Wait::UntilSettingsSaved),
+        // Retrying on a timer would show the macOS prompt again and again.
+        Err(SyncError::Keychain(_)) => ("keychain", Wait::UntilWoken),
     }
 }
 
@@ -164,7 +176,7 @@ pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client:
     let token = match secret.get_password() {
         Ok(t) => t,
         Err(keyring_core::Error::NoEntry) => return Err(SyncError::NotConfigured),
-        Err(e) => return Err(SyncError::Failed(format!("couldn't read the keychain: {e}"))),
+        Err(e) => return Err(SyncError::Keychain(e.to_string())),
     };
 
     let mut changed = false;
@@ -204,11 +216,13 @@ pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client:
 }
 
 /// The background loop: one cycle, then wait for a wake-up, the poll interval or the backoff.
-pub async fn run(app: AppHandle) {
+pub async fn run<R: Runtime>(app: AppHandle<R>) {
     let state = app.state::<AppState>();
     let client = client();
     let mut failures = 0;
     loop {
+        // This cycle reads the current Settings, so an earlier save must not wake the wait for the next one.
+        std::pin::pin!(state.settings_saved.notified()).enable();
         let pending: bool = state
             .db
             .lock()
@@ -219,6 +233,9 @@ pub async fn run(app: AppHandle) {
             set_status(&app, "syncing");
         }
         let result = cycle(&state.db, &state.secret, &client).await;
+        if let Err(SyncError::Keychain(e)) = &result {
+            eprintln!("sync: couldn't read the keychain: {e}");
+        }
         failures = if let Err(SyncError::Failed(e)) = &result {
             eprintln!("sync: {e}");
             failures + 1
@@ -231,15 +248,16 @@ pub async fn run(app: AppHandle) {
         let (status, wait) = outcome(&result, failures);
         set_status(&app, status);
         match wait {
-            Some(d) => {
+            Wait::For(d) => {
                 let _ = tokio::time::timeout(d, state.wake.notified()).await;
             }
-            None => state.settings_saved.notified().await,
+            Wait::UntilSettingsSaved => state.settings_saved.notified().await,
+            Wait::UntilWoken => state.wake.notified().await,
         }
     }
 }
 
-fn set_status(app: &AppHandle, status: &'static str) {
+fn set_status<R: Runtime>(app: &AppHandle<R>, status: &'static str) {
     let state = app.state::<AppState>();
     let mut current = state.status.lock().unwrap();
     if *current != status {
@@ -345,16 +363,15 @@ mod tests {
 
     #[test]
     fn after_a_cycle() {
-        assert_eq!(outcome(&Ok(true), 0), ("synced", Some(POLL_INTERVAL)));
+        assert_eq!(outcome(&Ok(true), 0), ("synced", Wait::For(POLL_INTERVAL)));
         let failed = Err(SyncError::Failed("down".into()));
-        let waits: Vec<u64> = [1, 2, 3, 8, 9, 40]
-            .map(|n| outcome(&failed, n).1.unwrap().as_secs())
-            .to_vec();
-        assert_eq!(waits, [2, 4, 8, 256, 300, 300]);
+        let waits = [1, 2, 3, 8, 9, 40].map(|n| outcome(&failed, n).1);
+        assert_eq!(waits, [2, 4, 8, 256, 300, 300].map(|s| Wait::For(Duration::from_secs(s))));
         assert_eq!(outcome(&failed, 1).0, "offline");
         // A rejected secret waits for Settings: retrying would trip the Server's rate limit.
-        assert_eq!(outcome(&Err(SyncError::Unauthorized), 0), ("unauthorized", None));
-        assert_eq!(outcome(&Err(SyncError::NotConfigured), 0), ("not_configured", None));
+        assert_eq!(outcome(&Err(SyncError::Unauthorized), 0), ("unauthorized", Wait::UntilSettingsSaved));
+        assert_eq!(outcome(&Err(SyncError::NotConfigured), 0), ("not_configured", Wait::UntilSettingsSaved));
+        assert_eq!(outcome(&Err(SyncError::Keychain("denied".into())), 0), ("keychain", Wait::UntilWoken));
     }
 }
 
@@ -553,5 +570,80 @@ mod server_tests {
         let b = device(&server, &server.secret);
         sync(&b).await.unwrap();
         assert_eq!(count(&b, "items"), 501);
+    }
+
+    /// A stand-in Server that rejects every request; returns its URL and how many requests it got.
+    fn reject_all() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = std::io::Read::read(&mut stream, &mut [0; 4096]);
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+        (url, requests)
+    }
+
+    /// The app as the sync loop sees it, set up for `url` with a stored secret.
+    fn app_for(url: &str, dir: &tempfile::TempDir) -> tauri::App<tauri::test::MockRuntime> {
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        conn.execute("UPDATE device SET server_url = ?1", [url]).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        secret.set_password("not-the-secret").unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(AppState {
+            db: Mutex::new(conn),
+            secret,
+            wake: tokio::sync::Notify::new(),
+            settings_saved: tokio::sync::Notify::new(),
+            status: Mutex::new("synced"),
+        });
+        app
+    }
+
+    fn seen(requests: &std::sync::atomic::AtomicUsize) -> usize {
+        requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn a_rejected_secret_is_tried_once_per_save() {
+        let (url, requests) = reject_all();
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&url, &dir);
+        // Settings were saved while sync was idle, so nothing was waiting for the notification.
+        app.state::<AppState>().settings_saved.notify_one();
+        tokio::spawn(run(app.handle().clone()));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert_eq!(seen(&requests), 1, "each failure counts toward the Server's lockout");
+        assert_eq!(*app.state::<AppState>().status.lock().unwrap(), "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn a_keychain_error_waits_for_the_user() {
+        let (url, requests) = reject_all();
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&url, &dir);
+        let state = app.state::<AppState>();
+        // Fails the next read only, as when the user denies the macOS prompt once.
+        let mock: &keyring_core::mock::Cred = state.secret.as_any().downcast_ref().unwrap();
+        mock.set_error(keyring_core::Error::PlatformFailure("User canceled the operation.".into()));
+        tokio::spawn(run(app.handle().clone()));
+
+        // Longer than the first backoff, so a retry on a timer would have reached the Server.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert_eq!(seen(&requests), 0, "retried without the user asking");
+        assert_eq!(*state.status.lock().unwrap(), "keychain");
+
+        state.wake.notify_one(); // window focus
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(seen(&requests), 1);
     }
 }
