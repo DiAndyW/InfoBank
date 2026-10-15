@@ -34,7 +34,7 @@ export default function Settings({ initial, onSaved, onCancel }: Props) {
         Secret
         <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
       </label>
-      {initial.has_secret && secret === "" && <span className="hint">saved</span>}
+      {initial.has_secret && secret === "" && url === initial.server_url &&<span className="hint">saved</span>}
       {error && <p role="alert">{error}</p>}
       <div className="actions">
         {onCancel && (

@@ -37,6 +37,14 @@ test("a saved secret is never shown", async () => {
   expect(screen.getByText("saved")).toBeInTheDocument();
 });
 
+test("editing the URL asks for the secret again", async () => {
+  backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await userEvent.type(screen.getByLabelText("Server URL"), "x");
+  expect(screen.queryByText("saved")).not.toBeInTheDocument();
+});
+
 test("saving without retyping the secret keeps it", async () => {
   const calls = backend(configured);
   render(<App />);
@@ -56,6 +64,22 @@ test("a save error is shown inline", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("must start with https://");
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+});
+
+test("a load failure is shown and can be retried", async () => {
+  let failing = true;
+  mockIPC((cmd) => {
+    if (cmd === "get_settings") {
+      if (failing) throw "Couldn't read the keychain: locked";
+      return configured;
+    }
+    if (cmd === "list_topics") return [];
+  });
+  render(<App />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the keychain");
+  failing = false;
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByText("Nothing here yet.")).toBeInTheDocument();
 });
 
 test("the sidebar lists Topics", async () => {

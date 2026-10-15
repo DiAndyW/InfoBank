@@ -9,16 +9,31 @@ export default function App() {
   // "all", "inbox", or a Topic id.
   const [feed, setFeed] = useState("all");
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   async function load() {
-    const [s, t] = await Promise.all([getSettings(), listTopics()]);
-    setSettings(s);
-    setTopics(t);
+    try {
+      const [s, t] = await Promise.all([getSettings(), listTopics()]);
+      setSettings(s);
+      setTopics(t);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(String(err));
+    }
   }
 
   useEffect(() => {
     load();
   }, []);
 
+  if (loadError) {
+    return (
+      <div className="empty load-error">
+        <p role="alert">{loadError}</p>
+        <button onClick={load}>Try again</button>
+      </div>
+    );
+  }
   if (!settings) return null;
   const configured = settings.server_url !== null && settings.has_secret;
   if (!configured || editing) {

@@ -32,8 +32,16 @@ pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Opt
     match new_secret.map(str::trim) {
         Some("") => return Err("The secret can't be blank".into()),
         Some(s) => secret.set_password(s).map_err(|e| format!("Couldn't save to the keychain: {e}"))?,
-        None if !get(conn, secret)?.has_secret => return Err("Enter the shared secret".into()),
-        None => {}
+        None => {
+            let current = get(conn, secret)?;
+            if !current.has_secret {
+                return Err("Enter the shared secret".into());
+            }
+            // A mistyped URL must not receive the secret.
+            if current.server_url.as_deref() != Some(url.as_str()) {
+                return Err("Enter the secret again for a new Server".into());
+            }
+        }
     }
     // A cursor only means something to the Server that issued it.
     conn.execute(
@@ -104,8 +112,17 @@ mod tests {
     fn saving_without_a_secret_keeps_the_stored_one() {
         let (_d, conn, secret) = env();
         save(&conn, &secret, "https://a.example.com", Some("s3cret")).unwrap();
-        save(&conn, &secret, "https://b.example.com", None).unwrap();
+        save(&conn, &secret, "https://a.example.com/", None).unwrap();
         assert_eq!(secret.get_password().unwrap(), "s3cret");
+    }
+
+    #[test]
+    fn a_new_server_needs_the_secret_again() {
+        let (_d, conn, secret) = env();
+        save(&conn, &secret, "https://a.example.com", Some("s3cret")).unwrap();
+        let err = save(&conn, &secret, "https://b.example.com", None).unwrap_err();
+        assert!(err.contains("secret again"), "{err}");
+        assert_eq!(get(&conn, &secret).unwrap().server_url.as_deref(), Some("https://a.example.com"));
     }
 
     #[test]
@@ -134,7 +151,7 @@ mod tests {
         save(&conn, &secret, "https://a.example.com/", None).unwrap();
         assert_eq!(cursor(&conn), 42, "the same Server reset the cursor");
 
-        save(&conn, &secret, "https://b.example.com", None).unwrap();
+        save(&conn, &secret, "https://b.example.com", Some("s3cret")).unwrap();
         assert_eq!(cursor(&conn), 0, "a new Server kept the old cursor");
     }
 }
