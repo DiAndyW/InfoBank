@@ -32,7 +32,7 @@ Never test changes through git either (no stash/checkout to compare); copy files
 - Time zones: UTC is the ground truth. Store instants (`timestamptz`), compare instants, and emit every API timestamp in UTC (RFC 3339, `Z`) whatever the machine's zone. Accept any offset on input. Only display converts to the Device's local zone.
 - Device clocks decide conflicts (last-write-wins), but any time that starts a countdown (Trash's 30 days) is Server time, so a late sync never shortens it.
 - Put units in ambiguous names: `size_bytes`, `max_attachment_bytes`, `failure_window`.
-- Comments: only the non-obvious why, one line. Never restate the code or narrate history.
+- Comments: very few. Write only about 10% of the comments you are inclined to write, and when reviewing, cut about 90% of the ones there. Keep a comment only when a reader would likely get the code wrong without it (a security or data-loss invariant, a surprising external constraint). One line, the why, never restating the code or narrating history.
 - Don't mix `sed -i` and the Edit tool on the same file.
 
 ## Tests

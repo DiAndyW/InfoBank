@@ -1,5 +1,7 @@
 mod commands;
 mod feed;
+#[cfg_attr(not(test), allow(dead_code))]
+mod files;
 mod settings;
 mod store;
 mod sync;
@@ -12,9 +14,7 @@ use tauri::Manager;
 pub struct AppState {
     db: Mutex<rusqlite::Connection>,
     secret: keyring_core::Entry,
-    // A local change, window focus or saved Settings.
     wake: tokio::sync::Notify,
-    // Only saved Settings resume sync after the secret was rejected or nothing was set up.
     settings_saved: tokio::sync::Notify,
     status: Mutex<&'static str>,
 }

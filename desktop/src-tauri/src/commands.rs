@@ -22,7 +22,7 @@ pub async fn list_topics(state: State<'_, AppState>) -> Result<Vec<store::Topic>
 
 #[tauri::command]
 pub async fn capture(state: State<'_, AppState>, text: String) -> Result<(), String> {
-    feed::capture(&state.db.lock().unwrap(), &text, chrono::Utc::now().timestamp_micros())?;
+    feed::capture(&state.db.lock().unwrap(), std::path::Path::new(""), &text, &[], chrono::Utc::now().timestamp_micros())?;
     state.wake.notify_one();
     Ok(())
 }

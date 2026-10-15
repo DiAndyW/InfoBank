@@ -515,12 +515,12 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let b = device(&server, &server.secret);
 
-        feed::capture(&a.db.lock().unwrap(), "captured offline", T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "captured offline", &[], T0).unwrap();
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
         assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
 
         server.start();
-        feed::capture(&b.db.lock().unwrap(), "captured later", T0 + 1_000_000).unwrap();
+        feed::capture(&b.db.lock().unwrap(), b._dir.path(), "captured later", &[], T0 + 1_000_000).unwrap();
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
@@ -535,7 +535,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, &server.secret);
-        feed::capture(&a.db.lock().unwrap(), "once", T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "once", &[], T0).unwrap();
         let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
         sync(&a).await.unwrap();
         a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
@@ -551,7 +551,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, "not-the-secret");
-        feed::capture(&a.db.lock().unwrap(), "kept", T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "kept", &[], T0).unwrap();
         assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
         assert_eq!(count(&a, "outbox"), 1);
     }
@@ -562,7 +562,7 @@ mod server_tests {
         server.start();
         let a = device(&server, &server.secret);
         for i in 0..501 {
-            feed::capture(&a.db.lock().unwrap(), &format!("item {i}"), T0 + i).unwrap();
+            feed::capture(&a.db.lock().unwrap(), a._dir.path(), &format!("item {i}"), &[], T0 + i).unwrap();
         }
         sync(&a).await.unwrap();
         assert_eq!(count(&a, "outbox"), 0);

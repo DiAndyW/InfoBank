@@ -23,6 +23,7 @@ url = "2.5"
 keyring-core = "1.0"
 reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["sync", "time"] }
+mime_guess = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 tauri-plugin-opener = "2.7"
 
