@@ -1,0 +1,246 @@
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, OptionalExtension};
+use tokio::io::AsyncWriteExt;
+
+use crate::{AppState, files, sync};
+
+pub const FILE_CACHE_BYTES: i64 = 2 << 30;
+const THUMBNAIL_KEEP_US: i64 = 60 * 24 * 60 * 60 * 1_000_000;
+const OFFLINE: &str = "Can't download while offline";
+
+fn cached(state: &AppState, id: &str, kind: &str, now_us: i64) -> Result<Option<PathBuf>, String> {
+    let conn = state.db.lock().unwrap();
+    let path: Option<String> = conn
+        .query_row("SELECT path FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [id, kind], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(path) = path else { return Ok(None) };
+    if !state.dir.join(&path).exists() {
+        conn.execute("DELETE FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [id, kind]).map_err(|e| e.to_string())?;
+        return Ok(None);
+    }
+    conn.execute("UPDATE cached_files SET last_used_at = ?3 WHERE attachment_id = ?1 AND kind = ?2", (id, kind, now_us))
+        .map_err(|e| e.to_string())?;
+    Ok(Some(state.dir.join(path)))
+}
+
+async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str, now_us: i64) -> Result<PathBuf, String> {
+    let (url, token) = sync::server_access(state).map_err(|_| OFFLINE.to_string())?;
+    let mut res = state.http.get(format!("{url}{route}")).bearer_auth(token).send().await.map_err(|_| OFFLINE.to_string())?;
+    match res.status() {
+        s if s.is_success() => {}
+        reqwest::StatusCode::NOT_FOUND => return Err("Not on the Server yet".into()),
+        reqwest::StatusCode::UNAUTHORIZED => return Err("The Server rejected the secret".into()),
+        s => return Err(format!("The Server answered {s}")),
+    }
+    let target = state.dir.join(rel);
+    let partial = PathBuf::from(format!("{}.partial", target.display()));
+    let written: Result<(), String> = async {
+        let save = |_| "Couldn't save the download".to_string();
+        tokio::fs::create_dir_all(target.parent().expect("rel has a directory")).await.map_err(save)?;
+        let mut out = tokio::fs::File::create(&partial).await.map_err(save)?;
+        while let Some(chunk) = res.chunk().await.map_err(|_| OFFLINE.to_string())? {
+            out.write_all(&chunk).await.map_err(save)?;
+        }
+        out.flush().await.map_err(save)?;
+        tokio::fs::rename(&partial, &target).await.map_err(save)
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&partial).await;
+    }
+    written?;
+    let size = tokio::fs::metadata(&target).await.map_err(|e| e.to_string())?.len() as i64;
+    state
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (attachment_id, kind) DO UPDATE SET
+                path = excluded.path, size_bytes = excluded.size_bytes, last_used_at = excluded.last_used_at",
+            (id, kind, rel, size, now_us),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
+pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, String> {
+    let id = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?.to_string();
+    if let Some(path) = cached(state, &id, "thumbnail", now_us)? {
+        return Ok(path);
+    }
+    let own: Option<String> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT c.path FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
+             WHERE a.id = ?1 AND a.uploaded = 0 AND a.mime_type LIKE 'image/%'",
+            [&id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(path) = own {
+        return Ok(state.dir.join(path));
+    }
+    download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), now_us).await
+}
+
+pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, String> {
+    let id = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?.to_string();
+    if let Some(path) = cached(state, &id, "file", now_us)? {
+        return Ok(path);
+    }
+    let (filename, uploaded): (String, bool) = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row("SELECT filename, uploaded FROM attachments WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| "Unknown attachment")?;
+    if !uploaded {
+        return Err("Not uploaded yet".into());
+    }
+    let rel = format!("files/{id}/{}", files::safe_name(&filename));
+    let path = download(state, &id, "file", &format!("/attachments/{id}"), &rel, now_us).await?;
+    evict(&state.db.lock().unwrap(), &state.dir, now_us, FILE_CACHE_BYTES).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+pub async fn prefetch_thumbnails(state: &AppState, now_us: i64) {
+    let ids: Vec<String> = {
+        let conn = state.db.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT a.id FROM attachments a JOIN items i ON i.id = a.item_id
+             WHERE a.has_thumbnail = 1 AND i.deleted_at IS NULL AND i.capture_time >= ?1
+               AND NOT EXISTS (SELECT 1 FROM cached_files c WHERE c.attachment_id = a.id AND c.kind = 'thumbnail')",
+        ) else {
+            return;
+        };
+        stmt.query_map([now_us - THUMBNAIL_KEEP_US], |r| r.get(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    };
+    for id in ids {
+        if thumbnail(state, &id, now_us).await.is_err() {
+            return;
+        }
+    }
+}
+
+pub fn evict(conn: &Connection, dir: &Path, now_us: i64, max_file_bytes: i64) -> rusqlite::Result<()> {
+    let doomed: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT c.attachment_id, c.kind, c.path FROM cached_files c
+             LEFT JOIN attachments a ON a.id = c.attachment_id
+             LEFT JOIN items i ON i.id = a.item_id
+             WHERE a.id IS NULL OR (c.kind = 'thumbnail' AND c.last_used_at < ?1 AND i.capture_time < ?1)
+             UNION ALL
+             SELECT attachment_id, kind, path FROM (
+                 SELECT c.attachment_id, c.kind, c.path,
+                        sum(c.size_bytes) OVER (ORDER BY c.last_used_at DESC, c.attachment_id) AS running
+                 FROM cached_files c JOIN attachments a ON a.id = c.attachment_id
+                 WHERE c.kind = 'file' AND a.uploaded = 1)
+             WHERE running > ?2",
+        )?
+        .query_map((now_us - THUMBNAIL_KEEP_US, max_file_bytes), |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, kind, path) in doomed {
+        let path = dir.join(path);
+        let _ = std::fs::remove_file(&path);
+        if kind == "file" {
+            let _ = path.parent().map(std::fs::remove_dir);
+        }
+        conn.execute("DELETE FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [&id, &kind])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use keyring_core::api::CredentialStoreApi;
+
+    use super::*;
+
+    const DAY_US: i64 = 24 * 60 * 60 * 1_000_000;
+
+    fn fresh() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        (dir, conn)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn put(d: &tempfile::TempDir, conn: &Connection, id: &str, kind: &str, size: i64, used: i64, captured: i64, uploaded: bool) {
+        conn.execute("INSERT INTO items (id, capture_time) VALUES (?1, ?2) ON CONFLICT DO NOTHING", (format!("item-{id}"), captured))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES (?1, ?2, 'f.png', 'image/png', ?3, ?4, 1) ON CONFLICT DO NOTHING",
+            (id, format!("item-{id}"), size, uploaded),
+        )
+        .unwrap();
+        let path = if kind == "file" { format!("files/{id}/f.png") } else { format!("thumbnails/{id}.jpg") };
+        std::fs::create_dir_all(d.path().join(&path).parent().unwrap()).unwrap();
+        std::fs::write(d.path().join(&path), "x").unwrap();
+        conn.execute(
+            "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            (id, kind, &path, size, used),
+        )
+        .unwrap();
+    }
+
+    fn kept(conn: &Connection, kind: &str) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT attachment_id FROM cached_files WHERE kind = ?1 ORDER BY attachment_id").unwrap();
+        stmt.query_map([kind], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn a_thumbnail_goes_only_when_both_its_capture_and_last_use_are_old() {
+        let (d, conn) = fresh();
+        let now = 100 * DAY_US;
+        put(&d, &conn, "old", "thumbnail", 1, 0, 0, true);
+        put(&d, &conn, "seen", "thumbnail", 1, now - DAY_US, 0, true);
+        put(&d, &conn, "new", "thumbnail", 1, 0, now - DAY_US, true);
+        evict(&conn, d.path(), now, FILE_CACHE_BYTES).unwrap();
+        assert_eq!(kept(&conn, "thumbnail"), ["new", "seen"]);
+        assert!(!d.path().join("thumbnails/old.jpg").exists());
+    }
+
+    #[test]
+    fn files_over_the_cap_go_least_recent_first_but_never_unuploaded_ones() {
+        let (d, conn) = fresh();
+        put(&d, &conn, "older", "file", 2, 1, 0, true);
+        put(&d, &conn, "newer", "file", 2, 3, 0, true);
+        put(&d, &conn, "mine", "file", 5, 0, 0, false);
+        evict(&conn, d.path(), 10, 3).unwrap();
+        assert_eq!(kept(&conn, "file"), ["mine", "newer"]);
+        assert!(!d.path().join("files/older").exists(), "the emptied directory stays behind");
+    }
+
+    #[test]
+    fn files_of_deleted_attachments_go() {
+        let (d, conn) = fresh();
+        put(&d, &conn, "gone", "thumbnail", 1, 10, 10, true);
+        conn.execute("DELETE FROM items", []).unwrap();
+        evict(&conn, d.path(), 10, FILE_CACHE_BYTES).unwrap();
+        assert!(kept(&conn, "thumbnail").is_empty());
+        assert!(!d.path().join("thumbnails/gone.jpg").exists());
+    }
+
+    #[tokio::test]
+    async fn a_file_not_uploaded_by_another_device_cannot_be_opened_yet() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute("INSERT INTO items (id, capture_time) VALUES ('i', 1)", []).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES (?1, 'i', 'r.pdf', 'application/pdf', 1, 0, 0)",
+            [&id],
+        )
+        .unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        assert_eq!(file(&state, &id, 1).await.unwrap_err(), "Not uploaded yet");
+    }
+}

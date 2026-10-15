@@ -1,6 +1,6 @@
+mod cache;
 mod commands;
 mod feed;
-#[cfg_attr(not(test), allow(dead_code))]
 mod files;
 mod settings;
 mod store;
@@ -43,6 +43,7 @@ impl AppState {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             // try_state: a focus event can arrive before setup has managed the state.
             if let (tauri::WindowEvent::Focused(true), Some(state)) = (event, window.try_state::<AppState>()) {
@@ -53,6 +54,7 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db = store::open(&dir.join("notebank.db"))?;
+            files::sweep_staged(&db, &dir)?;
 
             #[cfg(target_os = "macos")]
             let keychain = apple_native_keyring_store::keychain::Store::new()?;
@@ -69,6 +71,12 @@ pub fn run() {
             commands::save_settings,
             commands::list_topics,
             commands::capture,
+            commands::pick_files,
+            commands::stage_attachment_path,
+            commands::stage_attachment_bytes,
+            commands::unstage_attachment,
+            commands::thumbnail,
+            commands::open_attachment,
             commands::list_items,
             commands::sync_status
         ])

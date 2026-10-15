@@ -309,6 +309,11 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
         };
         if result == Ok(true) {
             let _ = app.emit("items-changed", ());
+            let now = chrono::Utc::now().timestamp_micros();
+            crate::cache::prefetch_thumbnails(&state, now).await;
+            if let Err(e) = crate::cache::evict(&state.db.lock().unwrap(), &state.dir, now, crate::cache::FILE_CACHE_BYTES) {
+                eprintln!("cache: eviction failed: {e}");
+            }
         }
         let (status, wait) = outcome(&result, failures);
         set_status(&app, status);
@@ -781,5 +786,32 @@ mod server_tests {
 
         assert_eq!(upload_pending(&a, &server.url, &server.secret).await, Ok(true));
         assert!(flag(&a, "uploaded", &id), "a 410 must stop the retries");
+    }
+
+    #[tokio::test]
+    async fn another_device_gets_the_thumbnail_and_the_exact_file() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "photo");
+        sync(&a).await.unwrap();
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+
+        crate::cache::prefetch_thumbnails(&b, T0).await;
+        let thumb = crate::cache::thumbnail(&b, &id, T0).await.unwrap();
+        assert!(thumb.starts_with(b.dir.join("thumbnails")));
+        assert_eq!(&std::fs::read(&thumb).unwrap()[..2], [0xff, 0xd8], "not a JPEG");
+        let prefetched: i64 = b
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(*) FROM cached_files WHERE kind = 'thumbnail'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(prefetched, 1);
+
+        let full = crate::cache::file(&b, &id, T0).await.unwrap();
+        assert_eq!(full, b.dir.join("files").join(&id).join("pixel.png"));
+        assert_eq!(std::fs::read(full).unwrap(), PIXEL_PNG);
     }
 }
