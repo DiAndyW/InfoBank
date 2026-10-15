@@ -249,3 +249,25 @@ test("a Keychain problem shows in the sidebar", async () => {
   render(<App />);
   expect(await screen.findByText("⚠ Keychain access needed")).toBeInTheDocument();
 });
+
+test("the theme is Warm paper until another is chosen", async () => {
+  backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  expect(screen.getByLabelText("Theme")).toHaveValue("paper");
+  expect(document.documentElement.dataset.theme).toBe("paper");
+});
+
+test("a theme chosen in Settings applies at once and is remembered", async () => {
+  backend(configured);
+  const { unmount } = render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await userEvent.selectOptions(screen.getByLabelText("Theme"), "Notepad");
+  expect(document.documentElement.dataset.theme).toBe("notepad");
+
+  unmount();
+  delete document.documentElement.dataset.theme;
+  render(<App />);
+  await screen.findByText("Nothing here yet.");
+  expect(document.documentElement.dataset.theme).toBe("notepad");
+});

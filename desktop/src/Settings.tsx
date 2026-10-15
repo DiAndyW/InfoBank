@@ -1,13 +1,16 @@
 import { useState, type FormEvent } from "react";
 import { saveSettings, type Settings as SettingsData } from "./api";
+import type { Theme } from "./theme";
 
 type Props = {
   initial: SettingsData;
+  theme: Theme;
+  onThemeChange: (theme: Theme) => void;
   onSaved: () => void;
   onCancel?: () => void;
 };
 
-export default function Settings({ initial, onSaved, onCancel }: Props) {
+export default function Settings({ initial, theme, onThemeChange, onSaved, onCancel }: Props) {
   const [url, setUrl] = useState(initial.server_url ?? "");
   const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +38,13 @@ export default function Settings({ initial, onSaved, onCancel }: Props) {
         <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
       </label>
       {initial.has_secret && secret === "" && url === initial.server_url &&<span className="hint">saved</span>}
+      <label>
+        Theme
+        <select value={theme} onChange={(e) => onThemeChange(e.target.value as Theme)}>
+          <option value="paper">Warm paper</option>
+          <option value="notepad">Notepad</option>
+        </select>
+      </label>
       {error && <p role="alert">{error}</p>}
       <div className="actions">
         {onCancel && (

@@ -8,4 +8,6 @@ afterEach(async () => {
   // Unmounting stops event listeners asynchronously, and they need the mocks.
   await new Promise((resolve) => setTimeout(resolve));
   clearMocks();
+  localStorage.clear();
+  delete document.documentElement.dataset.theme;
 });

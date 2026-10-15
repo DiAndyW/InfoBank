@@ -1,20 +1,25 @@
 :root {
-  --bg: #ffffff;
-  --sidebar-bg: #f4f4f5;
-  --text: #18181b;
-  --muted: #71717a;
-  --border: #e4e4e7;
+  --bg: #fbf9f4;
+  --sidebar-bg: #f1eee6;
+  --text: #24221e;
+  --muted: #76716a;
+  --border: #e3ded2;
   --accent: #2563eb;
-  --selected: #e4e4e7;
+  --selected: #e3ded2;
   --error: #b91c1c;
+  --field-bg: #fffefb;
+  --composer-bg: var(--bg);
+  --button-bg: var(--accent);
+  --button-text: #ffffff;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
   color: var(--text);
   background: var(--bg);
 }
 
+/* Paper follows the system's dark mode; a notepad stays yellow. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="notepad"]) {
     --bg: #18181b;
     --sidebar-bg: #111113;
     --text: #f4f4f5;
@@ -23,12 +28,29 @@
     --accent: #60a5fa;
     --selected: #27272a;
     --error: #f87171;
+    --field-bg: #18181b;
+    --button-text: #18181b;
   }
+}
+
+:root[data-theme="notepad"] {
+  --bg: #fdf5b8;
+  --sidebar-bg: #efe2a0;
+  --text: #1f2a44;
+  --muted: #6b6340;
+  --border: #d8c879;
+  --accent: #1e4fa8;
+  --selected: #e2d285;
+  --error: #a3261b;
+  --field-bg: #fffbe0;
+  --composer-bg: #f8eda6;
+  --button-bg: #1f2a44;
+  --button-text: #fdf5b8;
 }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); }
-button, input, textarea { font: inherit; color: inherit; }
+button, input, textarea, select { font: inherit; color: inherit; }
 
 .app { display: flex; height: 100vh; }
 .sidebar {
@@ -62,14 +84,28 @@ button, input, textarea { font: inherit; color: inherit; }
 .load-error [role="alert"] { color: var(--error); }
 .hint { color: var(--muted); font-size: 12px; }
 
-.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
-.composer textarea { flex: 1; resize: none; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-.composer button, .settings button[type="submit"] { padding: 6px 14px; border: 0; border-radius: 8px; background: var(--accent); color: white; }
+.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--composer-bg); }
+.composer textarea { flex: 1; resize: none; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field-bg); }
+.composer button, .settings button[type="submit"] { padding: 6px 14px; border: 0; border-radius: 8px; background: var(--button-bg); color: var(--button-text); }
 .composer button:disabled { opacity: 0.4; }
 
 .settings { max-width: 420px; margin: 10vh auto; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; }
 .settings label { display: flex; flex-direction: column; gap: 4px; }
-.settings input { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.settings input, .settings select { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field-bg); }
 .settings [role="alert"] { color: var(--error); margin: 0; }
 .settings .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .settings .actions button[type="button"] { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; }
+
+/* Notepad: ruled lines and a red margin that scroll with the Items, and a binding strip along the top. */
+[data-theme="notepad"] .feed { border-top: 18px solid #b3473a; }
+[data-theme="notepad"] .items {
+  padding: 0 24px 0 16px;
+  line-height: 28px;
+  background-attachment: local;
+  background-image:
+    linear-gradient(to right, transparent 84px, #e08a80 84px, #e08a80 85px, transparent 85px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent 27px, #a9c5e3 27px, #a9c5e3 28px);
+}
+[data-theme="notepad"] .day { margin: 0; line-height: 28px; font-weight: 600; letter-spacing: 0.03em; }
+[data-theme="notepad"] .item { padding: 0; gap: 28px; }
+[data-theme="notepad"] .item time { min-width: 56px; }

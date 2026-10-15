@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getSettings, listTopics, syncStatus, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
 import Feed from "./Feed";
 import Settings from "./Settings";
+import { applyTheme, storedTheme } from "./theme";
 
 const STATUS_LABELS: Record<SyncStatus, string> = {
   synced: "● Synced",
@@ -22,6 +23,9 @@ export default function App() {
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<SyncStatus>("synced");
+  const [theme, setTheme] = useState(storedTheme);
+
+  useEffect(() => applyTheme(theme), [theme]);
 
   useEffect(() => {
     const unlisten = listen<SyncStatus>("sync-status", (e) => setStatus(e.payload));
@@ -60,6 +64,8 @@ export default function App() {
     return (
       <Settings
         initial={settings}
+        theme={theme}
+        onThemeChange={setTheme}
         onSaved={() => {
           setEditing(false);
           load();
