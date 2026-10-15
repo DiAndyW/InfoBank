@@ -4,6 +4,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Deserialize;
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::AppState;
 
 pub const POLL_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(300);
@@ -197,6 +200,51 @@ pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client:
         if !page.has_more {
             return Ok(changed);
         }
+    }
+}
+
+/// The background loop: one cycle, then wait for a wake-up, the poll interval or the backoff.
+pub async fn run(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let client = client();
+    let mut failures = 0;
+    loop {
+        let pending: bool = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT EXISTS (SELECT 1 FROM outbox)", [], |r| r.get(0))
+            .unwrap_or(false);
+        if pending {
+            set_status(&app, "syncing");
+        }
+        let result = cycle(&state.db, &state.secret, &client).await;
+        failures = if let Err(SyncError::Failed(e)) = &result {
+            eprintln!("sync: {e}");
+            failures + 1
+        } else {
+            0
+        };
+        if result == Ok(true) {
+            let _ = app.emit("items-changed", ());
+        }
+        let (status, wait) = outcome(&result, failures);
+        set_status(&app, status);
+        match wait {
+            Some(d) => {
+                let _ = tokio::time::timeout(d, state.wake.notified()).await;
+            }
+            None => state.settings_saved.notified().await,
+        }
+    }
+}
+
+fn set_status(app: &AppHandle, status: &'static str) {
+    let state = app.state::<AppState>();
+    let mut current = state.status.lock().unwrap();
+    if *current != status {
+        *current = status;
+        let _ = app.emit("sync-status", status);
     }
 }
 
