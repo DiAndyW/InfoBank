@@ -1,3 +1,4 @@
+use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -20,7 +21,6 @@ pub struct Page {
     topics: Vec<PulledTopic>,
     tombstones: Vec<String>,
     cursor: i64,
-    #[allow(dead_code)]
     has_more: bool,
 }
 
@@ -109,6 +109,94 @@ pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str
         Err(SyncError::Failed(_)) => ("offline", Some(Duration::from_secs(2u64.saturating_pow(failures)).min(MAX_BACKOFF))),
         Err(SyncError::Unauthorized) => ("unauthorized", None),
         Err(SyncError::NotConfigured) => ("not_configured", None),
+    }
+}
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+// The Server's per-push op limit.
+const PUSH_BATCH: i64 = 500;
+
+pub fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        // A redirect must not carry the secret to another host.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the HTTP client builds")
+}
+
+#[derive(Deserialize)]
+struct PushResponse {
+    results: Vec<PushResult>,
+}
+
+#[derive(Deserialize)]
+struct PushResult {
+    op_id: String,
+    status: String,
+    reason: Option<String>,
+}
+
+async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
+    let res = req.bearer_auth(token).send().await.map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
+    match res.status() {
+        s if s.is_success() => Ok(res),
+        reqwest::StatusCode::UNAUTHORIZED => Err(SyncError::Unauthorized),
+        s => Err(SyncError::Failed(format!("the Server answered {s}"))),
+    }
+}
+
+fn failed(e: impl std::fmt::Display) -> SyncError {
+    SyncError::Failed(e.to_string())
+}
+
+/// Pushes the whole outbox, then pulls until caught up. True if anything was pushed or pulled.
+pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client: &reqwest::Client) -> Result<bool, SyncError> {
+    let (url, device_id): (Option<String>, String) = db
+        .lock()
+        .unwrap()
+        .query_row("SELECT server_url, device_id FROM device", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(failed)?;
+    let url = url.ok_or(SyncError::NotConfigured)?;
+    let token = match secret.get_password() {
+        Ok(t) => t,
+        Err(keyring_core::Error::NoEntry) => return Err(SyncError::NotConfigured),
+        Err(e) => return Err(SyncError::Failed(format!("couldn't read the keychain: {e}"))),
+    };
+
+    let mut changed = false;
+    loop {
+        let batch: Vec<(i64, String)> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare("SELECT seq, op FROM outbox ORDER BY seq LIMIT ?1").map_err(failed)?;
+            stmt.query_map([PUSH_BATCH], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(failed)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(failed)?
+        };
+        let Some(&(last_seq, _)) = batch.last() else { break };
+        let ops: Vec<serde_json::Value> =
+            batch.iter().map(|(_, op)| serde_json::from_str(op)).collect::<Result<_, _>>().map_err(failed)?;
+        let body = serde_json::json!({"device_id": device_id, "ops": ops});
+        let res = send(client.post(format!("{url}/sync/push")).json(&body), &token).await?;
+        let res: PushResponse = res.json().await.map_err(failed)?;
+        for r in res.results.iter().filter(|r| r.status == "rejected") {
+            eprintln!("sync: op {} rejected: {}", r.op_id, r.reason.as_deref().unwrap_or("no reason"));
+        }
+        // Every op in the batch got an answer, so all of them leave the outbox; pull brings the Server's version.
+        db.lock().unwrap().execute("DELETE FROM outbox WHERE seq <= ?1", [last_seq]).map_err(failed)?;
+        changed = true;
+    }
+
+    loop {
+        let cursor: i64 =
+            db.lock().unwrap().query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).map_err(failed)?;
+        let res = send(client.get(format!("{url}/sync/pull?cursor={cursor}")), &token).await?;
+        let page: Page = res.json().await.map_err(failed)?;
+        changed |= apply_pull(&db.lock().unwrap(), &page).map_err(failed)?;
+        if !page.has_more {
+            return Ok(changed);
+        }
     }
 }
 
@@ -219,5 +307,203 @@ mod tests {
         // A rejected secret waits for Settings: retrying would trip the Server's rate limit.
         assert_eq!(outcome(&Err(SyncError::Unauthorized), 0), ("unauthorized", None));
         assert_eq!(outcome(&Err(SyncError::NotConfigured), 0), ("not_configured", None));
+    }
+}
+
+#[cfg(test)]
+mod server_tests {
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::sync::{Mutex, OnceLock};
+
+    use keyring_core::api::CredentialStoreApi;
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::feed::{self, View};
+
+    // In the past, so the Server's cap on future timestamps never applies.
+    const T0: i64 = 1_760_000_000_000_000;
+
+    fn server_binary() -> &'static Path {
+        static BIN: OnceLock<PathBuf> = OnceLock::new();
+        BIN.get_or_init(|| {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let bin = manifest.join("target/test-server/notebank-server");
+            let ok = Command::new("go")
+                .args(["build", "-o"])
+                .arg(&bin)
+                .arg("./cmd/notebank-server")
+                .current_dir(manifest.join("../../server"))
+                .status()
+                .expect("run go build (is Go installed?)")
+                .success();
+            assert!(ok, "go build of the Server failed");
+            bin
+        })
+    }
+
+    fn admin_url() -> String {
+        std::env::var("NOTEBANK_TEST_ADMIN_URL").unwrap_or_else(|_| "postgres:///postgres".into())
+    }
+
+    fn psql(sql: &str) -> bool {
+        Command::new("psql")
+            .arg(admin_url())
+            .args(["-v", "ON_ERROR_STOP=1", "-qc", sql])
+            .stdout(Stdio::null())
+            .status()
+            .expect("run psql (is Postgres installed?)")
+            .success()
+    }
+
+    /// A real Server on its own database and port. It isn't running until `start`.
+    struct TestServer {
+        db_name: String,
+        port: u16,
+        url: String,
+        secret: String,
+        attachments: tempfile::TempDir,
+        child: Option<Child>,
+    }
+
+    impl TestServer {
+        fn new() -> Self {
+            let db_name = format!("notebank_desktop_test_{}", uuid::Uuid::new_v4().simple());
+            assert!(psql(&format!("CREATE DATABASE {db_name}")), "create test database (is Postgres running?)");
+            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            TestServer {
+                db_name,
+                port,
+                url: format!("http://127.0.0.1:{port}"),
+                secret: "test-secret-that-is-at-least-32-characters".into(),
+                attachments: tempfile::tempdir().unwrap(),
+                child: None,
+            }
+        }
+
+        fn start(&mut self) {
+            let mut db_url = url::Url::parse(&admin_url()).unwrap();
+            db_url.set_path(&format!("/{}", self.db_name));
+            let child = Command::new(server_binary())
+                .env("NOTEBANK_DATABASE_URL", db_url.as_str())
+                .env("NOTEBANK_SECRET", &self.secret)
+                .env("NOTEBANK_LISTEN_ADDR", format!("127.0.0.1:{}", self.port))
+                .env("NOTEBANK_ATTACHMENT_DIR", self.attachments.path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            self.child = Some(child);
+            // The Server migrates before it listens, so an open port means it's ready.
+            for _ in 0..100 {
+                if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            panic!("the Server didn't start listening on port {}", self.port);
+        }
+    }
+
+    impl Drop for TestServer {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.child {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            psql(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.db_name));
+        }
+    }
+
+    struct Device {
+        _dir: tempfile::TempDir,
+        db: Mutex<Connection>,
+        secret: keyring_core::Entry,
+    }
+
+    fn device(server: &TestServer, secret: &str) -> Device {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        conn.execute("UPDATE device SET server_url = ?1", [&server.url]).unwrap();
+        let entry = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        entry.set_password(secret).unwrap();
+        Device { _dir: dir, db: Mutex::new(conn), secret: entry }
+    }
+
+    async fn sync(d: &Device) -> Result<bool, SyncError> {
+        cycle(&d.db, &d.secret, &client()).await
+    }
+
+    fn texts(d: &Device) -> Vec<String> {
+        let items = feed::list_items(&d.db.lock().unwrap(), &View::All, None).unwrap();
+        items.into_iter().map(|i| i.text.unwrap()).collect()
+    }
+
+    fn count(d: &Device, table: &str) -> i64 {
+        d.db.lock().unwrap().query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_offline_capture_reaches_another_device_in_capture_time_order() {
+        let mut server = TestServer::new();
+        let a = device(&server, &server.secret);
+        let b = device(&server, &server.secret);
+
+        feed::capture(&a.db.lock().unwrap(), "captured offline", T0).unwrap();
+        assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
+        assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
+
+        server.start();
+        feed::capture(&b.db.lock().unwrap(), "captured later", T0 + 1_000_000).unwrap();
+        assert_eq!(sync(&b).await, Ok(true));
+        assert_eq!(sync(&a).await, Ok(true));
+        assert_eq!(count(&a, "outbox"), 0);
+        assert!(feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap().iter().all(|i| !i.pending));
+
+        sync(&b).await.unwrap();
+        assert_eq!(texts(&b), ["captured later", "captured offline"]);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_push_changes_nothing() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        feed::capture(&a.db.lock().unwrap(), "once", T0).unwrap();
+        let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
+        sync(&a).await.unwrap();
+        a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
+        sync(&a).await.unwrap();
+
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        assert_eq!(texts(&b), ["once"]);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_secret_is_unauthorized() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, "not-the-secret");
+        feed::capture(&a.db.lock().unwrap(), "kept", T0).unwrap();
+        assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
+        assert_eq!(count(&a, "outbox"), 1);
+    }
+
+    #[tokio::test]
+    async fn more_than_a_page_pushes_and_pulls_in_batches() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        for i in 0..501 {
+            feed::capture(&a.db.lock().unwrap(), &format!("item {i}"), T0 + i).unwrap();
+        }
+        sync(&a).await.unwrap();
+        assert_eq!(count(&a, "outbox"), 0);
+
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        assert_eq!(count(&b, "items"), 501);
     }
 }
