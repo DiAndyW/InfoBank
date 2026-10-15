@@ -71,7 +71,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .day { text-align: center; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
 .item { display: flex; gap: 10px; align-items: baseline; padding: 3px 0; }
 .item time { color: var(--muted); font-size: 12px; min-width: 64px; }
-.item .text { margin: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.item .text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .item a { color: var(--accent); }
 .pending { color: var(--muted); }
 .composer-error { color: var(--error); margin: 0 12px; }
@@ -106,3 +106,23 @@ button, input, textarea, select { font: inherit; color: inherit; }
 [data-theme="notepad"] .day { margin: 0; line-height: 28px; font-weight: 600; letter-spacing: 0.03em; }
 [data-theme="notepad"] .item { padding: 0; gap: 28px; }
 [data-theme="notepad"] .item time { min-width: 56px; }
+
+.composer { flex-direction: column; align-items: stretch; }
+.composer-row { display: flex; gap: 8px; }
+.composer .attach { background: none; color: var(--muted); padding: 6px 8px; }
+.icon { width: 16px; height: 16px; flex: none; }
+.staged { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field-bg); color: inherit; font: inherit; max-width: 320px; }
+.chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip .size, .chip .note, .thumb .note { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.chip button { background: none; border: 0; color: var(--muted); padding: 0 2px; cursor: pointer; }
+.item .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.attachments { display: flex; flex-wrap: wrap; gap: 8px; }
+.thumb { position: relative; height: 160px; min-width: 120px; padding: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--sidebar-bg); cursor: pointer; }
+.thumb img { height: 100%; width: auto; display: block; }
+.thumb .placeholder { display: flex; align-items: center; justify-content: center; height: 100%; padding: 8px; color: var(--muted); font-size: 12px; }
+.thumb .note { position: absolute; left: 6px; bottom: 6px; background: var(--bg); padding: 1px 6px; border-radius: 6px; }
+.drop-overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 80%, transparent); border: 2px dashed var(--accent); font-size: 18px; color: var(--accent); pointer-events: none; z-index: 10; }
+.attachment { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.refusal { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.refusal button { padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--field-bg); color: inherit; font: inherit; cursor: pointer; }

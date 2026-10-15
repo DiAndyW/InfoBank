@@ -1,9 +1,11 @@
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::io::AsyncReadExt;
 
 use crate::AppState;
 
@@ -127,16 +129,15 @@ pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str
 }
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-// Uploads and downloads can be 100 MB, so the client has no total limit; push and pull set HTTP_TIMEOUT per request.
+// 100 MB transfers get no total limit, only IDLE_TIMEOUT; reqwest's read_timeout would also cap sending an upload's body.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 // The Server's per-push op limit.
 const PUSH_BATCH: i64 = 500;
 
 pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(IDLE_TIMEOUT)
         // A redirect must not carry the secret to another host.
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -208,9 +209,15 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
         changed = true;
     }
     changed |= pull(state, &url, &token).await?;
-    if upload_pending(state, &url, &token).await? {
-        changed = true;
-        pull(state, &url, &token).await?;
+    match upload_pending(state, &url, &token).await {
+        Ok(false) => {}
+        Ok(true) => {
+            changed = true;
+            let _ = pull(state, &url, &token).await;
+        }
+        Err(e) if !changed => return Err(e),
+        // The Feed must still hear about what was pulled; the next cycle retries and reports the error.
+        Err(_) => {}
     }
     Ok(changed)
 }
@@ -254,15 +261,42 @@ pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<
             state.skipped_uploads.lock().unwrap().insert(id);
             continue;
         };
-        let res = state
+        let moved = Arc::new(Mutex::new(tokio::time::Instant::now()));
+        let marker = moved.clone();
+        let body = futures_util::stream::unfold(file, move |mut file| {
+            let marker = marker.clone();
+            async move {
+                let mut chunk = vec![0; 64 * 1024];
+                let read = file.read(&mut chunk).await;
+                *marker.lock().unwrap() = tokio::time::Instant::now();
+                match read {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        chunk.truncate(n);
+                        Some((Ok(chunk), file))
+                    }
+                    Err(e) => Some((Err(e), file)),
+                }
+            }
+        });
+        let send = state
             .http
             .put(format!("{url}/attachments/{id}"))
             .bearer_auth(token)
             .header(reqwest::header::CONTENT_LENGTH, size_bytes)
-            .body(file)
-            .send()
-            .await
-            .map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
+            .body(reqwest::Body::wrap_stream(body))
+            .send();
+        tokio::pin!(send);
+        let res = loop {
+            let idle_until = *moved.lock().unwrap() + IDLE_TIMEOUT;
+            match tokio::time::timeout_at(idle_until, &mut send).await {
+                Ok(res) => break res.map_err(|e| SyncError::Failed(e.without_url().to_string()))?,
+                Err(_) if *moved.lock().unwrap() + IDLE_TIMEOUT <= tokio::time::Instant::now() => {
+                    return Err(SyncError::Failed(format!("attachment {id}: the upload stalled")));
+                }
+                Err(_) => {}
+            }
+        };
         match res.status() {
             // 410: removed on the Server, so it needs nothing more and the local file can be evicted.
             reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::GONE => {
@@ -563,9 +597,13 @@ mod server_tests {
     }
 
     fn device(server: &TestServer, secret: &str) -> Device {
+        device_at(&server.url, secret)
+    }
+
+    fn device_at(url: &str, secret: &str) -> Device {
         let dir = tempfile::tempdir().unwrap();
         let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
-        conn.execute("UPDATE device SET server_url = ?1", [&server.url]).unwrap();
+        conn.execute("UPDATE device SET server_url = ?1", [url]).unwrap();
         let entry = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         entry.set_password(secret).unwrap();
         Device { state: AppState::new(conn, entry, dir.path().to_path_buf()), _dir: dir }
@@ -813,5 +851,111 @@ mod server_tests {
         let full = crate::cache::file(&b, &id, T0).await.unwrap();
         assert_eq!(full, b.dir.join("files").join(&id).join("pixel.png"));
         assert_eq!(std::fs::read(full).unwrap(), PIXEL_PNG);
+    }
+
+    #[tokio::test]
+    async fn a_slow_upload_that_keeps_moving_finishes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap().to_lowercase();
+            let len: usize = head.split("content-length: ").nth(1).unwrap().split("\r\n").next().unwrap().parse().unwrap();
+            let (mut got, mut buf) = (0, vec![0; 512 * 1024]);
+            while got < len {
+                got += s.read(&mut buf).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            s.write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n").unwrap();
+        });
+        let a = device_at(&url, "s");
+        let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+
+        let started = std::time::Instant::now();
+        assert_eq!(upload_pending(&a, &url, "s").await, Ok(true));
+        assert!(started.elapsed() > IDLE_TIMEOUT, "the upload was too fast to prove anything");
+    }
+
+    /// A stand-in Server that reads one request's headers, sends `reply`, then goes silent.
+    fn stall(reply: &'static [u8]) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                std::io::Read::read_exact(&mut s, &mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            std::io::Write::write_all(&mut s, reply).unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_stalled_upload_fails() {
+        let url = stall(b"");
+        let a = device_at(&url, "s");
+        let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+        let res = tokio::time::timeout(IDLE_TIMEOUT * 3, upload_pending(&a, &url, "s")).await.expect("never gave up");
+        assert!(matches!(res, Err(SyncError::Failed(e)) if e.contains("stalled")));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_download_fails() {
+        let url = stall(b"HTTP/1.1 200 OK\r\ncontent-length: 1000\r\n\r\npartial");
+        let b = device_at(&url, "s");
+        let id = uuid::Uuid::new_v4().to_string();
+        b.db.lock().unwrap().execute_batch(&format!(
+            "INSERT INTO items (id, capture_time) VALUES ('i', 1);
+             INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES ('{id}', 'i', 'r.pdf', 'application/pdf', 1000, 1, 0);"
+        )).unwrap();
+        let res = tokio::time::timeout(IDLE_TIMEOUT * 3, crate::cache::file(&b, &id, T0)).await.expect("never gave up");
+        assert_eq!(res.unwrap_err(), "Can't download while offline");
+    }
+
+    #[tokio::test]
+    async fn a_file_with_a_255_byte_name_downloads() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let name = format!("{}.png", "x".repeat(251));
+        let id = crate::files::stage_bytes(&a.dir, &name, PIXEL_PNG).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+        sync(&a).await.unwrap();
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+
+        let full = crate::cache::file(&b, &id, T0).await.unwrap();
+        assert_eq!(full.file_name().unwrap().len(), 255);
+        assert_eq!(std::fs::read(full).unwrap(), PIXEL_PNG);
+    }
+
+    #[tokio::test]
+    async fn pulled_items_are_reported_even_when_an_upload_fails() {
+        let mut server = TestServer::new();
+        server.start();
+        let b = device(&server, &server.secret);
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], T0).unwrap();
+        sync(&b).await.unwrap();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "photo");
+        std::fs::File::options().write(true).open(a.dir.join("files").join(&id).join("pixel.png")).unwrap().set_len(10).unwrap();
+
+        assert_eq!(sync(&a).await, Ok(true));
+        assert!(texts(&a).contains(&"from b".to_string()));
+        assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))), "the failed upload was never reported");
     }
 }

@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -43,18 +41,13 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<&'static str, Str
 }
 
 #[tauri::command]
-pub async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
+pub async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<files::StagedFiles, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_files(move |picked| {
         let _ = tx.send(picked.unwrap_or_default());
     });
-    let picked = rx.await.map_err(|e| e.to_string())?;
-    picked.into_iter().map(|p| p.into_path().map(|p| p.to_string_lossy().into_owned()).map_err(|e| e.to_string())).collect()
-}
-
-#[tauri::command]
-pub async fn stage_attachment_path(state: State<'_, AppState>, path: String) -> Result<files::Staged, String> {
-    files::stage_path(&state.dir, Path::new(&path))
+    let paths = rx.await.map_err(|e| e.to_string())?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
+    Ok(files::stage_paths(&state.dir, &paths.map_err(|e| e.to_string())?))
 }
 
 #[tauri::command]
@@ -91,5 +84,15 @@ pub async fn thumbnail(state: State<'_, AppState>, id: String) -> Result<String,
 #[tauri::command]
 pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if files::runnable(&name) {
+        return Err(format!("NoteBank won't open {name} because it can run code"));
+    }
     app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let path = cache::file(&state, &id, now_us()).await?;
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }

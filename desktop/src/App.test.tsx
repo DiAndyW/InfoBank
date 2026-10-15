@@ -1,10 +1,10 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
-import { mockIPC } from "@tauri-apps/api/mocks";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { expect, test, vi } from "vitest";
 import App from "./App";
-import type { FeedItem, Settings, SyncStatus, Topic } from "./api";
+import { MAX_ATTACHMENT_BYTES, type FeedAttachment, type FeedItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
 
 type Options = {
   topics?: Topic[];
@@ -12,10 +12,17 @@ type Options = {
   captureError?: string;
   items?: (args: any) => FeedItem[] | Promise<FeedItem[]>;
   status?: SyncStatus;
+  picked?: StagedFiles;
+  staged?: Staged[];
+  thumbnail?: string;
+  openError?: string;
+  openHang?: boolean;
 };
 
 function backend(settings: Settings, opts: Options = {}) {
   const calls: { cmd: string; args: any }[] = [];
+  mockWindows("main");
+  mockConvertFileSrc("macos");
   mockIPC(
     (cmd, args) => {
       calls.push({ cmd, args });
@@ -31,6 +38,23 @@ function backend(settings: Settings, opts: Options = {}) {
         if (opts.captureError) throw opts.captureError;
         return null;
       }
+      if (cmd === "pick_files") return opts.picked ?? { staged: [], errors: [] };
+      if (cmd === "stage_attachment_bytes") {
+        const s = opts.staged?.shift();
+        if (!s) throw "nothing to stage";
+        return s;
+      }
+      if (cmd === "unstage_attachment") return null;
+      if (cmd === "thumbnail") {
+        if (!opts.thumbnail) throw "Can't download while offline";
+        return opts.thumbnail;
+      }
+      if (cmd === "reveal_attachment") return null;
+      if (cmd === "open_attachment") {
+        if (opts.openHang) return new Promise(() => {});
+        if (opts.openError) throw opts.openError;
+        return null;
+      }
       if (cmd === "plugin:opener|open_url") return null;
     },
     { shouldMockEvents: true },
@@ -39,12 +63,19 @@ function backend(settings: Settings, opts: Options = {}) {
 }
 
 const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo - 1, d, h, mi).getTime() * 1000;
-const feedItem = (id: string, text: string, capture_time_us: number, pending = false): FeedItem => ({
+const feedItem = (
+  id: string,
+  text: string,
+  capture_time_us: number,
+  pending = false,
+  attachments: FeedAttachment[] = [],
+): FeedItem => ({
   id,
   text,
   capture_time_us,
   topic_id: null,
   pending,
+  attachments,
 });
 
 const configured = { server_url: "https://notes.example.com", has_secret: true };
@@ -96,6 +127,7 @@ test("a save error is shown inline", async () => {
 
 test("a load failure is shown and can be retried", async () => {
   let failing = true;
+  mockWindows("main");
   mockIPC(
     (cmd) => {
       if (cmd === "get_settings") {
@@ -136,7 +168,7 @@ test("Enter captures and Shift+Enter adds a line", async () => {
   expect(box).toHaveValue("a\nb");
   expect(calls.some((c) => c.cmd === "capture")).toBe(false);
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb" } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [] } });
   expect(box).toHaveValue("");
 });
 
@@ -283,4 +315,112 @@ test("dark is a theme of its own, not the system's setting", async () => {
   render(<App />);
   await screen.findByText("Nothing here yet.");
   expect(document.documentElement.dataset.theme).toBe("blackboard");
+});
+
+const scan: Staged = { id: "s1", filename: "scan.png", size_bytes: 1_200_000, mime_type: "image/png" };
+const report: FeedAttachment = { id: "a1", filename: "report.pdf", mime_type: "application/pdf", size_bytes: 2_400_000, has_thumbnail: false, runnable: false };
+const photo: FeedAttachment = { id: "a2", filename: "photo.jpg", mime_type: "image/jpeg", size_bytes: 900_000, has_thumbnail: true, runnable: false };
+const installer: FeedAttachment = { id: "a3", filename: "setup.command", mime_type: "application/octet-stream", size_bytes: 300, has_thumbnail: false, runnable: true };
+
+test("picked files become chips, and one can be removed", async () => {
+  const calls = backend(configured, { picked: { staged: [scan], errors: ["big.bin is over 100 MB"] } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
+  expect(await screen.findByText("scan.png")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("big.bin is over 100 MB");
+  await userEvent.click(screen.getByRole("button", { name: "Remove scan.png" }));
+  expect(screen.queryByText("scan.png")).not.toBeInTheDocument();
+  expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
+});
+
+test("an Attachment alone can be sent", async () => {
+  const calls = backend(configured, { picked: { staged: [scan], errors: [] } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
+  await screen.findByText("scan.png");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"] } });
+  await vi.waitFor(() => expect(screen.queryByText("scan.png")).not.toBeInTheDocument());
+});
+
+test("a pasted image is staged from its bytes, and an oversized one is refused", async () => {
+  const calls = backend(configured, { staged: [scan] });
+  render(<App />);
+  const box = await screen.findByLabelText("New Item");
+  const image = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+  fireEvent.paste(box, { clipboardData: { files: [image], getData: () => "" } });
+  expect(await screen.findByText("scan.png")).toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "stage_attachment_bytes")).toBe(true);
+
+  const huge = { name: "huge.mov", size: MAX_ATTACHMENT_BYTES + 1, arrayBuffer: async () => new ArrayBuffer(0) };
+  fireEvent.paste(box, { clipboardData: { files: [huge], getData: () => "" } });
+  expect(await screen.findByRole("alert")).toHaveTextContent("huge.mov is over 100 MB");
+});
+
+test("files staged from a drop become chips, and failures are named", async () => {
+  backend(configured);
+  render(<App />);
+  await screen.findByLabelText("New Item");
+  await act(() => emit("attachments-staged", { staged: [scan], errors: ["Photos isn't a file"] }));
+  expect(await screen.findByText("scan.png")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Photos isn't a file");
+});
+
+test("a file chip opens the file, and says why it can't", async () => {
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "lab", at(2026, 10, 14, 9, 41), false, [report])],
+    openError: "Can't download while offline",
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open report.pdf" }));
+  expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: "a1" } });
+  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(screen.getByText("2.3 MB")).toBeInTheDocument();
+});
+
+test("an image shows its filename until the thumbnail arrives", async () => {
+  backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [photo])] });
+  render(<App />);
+  expect(await screen.findByText("photo.jpg")).toBeInTheDocument();
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+});
+
+test("an image with a thumbnail shows it from local storage", async () => {
+  backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [photo])],
+    thumbnail: "/data/thumbnails/a2.jpg",
+  });
+  render(<App />);
+  const img = await screen.findByRole("img", { name: "photo.jpg" });
+  expect(img).toHaveAttribute("src", expect.stringContaining("asset://localhost/"));
+});
+
+test("a stored theme that isn't one falls back to Warm paper", async () => {
+  localStorage.setItem("theme", "toString");
+  backend(configured);
+  render(<App />);
+  await screen.findByText("Nothing here yet.");
+  expect(document.documentElement.dataset.theme).toBe("paper");
+});
+
+test("a file that can run code is never opened, only shown in Finder", async () => {
+  const calls = backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [installer])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open setup.command" }));
+  expect(screen.getByText("NoteBank won't open setup.command because it can run code.")).toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "open_attachment")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Show in Finder" }));
+  expect(calls).toContainEqual({ cmd: "reveal_attachment", args: { id: "a3" } });
+});
+
+test("a second click while downloading is ignored", async () => {
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [report])],
+    openHang: true,
+  });
+  render(<App />);
+  const chip = await screen.findByRole("button", { name: "Open report.pdf" });
+  await userEvent.click(chip);
+  await userEvent.click(chip);
+  expect(calls.filter((c) => c.cmd === "open_attachment")).toHaveLength(1);
 });

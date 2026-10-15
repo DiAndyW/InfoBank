@@ -27,7 +27,8 @@ fn cached(state: &AppState, id: &str, kind: &str, now_us: i64) -> Result<Option<
 
 async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str, now_us: i64) -> Result<PathBuf, String> {
     let (url, token) = sync::server_access(state).map_err(|_| OFFLINE.to_string())?;
-    let mut res = state.http.get(format!("{url}{route}")).bearer_auth(token).send().await.map_err(|_| OFFLINE.to_string())?;
+    let send = state.http.get(format!("{url}{route}")).bearer_auth(token).send();
+    let mut res = tokio::time::timeout(sync::IDLE_TIMEOUT, send).await.ok().and_then(Result::ok).ok_or(OFFLINE)?;
     match res.status() {
         s if s.is_success() => {}
         reqwest::StatusCode::NOT_FOUND => return Err("Not on the Server yet".into()),
@@ -35,12 +36,14 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
         s => return Err(format!("The Server answered {s}")),
     }
     let target = state.dir.join(rel);
-    let partial = PathBuf::from(format!("{}.partial", target.display()));
+    let partial = target.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
     let written: Result<(), String> = async {
         let save = |_| "Couldn't save the download".to_string();
         tokio::fs::create_dir_all(target.parent().expect("rel has a directory")).await.map_err(save)?;
         let mut out = tokio::fs::File::create(&partial).await.map_err(save)?;
-        while let Some(chunk) = res.chunk().await.map_err(|_| OFFLINE.to_string())? {
+        while let Some(chunk) =
+            tokio::time::timeout(sync::IDLE_TIMEOUT, res.chunk()).await.ok().and_then(Result::ok).ok_or(OFFLINE)?
+        {
             out.write_all(&chunk).await.map_err(save)?;
         }
         out.flush().await.map_err(save)?;

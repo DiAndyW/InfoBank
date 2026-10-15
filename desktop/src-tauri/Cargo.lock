@@ -2387,6 +2387,7 @@ version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
  "chrono",
+ "futures-util",
  "keyring-core",
  "mime_guess",
  "percent-encoding",

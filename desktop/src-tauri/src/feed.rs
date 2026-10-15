@@ -26,6 +26,7 @@ pub struct FeedAttachment {
     pub mime_type: String,
     pub size_bytes: i64,
     pub has_thumbnail: bool,
+    pub runnable: bool,
 }
 
 #[derive(Deserialize)]
@@ -144,12 +145,14 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>) -> ru
     while let Some(r) = rows.next()? {
         let item_id: String = r.get(0)?;
         if let Some(item) = items.iter_mut().find(|i| i.id == item_id) {
+            let filename: String = r.get(2)?;
             item.attachments.push(FeedAttachment {
                 id: r.get(1)?,
-                filename: r.get(2)?,
                 mime_type: r.get(3)?,
                 size_bytes: r.get(4)?,
                 has_thumbnail: r.get(5)?,
+                runnable: files::runnable(&filename),
+                filename,
             });
         }
     }
@@ -304,5 +307,14 @@ mod tests {
         assert!(list_items(&conn, &View::All, None).unwrap()[0].pending, "the file isn't on the Server yet");
         conn.execute("UPDATE attachments SET uploaded = 1", []).unwrap();
         assert!(!list_items(&conn, &View::All, None).unwrap()[0].pending);
+    }
+
+    #[test]
+    fn the_feed_marks_files_that_can_run_code() {
+        let (d, conn) = fresh();
+        let ids = ["setup.command", "report.pdf"].map(|n| crate::files::stage_bytes(d.path(), n, b"x").unwrap().id);
+        capture(&conn, d.path(), "", &ids, 1).unwrap();
+        let item = &list_items(&conn, &View::All, None).unwrap()[0];
+        assert_eq!(item.attachments.iter().map(|a| a.runnable).collect::<Vec<_>>(), [true, false]);
     }
 }

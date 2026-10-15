@@ -6,7 +6,7 @@ use serde::Serialize;
 pub const MAX_ATTACHMENT_BYTES: u64 = 100 << 20;
 const MAX_FILENAME_BYTES: usize = 255;
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct Staged {
     pub id: String,
     pub filename: String,
@@ -45,9 +45,42 @@ fn place(dir: &Path, name: &str, size_bytes: u64, write: impl FnOnce(&Path) -> s
     Ok(Staged { mime_type: mime_type(&filename), id, filename, size_bytes })
 }
 
-pub fn stage_path(dir: &Path, src: &Path) -> Result<Staged, String> {
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct StagedFiles {
+    pub staged: Vec<Staged>,
+    pub errors: Vec<String>,
+}
+
+pub fn stage_paths(dir: &Path, paths: &[std::path::PathBuf]) -> StagedFiles {
+    let mut out = StagedFiles::default();
+    for path in paths {
+        match stage_path(dir, path) {
+            Ok(s) => out.staged.push(s),
+            Err(e) => out.errors.push(e),
+        }
+    }
+    out
+}
+
+const RUNNABLE_EXTENSIONS: &[&str] = &[
+    "app", "command", "tool", "terminal", "pkg", "mpkg", "workflow", "action", "fileloc", "jar", "sh", "zsh", "bash",
+    "exe", "com", "scr", "pif", "bat", "cmd", "msi", "msp", "msix", "appx", "ps1", "vbs", "vbe", "js", "jse", "wsf",
+    "wsh", "hta", "lnk", "cpl", "reg", "url", "appref-ms", "py", "pyw",
+];
+
+pub fn runnable(filename: &str) -> bool {
+    // Windows ignores trailing dots and spaces, so "run.exe. " still runs as an .exe.
+    let name = filename.trim_end_matches(['.', ' ']);
+    name.rsplit_once('.').is_some_and(|(_, ext)| RUNNABLE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+fn stage_path(dir: &Path, src: &Path) -> Result<Staged, String> {
     let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let size = std::fs::metadata(src).map_err(|_| format!("Couldn't read {name}"))?.len();
+    let meta = std::fs::metadata(src).map_err(|_| format!("Couldn't read {name}"))?;
+    if !meta.is_file() {
+        return Err(format!("{name} isn't a file"));
+    }
+    let size = meta.len();
     if size > MAX_ATTACHMENT_BYTES {
         return Err(format!("{name} is over 100 MB"));
     }
@@ -202,5 +235,29 @@ mod tests {
         sweep_staged(&conn, d.path()).unwrap();
         assert!(!d.path().join("files").join(&left.id).exists());
         assert!(d.path().join("files").join(&kept.id).exists());
+    }
+
+    #[test]
+    fn staging_a_list_keeps_the_good_files_and_names_the_bad_ones() {
+        let (d, _conn) = fresh();
+        let good = d.path().join("notes.txt");
+        std::fs::write(&good, "hello").unwrap();
+        let folder = d.path().join("Photos");
+        std::fs::create_dir(&folder).unwrap();
+
+        let out = stage_paths(d.path(), &[good, folder, d.path().join("gone.txt")]);
+        assert_eq!(out.staged.iter().map(|s| s.filename.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
+        assert_eq!(out.errors, ["Photos isn't a file", "Couldn't read gone.txt"]);
+        assert_eq!(staged_dirs(d.path()), 1);
+    }
+
+    #[test]
+    fn files_that_can_run_code_are_recognised() {
+        for name in ["setup.command", "Tool.APP", "install.pkg", "run.exe", "run.exe. ", "a.bat", "x.ps1", "s.lnk", "go.sh"] {
+            assert!(runnable(name), "{name:?} not runnable");
+        }
+        for name in ["report.pdf", "photo.jpg", "notes", "exe", "command.txt"] {
+            assert!(!runnable(name), "{name:?} runnable");
+        }
     }
 }

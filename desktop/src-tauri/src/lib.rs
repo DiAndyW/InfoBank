@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use keyring_core::api::CredentialStoreApi;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 pub struct AppState {
     db: Mutex<rusqlite::Connection>,
@@ -46,8 +46,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| {
             // try_state: a focus event can arrive before setup has managed the state.
-            if let (tauri::WindowEvent::Focused(true), Some(state)) = (event, window.try_state::<AppState>()) {
-                state.wake.notify_one();
+            let Some(state) = window.try_state::<AppState>() else { return };
+            match event {
+                tauri::WindowEvent::Focused(true) => state.wake.notify_one(),
+                tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                    let (window, dir, paths) = (window.clone(), state.dir.clone(), paths.clone());
+                    tauri::async_runtime::spawn_blocking(move || {
+                        let _ = window.emit("attachments-staged", files::stage_paths(&dir, &paths));
+                    });
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -72,11 +80,11 @@ pub fn run() {
             commands::list_topics,
             commands::capture,
             commands::pick_files,
-            commands::stage_attachment_path,
             commands::stage_attachment_bytes,
             commands::unstage_attachment,
             commands::thumbnail,
             commands::open_attachment,
+            commands::reveal_attachment,
             commands::list_items,
             commands::sync_status
         ])

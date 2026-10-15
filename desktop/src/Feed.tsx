@@ -1,14 +1,14 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { capture, listItems, type FeedItem, type View } from "./api";
+import { listItems, type FeedItem, type View } from "./api";
+import { Attachments } from "./attachments";
+import Composer from "./Composer";
 import { linkify } from "./links";
 
 export default function Feed({ view }: { view: View }) {
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const pages = useRef(1);
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
@@ -62,27 +62,6 @@ export default function Feed({ view }: { view: View }) {
     }
   }
 
-  async function submit(e?: FormEvent) {
-    e?.preventDefault();
-    if (draft.trim() === "") return;
-    try {
-      await capture(draft);
-      setDraft("");
-      setError(null);
-      atBottom.current = true;
-      await load(pages.current);
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      submit();
-    }
-  }
-
   const shown = [...items].reverse();
   const today = new Date().toDateString();
   return (
@@ -109,28 +88,29 @@ export default function Feed({ view }: { view: View }) {
                 )}
                 <article className="item">
                   <time>{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
-                  <p className="text">
-                    {it.text === null ? (
-                      <span className="hint">Attachment</span>
-                    ) : (
-                      linkify(it.text).map((part, j) =>
-                        typeof part === "string" ? (
-                          part
-                        ) : (
-                          <a
-                            key={j}
-                            href={part.url}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              openUrl(part.url);
-                            }}
-                          >
-                            {part.url}
-                          </a>
-                        ),
-                      )
+                  <div className="body">
+                    {it.text && (
+                      <p className="text">
+                        {linkify(it.text).map((part, j) =>
+                          typeof part === "string" ? (
+                            part
+                          ) : (
+                            <a
+                              key={j}
+                              href={part.url}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                openUrl(part.url);
+                              }}
+                            >
+                              {part.url}
+                            </a>
+                          ),
+                        )}
+                      </p>
                     )}
-                  </p>
+                    {it.attachments.length > 0 && <Attachments list={it.attachments} />}
+                  </div>
                   {it.pending && (
                     <span className="pending" aria-label="Not synced yet" title="Not synced yet">
                       ◌
@@ -142,24 +122,12 @@ export default function Feed({ view }: { view: View }) {
           })
         )}
       </div>
-      {error && (
-        <p role="alert" className="composer-error">
-          {error}
-        </p>
-      )}
-      <form className="composer" onSubmit={submit}>
-        <textarea
-          aria-label="New Item"
-          placeholder="Write something…"
-          rows={2}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-        />
-        <button type="submit" disabled={draft.trim() === ""}>
-          Send
-        </button>
-      </form>
+      <Composer
+        onCaptured={() => {
+          atBottom.current = true;
+          load(pages.current);
+        }}
+      />
     </main>
   );
 }
