@@ -6,6 +6,8 @@ mod settings;
 mod store;
 mod sync;
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use keyring_core::api::CredentialStoreApi;
@@ -14,9 +16,27 @@ use tauri::Manager;
 pub struct AppState {
     db: Mutex<rusqlite::Connection>,
     secret: keyring_core::Entry,
+    dir: PathBuf,
+    http: reqwest::Client,
     wake: tokio::sync::Notify,
     settings_saved: tokio::sync::Notify,
     status: Mutex<&'static str>,
+    skipped_uploads: Mutex<HashSet<String>>,
+}
+
+impl AppState {
+    fn new(db: rusqlite::Connection, secret: keyring_core::Entry, dir: PathBuf) -> Self {
+        AppState {
+            db: Mutex::new(db),
+            secret,
+            dir,
+            http: sync::client(),
+            wake: tokio::sync::Notify::new(),
+            settings_saved: tokio::sync::Notify::new(),
+            status: Mutex::new("synced"),
+            skipped_uploads: Mutex::new(HashSet::new()),
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,13 +60,7 @@ pub fn run() {
             let keychain = windows_native_keyring_store::Store::new()?;
             let secret = keychain.build(&app.config().identifier, "shared-secret", None)?;
 
-            app.manage(AppState {
-                db: Mutex::new(db),
-                secret,
-                wake: tokio::sync::Notify::new(),
-                settings_saved: tokio::sync::Notify::new(),
-                status: Mutex::new("synced"),
-            });
+            app.manage(AppState::new(db, secret, dir));
             tauri::async_runtime::spawn(sync::run(app.handle().clone()));
             Ok(())
         })

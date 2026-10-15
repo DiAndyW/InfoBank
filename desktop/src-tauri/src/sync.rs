@@ -1,4 +1,3 @@
-use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -128,12 +127,16 @@ pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str
 }
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+// Uploads and downloads can be 100 MB, so the client has no total limit; push and pull set HTTP_TIMEOUT per request.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 // The Server's per-push op limit.
 const PUSH_BATCH: i64 = 500;
 
 pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(IDLE_TIMEOUT)
         // A redirect must not carry the secret to another host.
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -165,24 +168,26 @@ fn failed(e: impl std::fmt::Display) -> SyncError {
     SyncError::Failed(e.to_string())
 }
 
-/// Pushes the whole outbox, then pulls until caught up. True if anything was pushed or pulled.
-pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client: &reqwest::Client) -> Result<bool, SyncError> {
-    let (url, device_id): (Option<String>, String) = db
-        .lock()
-        .unwrap()
-        .query_row("SELECT server_url, device_id FROM device", [], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(failed)?;
+pub fn server_access(state: &AppState) -> Result<(String, String), SyncError> {
+    let url: Option<String> =
+        state.db.lock().unwrap().query_row("SELECT server_url FROM device", [], |r| r.get(0)).map_err(failed)?;
     let url = url.ok_or(SyncError::NotConfigured)?;
-    let token = match secret.get_password() {
-        Ok(t) => t,
-        Err(keyring_core::Error::NoEntry) => return Err(SyncError::NotConfigured),
-        Err(e) => return Err(SyncError::Keychain(e.to_string())),
-    };
+    match state.secret.get_password() {
+        Ok(token) => Ok((url, token)),
+        Err(keyring_core::Error::NoEntry) => Err(SyncError::NotConfigured),
+        Err(e) => Err(SyncError::Keychain(e.to_string())),
+    }
+}
+
+pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
+    let (url, token) = server_access(state)?;
+    let device_id: String =
+        state.db.lock().unwrap().query_row("SELECT device_id FROM device", [], |r| r.get(0)).map_err(failed)?;
 
     let mut changed = false;
     loop {
         let batch: Vec<(i64, String)> = {
-            let conn = db.lock().unwrap();
+            let conn = state.db.lock().unwrap();
             let mut stmt = conn.prepare("SELECT seq, op FROM outbox ORDER BY seq LIMIT ?1").map_err(failed)?;
             stmt.query_map([PUSH_BATCH], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(failed)?
@@ -193,32 +198,92 @@ pub async fn cycle(db: &Mutex<Connection>, secret: &keyring_core::Entry, client:
         let ops: Vec<serde_json::Value> =
             batch.iter().map(|(_, op)| serde_json::from_str(op)).collect::<Result<_, _>>().map_err(failed)?;
         let body = serde_json::json!({"device_id": device_id, "ops": ops});
-        let res = send(client.post(format!("{url}/sync/push")).json(&body), &token).await?;
+        let res = send(state.http.post(format!("{url}/sync/push")).timeout(HTTP_TIMEOUT).json(&body), &token).await?;
         let res: PushResponse = res.json().await.map_err(failed)?;
         for r in res.results.iter().filter(|r| r.status == "rejected") {
             eprintln!("sync: op {} rejected: {}", r.op_id, r.reason.as_deref().unwrap_or("no reason"));
         }
         // Every op in the batch got an answer, so all of them leave the outbox; pull brings the Server's version.
-        db.lock().unwrap().execute("DELETE FROM outbox WHERE seq <= ?1", [last_seq]).map_err(failed)?;
+        state.db.lock().unwrap().execute("DELETE FROM outbox WHERE seq <= ?1", [last_seq]).map_err(failed)?;
         changed = true;
     }
+    changed |= pull(state, &url, &token).await?;
+    if upload_pending(state, &url, &token).await? {
+        changed = true;
+        pull(state, &url, &token).await?;
+    }
+    Ok(changed)
+}
 
+async fn pull(state: &AppState, url: &str, token: &str) -> Result<bool, SyncError> {
+    let mut changed = false;
     loop {
         let cursor: i64 =
-            db.lock().unwrap().query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).map_err(failed)?;
-        let res = send(client.get(format!("{url}/sync/pull?cursor={cursor}")), &token).await?;
+            state.db.lock().unwrap().query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).map_err(failed)?;
+        let res = send(state.http.get(format!("{url}/sync/pull?cursor={cursor}")).timeout(HTTP_TIMEOUT), token).await?;
         let page: Page = res.json().await.map_err(failed)?;
-        changed |= apply_pull(&db.lock().unwrap(), &page).map_err(failed)?;
+        changed |= apply_pull(&state.db.lock().unwrap(), &page).map_err(failed)?;
         if !page.has_more {
             return Ok(changed);
         }
     }
 }
 
+pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<bool, SyncError> {
+    let pending: Vec<(String, String, i64)> = {
+        let conn = state.db.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.id, c.path, a.size_bytes FROM attachments a
+                 JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
+                 WHERE a.uploaded = 0 ORDER BY a.rowid",
+            )
+            .map_err(failed)?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(failed)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(failed)?
+    };
+    let mut finished = false;
+    for (id, path, size_bytes) in pending {
+        if state.skipped_uploads.lock().unwrap().contains(&id) {
+            continue;
+        }
+        let Ok(file) = tokio::fs::File::open(state.dir.join(&path)).await else {
+            eprintln!("sync: attachment {id}: the local file is missing");
+            state.skipped_uploads.lock().unwrap().insert(id);
+            continue;
+        };
+        let res = state
+            .http
+            .put(format!("{url}/attachments/{id}"))
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_LENGTH, size_bytes)
+            .body(file)
+            .send()
+            .await
+            .map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
+        match res.status() {
+            // 410: removed on the Server, so it needs nothing more and the local file can be evicted.
+            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::GONE => {
+                state.db.lock().unwrap().execute("UPDATE attachments SET uploaded = 1 WHERE id = ?1", [&id]).map_err(failed)?;
+                finished = true;
+            }
+            reqwest::StatusCode::NOT_FOUND => {}
+            reqwest::StatusCode::BAD_REQUEST => {
+                eprintln!("sync: attachment {id}: the Server refused the upload");
+                state.skipped_uploads.lock().unwrap().insert(id);
+            }
+            reqwest::StatusCode::UNAUTHORIZED => return Err(SyncError::Unauthorized),
+            s => return Err(SyncError::Failed(format!("the Server answered {s}"))),
+        }
+    }
+    Ok(finished)
+}
+
 /// The background loop: one cycle, then wait for a wake-up, the poll interval or the backoff.
 pub async fn run<R: Runtime>(app: AppHandle<R>) {
     let state = app.state::<AppState>();
-    let client = client();
     let mut failures = 0;
     loop {
         // This cycle reads the current Settings, so an earlier save must not wake the wait for the next one.
@@ -232,7 +297,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
         if pending {
             set_status(&app, "syncing");
         }
-        let result = cycle(&state.db, &state.secret, &client).await;
+        let result = cycle(&state).await;
         if let Err(SyncError::Keychain(e)) = &result {
             eprintln!("sync: couldn't read the keychain: {e}");
         }
@@ -379,10 +444,9 @@ mod tests {
 mod server_tests {
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::OnceLock;
 
     use keyring_core::api::CredentialStoreApi;
-    use rusqlite::Connection;
 
     use super::*;
     use crate::feed::{self, View};
@@ -483,8 +547,14 @@ mod server_tests {
 
     struct Device {
         _dir: tempfile::TempDir,
-        db: Mutex<Connection>,
-        secret: keyring_core::Entry,
+        state: AppState,
+    }
+
+    impl std::ops::Deref for Device {
+        type Target = AppState;
+        fn deref(&self) -> &AppState {
+            &self.state
+        }
     }
 
     fn device(server: &TestServer, secret: &str) -> Device {
@@ -493,11 +563,18 @@ mod server_tests {
         conn.execute("UPDATE device SET server_url = ?1", [&server.url]).unwrap();
         let entry = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         entry.set_password(secret).unwrap();
-        Device { _dir: dir, db: Mutex::new(conn), secret: entry }
+        Device { state: AppState::new(conn, entry, dir.path().to_path_buf()), _dir: dir }
+    }
+
+    fn reopen(d: Device) -> Device {
+        let Device { _dir, state } = d;
+        let AppState { secret, .. } = state;
+        let conn = crate::store::open(&_dir.path().join("notebank.db")).unwrap();
+        Device { state: AppState::new(conn, secret, _dir.path().to_path_buf()), _dir }
     }
 
     async fn sync(d: &Device) -> Result<bool, SyncError> {
-        cycle(&d.db, &d.secret, &client()).await
+        cycle(d).await
     }
 
     fn texts(d: &Device) -> Vec<String> {
@@ -515,12 +592,12 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let b = device(&server, &server.secret);
 
-        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "captured offline", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], T0).unwrap();
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
         assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
 
         server.start();
-        feed::capture(&b.db.lock().unwrap(), b._dir.path(), "captured later", &[], T0 + 1_000_000).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], T0 + 1_000_000).unwrap();
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
@@ -535,7 +612,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, &server.secret);
-        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "once", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], T0).unwrap();
         let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
         sync(&a).await.unwrap();
         a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
@@ -551,7 +628,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, "not-the-secret");
-        feed::capture(&a.db.lock().unwrap(), a._dir.path(), "kept", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], T0).unwrap();
         assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
         assert_eq!(count(&a, "outbox"), 1);
     }
@@ -562,7 +639,7 @@ mod server_tests {
         server.start();
         let a = device(&server, &server.secret);
         for i in 0..501 {
-            feed::capture(&a.db.lock().unwrap(), a._dir.path(), &format!("item {i}"), &[], T0 + i).unwrap();
+            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], T0 + i).unwrap();
         }
         sync(&a).await.unwrap();
         assert_eq!(count(&a, "outbox"), 0);
@@ -598,13 +675,7 @@ mod server_tests {
         let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         secret.set_password("not-the-secret").unwrap();
         let app = tauri::test::mock_app();
-        app.manage(AppState {
-            db: Mutex::new(conn),
-            secret,
-            wake: tokio::sync::Notify::new(),
-            settings_saved: tokio::sync::Notify::new(),
-            status: Mutex::new("synced"),
-        });
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
         app
     }
 
@@ -645,5 +716,70 @@ mod server_tests {
         state.wake.notify_one(); // window focus
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(seen(&requests), 1);
+    }
+
+    const PIXEL_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+        0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xc9,
+        0xfe, 0x92, 0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    fn capture_png(d: &Device, text: &str) -> String {
+        let id = crate::files::stage_bytes(&d.dir, "pixel.png", PIXEL_PNG).unwrap().id;
+        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), T0).unwrap();
+        id
+    }
+
+    fn flag(d: &Device, column: &str, id: &str) -> bool {
+        d.db.lock()
+            .unwrap()
+            .query_row(&format!("SELECT {column} FROM attachments WHERE id = ?1"), [id], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_attachment_captured_offline_uploads_after_a_relaunch() {
+        let mut server = TestServer::new();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "");
+        assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
+
+        let a = reopen(a);
+        server.start();
+        assert_eq!(sync(&a).await, Ok(true));
+        assert!(flag(&a, "uploaded", &id));
+        assert!(flag(&a, "has_thumbnail", &id), "the pull after uploading didn't bring the thumbnail");
+        assert!(!feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap()[0].pending);
+
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        assert!(flag(&b, "uploaded", &id));
+    }
+
+    #[tokio::test]
+    async fn an_attachment_removed_on_the_server_stops_uploading() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "photo");
+        let (op, item_id, device_id): (String, String, String) = a
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT op, json_extract(op, '$.item_id'), (SELECT device_id FROM device) FROM outbox", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        let remove = serde_json::json!({"id": uuid::Uuid::new_v4().to_string(), "type": "RemoveAttachment",
+            "at": "2025-10-09T08:53:21Z", "item_id": item_id, "attachment_id": id});
+        let body = serde_json::json!({"device_id": device_id,
+            "ops": [serde_json::from_str::<serde_json::Value>(&op).unwrap(), remove]});
+        let res = client().post(format!("{}/sync/push", server.url)).bearer_auth(&server.secret).json(&body).send().await.unwrap();
+        assert!(res.status().is_success());
+        a.db.lock().unwrap().execute("DELETE FROM outbox", []).unwrap();
+
+        assert_eq!(upload_pending(&a, &server.url, &server.secret).await, Ok(true));
+        assert!(flag(&a, "uploaded", &id), "a 410 must stop the retries");
     }
 }
