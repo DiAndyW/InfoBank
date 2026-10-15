@@ -1,0 +1,63 @@
+:root {
+  --bg: #ffffff;
+  --sidebar-bg: #f4f4f5;
+  --text: #18181b;
+  --muted: #71717a;
+  --border: #e4e4e7;
+  --accent: #2563eb;
+  --selected: #e4e4e7;
+  --error: #b91c1c;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18181b;
+    --sidebar-bg: #111113;
+    --text: #f4f4f5;
+    --muted: #a1a1aa;
+    --border: #27272a;
+    --accent: #60a5fa;
+    --selected: #27272a;
+    --error: #f87171;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); }
+button, input, textarea { font: inherit; color: inherit; }
+
+.app { display: flex; height: 100vh; }
+.sidebar {
+  width: clamp(180px, 22%, 260px);
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 12px 8px;
+  gap: 2px;
+}
+.sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 16px 8px 4px; }
+.sidebar button { text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 8px; cursor: pointer; }
+.sidebar button.selected { background: var(--selected); }
+.sidebar .settings-button { margin-top: auto; color: var(--muted); }
+
+.feed { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.empty p { margin: 2px; }
+.hint { color: var(--muted); font-size: 12px; }
+
+.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
+.composer textarea { flex: 1; resize: none; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.composer button, .settings button[type="submit"] { padding: 6px 14px; border: 0; border-radius: 8px; background: var(--accent); color: white; }
+.composer button:disabled { opacity: 0.4; }
+
+.settings { max-width: 420px; margin: 10vh auto; padding: 0 16px; display: flex; flex-direction: column; gap: 12px; }
+.settings label { display: flex; flex-direction: column; gap: 4px; }
+.settings input { padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.settings [role="alert"] { color: var(--error); margin: 0; }
+.settings .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.settings .actions button[type="button"] { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; }
