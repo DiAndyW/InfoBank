@@ -17,7 +17,7 @@
   background: var(--bg);
 }
 
-:root[data-theme="dark"] {
+:root[data-theme="blackboard"] {
   --bg: #1c1a17;
   --sidebar-bg: #161411;
   --text: #f2efe8;

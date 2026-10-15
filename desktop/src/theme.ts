@@ -1,4 +1,4 @@
-export const THEMES = { paper: "Warm paper", dark: "Warm paper, dark", notepad: "Notepad" } as const;
+export const THEMES = { paper: "Warm paper", blackboard: "Blackboard", notepad: "Notepad" } as const;
 export type Theme = keyof typeof THEMES;
 
 const KEY = "theme";

@@ -276,11 +276,11 @@ test("dark is a theme of its own, not the system's setting", async () => {
   backend(configured);
   const { unmount } = render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-  await userEvent.selectOptions(screen.getByLabelText("Theme"), "Warm paper, dark");
-  expect(document.documentElement.dataset.theme).toBe("dark");
+  await userEvent.selectOptions(screen.getByLabelText("Theme"), "Blackboard");
+  expect(document.documentElement.dataset.theme).toBe("blackboard");
 
   unmount();
   render(<App />);
   await screen.findByText("Nothing here yet.");
-  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(document.documentElement.dataset.theme).toBe("blackboard");
 });
