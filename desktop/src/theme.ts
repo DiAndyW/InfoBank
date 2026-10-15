@@ -1,11 +1,13 @@
-export type Theme = "paper" | "notepad";
+export const THEMES = { paper: "Warm paper", dark: "Warm paper, dark", notepad: "Notepad" } as const;
+export type Theme = keyof typeof THEMES;
 
 const KEY = "theme";
 
 // Storage can be unavailable or cleared; the theme is only a display preference, so fall back quietly.
 export function storedTheme(): Theme {
   try {
-    return localStorage.getItem(KEY) === "notepad" ? "notepad" : "paper";
+    const stored = localStorage.getItem(KEY);
+    return Object.keys(THEMES).find((t): t is Theme => t === stored) ?? "paper";
   } catch {
     return "paper";
   }

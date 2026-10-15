@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { saveSettings, type Settings as SettingsData } from "./api";
-import type { Theme } from "./theme";
+import { THEMES, type Theme } from "./theme";
 
 type Props = {
   initial: SettingsData;
@@ -41,8 +41,11 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
       <label>
         Theme
         <select value={theme} onChange={(e) => onThemeChange(e.target.value as Theme)}>
-          <option value="paper">Warm paper</option>
-          <option value="notepad">Notepad</option>
+          {Object.entries(THEMES).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
         </select>
       </label>
       {error && <p role="alert">{error}</p>}

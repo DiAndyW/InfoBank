@@ -17,20 +17,17 @@
   background: var(--bg);
 }
 
-/* Paper follows the system's dark mode; a notepad stays yellow. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="notepad"]) {
-    --bg: #18181b;
-    --sidebar-bg: #111113;
-    --text: #f4f4f5;
-    --muted: #a1a1aa;
-    --border: #27272a;
-    --accent: #60a5fa;
-    --selected: #27272a;
-    --error: #f87171;
-    --field-bg: #18181b;
-    --button-text: #18181b;
-  }
+:root[data-theme="dark"] {
+  --bg: #1c1a17;
+  --sidebar-bg: #161411;
+  --text: #f2efe8;
+  --muted: #a8a196;
+  --border: #2e2a24;
+  --accent: #7aaef5;
+  --selected: #2e2a24;
+  --error: #f28b82;
+  --field-bg: #221f1b;
+  --button-text: #1c1a17;
 }
 
 :root[data-theme="notepad"] {
