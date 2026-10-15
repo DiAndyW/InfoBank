@@ -21,6 +21,10 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 url = "2.5"
 keyring-core = "1.0"
+reqwest = { version = "0.13", features = ["json"] }
+tokio = { version = "1", features = ["sync", "time"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+tauri-plugin-opener = "2.7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0", features = ["keychain"] }
@@ -30,6 +34,7 @@ windows-native-keyring-store = "1.1"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 # See https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
