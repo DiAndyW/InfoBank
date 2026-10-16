@@ -126,3 +126,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .attachment { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .refusal { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .refusal button { padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--field-bg); color: inherit; font: inherit; cursor: pointer; }
+.modal-backdrop { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--bg) 60%, transparent); z-index: 20; }
+.modal { min-width: 280px; max-width: 420px; padding: 16px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); box-shadow: 0 8px 30px rgb(0 0 0 / 0.2); display: flex; flex-direction: column; }
+.modal h2 { margin: 0 0 8px; font-size: 16px; }
+.modal ul { margin: 0 0 16px; padding-left: 18px; color: var(--error); overflow-wrap: anywhere; }
+.modal button { align-self: flex-end; padding: 6px 18px; border: 0; border-radius: 8px; background: var(--button-bg); color: var(--button-text); }

@@ -327,7 +327,9 @@ test("picked files become chips, and one can be removed", async () => {
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
   expect(await screen.findByText("scan.png")).toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("big.bin is over 100 MB");
+  expect(screen.getByRole("alertdialog", { name: "Couldn't attach a file" })).toHaveTextContent("big.bin is over 100 MB");
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Remove scan.png" }));
   expect(screen.queryByText("scan.png")).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
@@ -354,16 +356,25 @@ test("a pasted image is staged from its bytes, and an oversized one is refused",
 
   const huge = { name: "huge.mov", size: MAX_ATTACHMENT_BYTES + 1, arrayBuffer: async () => new ArrayBuffer(0) };
   fireEvent.paste(box, { clipboardData: { files: [huge], getData: () => "" } });
-  expect(await screen.findByRole("alert")).toHaveTextContent("huge.mov is over 100 MB");
+  expect(await screen.findByRole("alertdialog")).toHaveTextContent("huge.mov is over 100 MB");
 });
 
 test("files staged from a drop become chips, and failures are named", async () => {
   backend(configured);
   render(<App />);
   await screen.findByLabelText("New Item");
-  await act(() => emit("attachments-staged", { staged: [scan], errors: ["Photos isn't a file"] }));
+  await act(() =>
+    emit("attachments-staged", { staged: [scan], errors: ["Photos isn't a file", "big.bin is over 100 MB"] }),
+  );
   expect(await screen.findByText("scan.png")).toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("Photos isn't a file");
+  const dialog = screen.getByRole("alertdialog", { name: "Couldn't attach 2 files" });
+  expect(within(dialog).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    "Photos isn't a file",
+    "big.bin is over 100 MB",
+  ]);
+  await userEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(screen.getByText("scan.png")).toBeInTheDocument();
 });
 
 test("a file chip opens the file, and says why it can't", async () => {
