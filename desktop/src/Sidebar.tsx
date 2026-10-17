@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type SyncStatus, type Topic } from "./api";
+import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
 
@@ -12,6 +12,7 @@ const STATUS: Record<Exclude<SyncStatus, "unauthorized" | "not_configured">, [Ic
 
 type Props = {
   topics: Topic[];
+  counts: Counts;
   selected: string;
   onSelect: (key: string) => void;
   status: SyncStatus;
@@ -20,7 +21,7 @@ type Props = {
   onDelete: (topic: Topic) => void;
 };
 
-export default function Sidebar({ topics, selected, onSelect, status, onSettings, onError, onDelete }: Props) {
+export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete }: Props) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   // id null = a new Topic.
@@ -76,7 +77,7 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
         value={naming.draft}
         onChange={(e) => setNaming({ ...naming, draft: e.target.value, error: null })}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+          if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
             e.preventDefault();
             saveName();
           } else if (e.key === "Escape") {
@@ -95,7 +96,7 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
     </div>
   );
 
-  const entry = (key: string, label: string, icon: IconName) => (
+  const entry = (key: string, label: string, icon: IconName, count?: number) => (
     <button
       className={selected === key ? "nb-nav is-selected" : "nb-nav"}
       aria-current={selected === key ? "page" : undefined}
@@ -103,6 +104,7 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
     >
       <Icon name={icon} />
       <span className="nb-nav-label">{label}</span>
+      {count !== undefined && <span className="nb-count">{count}</span>}
     </button>
   );
 
@@ -140,7 +142,8 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
   return (
     <nav className="nb-sidebar" ref={nav}>
       {entry("all", "All Items", "all")}
-      {entry("inbox", "Inbox", "inbox")}
+      {entry("inbox", "Inbox", "inbox", counts.inbox)}
+      {entry("trash", "Trash", "trash", counts.trash)}
       <div className="nb-section">
         <span>Topics</span>
         <button ref={plus} className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>

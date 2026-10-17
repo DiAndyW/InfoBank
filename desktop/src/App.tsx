@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, syncStatus, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
+import { getSettings, listTopics, navCounts, restoreItem, syncStatus, type Counts, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
+import type { EditorHandle } from "./ItemEditor";
+import type { NoticeData } from "./Notice";
 import Settings from "./Settings";
 import Sidebar from "./Sidebar";
 import { Icon } from "./icons";
@@ -16,8 +18,10 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [editing, setEditing] = useState(false);
   const [topics, setTopics] = useState<Topic[]>([]);
-  // "all", "inbox", or a Topic id.
+  // "all", "inbox", "trash", or a Topic id.
   const [feed, setFeed] = useState("all");
+  const [counts, setCounts] = useState<Counts>({ inbox: 0, trash: 0 });
+  const [highlight, setHighlight] = useState<string | null>(null);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<SyncStatus>("synced");
@@ -34,15 +38,27 @@ export default function App() {
 
   const [error, setError] = useState<{ title: string; message: string } | null>(null);
   const [deleting, setDeleting] = useState<Topic | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const select = (key: string) => {
+  const [notice, setNotice] = useState<NoticeData | null>(null);
+  const noticeId = useRef(0);
+  const show = (message: string, action?: NoticeData["action"]) => setNotice({ id: ++noticeId.current, message, action });
+  const editor = useRef<EditorHandle>(null);
+  const select = async (key: string) => {
+    if (editor.current && !(await editor.current.save())) return;
     setFeed(key);
     setNotice(null);
   };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
 
   useEffect(() => {
-    const unlisten = listen("items-changed", () => listTopics().then((t) => setTopics(sorted(t)), (e) => showError("Couldn't load Topics", e)));
+    const unlisten = listen("items-changed", () =>
+      Promise.all([listTopics(), navCounts()]).then(
+        ([t, c]) => {
+          setTopics(sorted(t));
+          setCounts(c);
+        },
+        (e) => showError("Couldn't load Topics", e),
+      ),
+    );
     return () => {
       unlisten.then((stop) => stop());
     };
@@ -50,15 +66,30 @@ export default function App() {
 
   // Only on a Topics change, so selecting a just-created Topic isn't undone before its refresh arrives.
   useEffect(() => {
-    if (feed !== "all" && feed !== "inbox" && !topics.some((t) => t.id === feed)) setFeed("inbox");
+    if (!["all", "inbox", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) setFeed("inbox");
   }, [topics]);
+
+  useEffect(() => {
+    const undo = notice?.action?.label === "Undo" ? notice.action : null;
+    if (!undo) return;
+    const onKey = (e: KeyboardEvent) => {
+      const typing = (e.target as HTMLElement).closest("input, textarea, [contenteditable]");
+      if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || typing) return;
+      e.preventDefault();
+      undo.onAction();
+      setNotice(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [notice]);
 
   async function load() {
     try {
-      const [s, t, st] = await Promise.all([getSettings(), listTopics(), syncStatus()]);
+      const [s, t, st, c] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts()]);
       setSettings(s);
       setTopics(sorted(t));
       setStatus(st);
+      setCounts(c);
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -89,13 +120,32 @@ export default function App() {
   }
   return (
     <div className="nb-app">
-      <Sidebar topics={topics} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
+      <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
       <Feed
-        view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }}
+        view={feed === "all" || feed === "inbox" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
         topics={topics}
+        editor={editor}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
         onError={showError}
+        onTrashed={(id) =>
+          show("Item moved to Trash", {
+            label: "Undo",
+            onAction: () => restoreItem(id).then(() => setHighlight(id), (e) => showError("Couldn't restore the Item", e)),
+          })
+        }
+        onRestored={(it) => {
+          const place = topics.find((t) => t.id === it.topic_id);
+          show(`Restored to ${place ? place.name : "Inbox"}`, {
+            label: "Show",
+            onAction: () => {
+              select(place ? place.id : "inbox");
+              setHighlight(it.id);
+            },
+          });
+        }}
+        highlight={highlight}
+        onHighlightDone={() => setHighlight(null)}
       />
       {editing && (
         <Settings
@@ -115,7 +165,7 @@ export default function App() {
           onClose={() => setDeleting(null)}
           onDeleted={(message) => {
             setDeleting(null);
-            setNotice(message);
+            show(message);
           }}
           onError={showError}
         />

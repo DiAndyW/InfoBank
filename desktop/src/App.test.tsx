@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { expect, test, vi } from "vitest";
 import App from "./App";
-import { MAX_ATTACHMENT_BYTES, type FeedAttachment, type FeedItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
+import { MAX_ATTACHMENT_BYTES, type Counts, type FeedAttachment, type FeedItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
 
 type Options = {
   topics?: Topic[];
@@ -18,6 +18,8 @@ type Options = {
   openError?: string;
   openHang?: boolean;
   failing?: Record<string, string>;
+  counts?: () => Counts;
+  edited?: { trashed: boolean };
   // A command waits for its gate, so a test can act while the call is in flight.
   gates?: Record<string, Promise<void>>;
 };
@@ -35,6 +37,9 @@ function backend(settings: Settings, opts: Options = {}) {
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
       if (cmd === "list_items") return opts.items ? opts.items(args) : [];
+      if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, trash: 0 };
+      if (cmd === "edit_item") return opts.edited ?? { trashed: false };
+      if (["trash_item", "restore_item"].includes(cmd)) return null;
       if (cmd === "save_settings") {
         if (opts.saveError) throw opts.saveError;
         return null;
@@ -83,6 +88,7 @@ const feedItem = (
   topic_id: null,
   pending,
   attachments,
+  purge_at_us: null,
 });
 
 const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => ({ id, name, archived: false, item_count: 0, ...extra });
@@ -146,6 +152,7 @@ test("a load failure is shown and can be retried", async () => {
       if (cmd === "list_topics") return [];
       if (cmd === "sync_status") return "synced";
       if (cmd === "list_items") return [];
+      if (cmd === "nav_counts") return { inbox: 0, trash: 0 };
     },
     { shouldMockEvents: true },
   );
@@ -275,7 +282,7 @@ test("a slow load for the previous view doesn't replace the current one", async 
     },
   });
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: "Inbox" }));
+  await userEvent.click(await screen.findByRole("button", { name: /^Inbox/ }));
   expect(await screen.findByText("inbox item")).toBeInTheDocument();
   await act(async () => release());
   expect(screen.queryByText("all items item")).not.toBeInTheDocument();
@@ -529,7 +536,7 @@ test("when the selected Topic disappears the Inbox is shown", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
   topics = [];
   await act(() => emit("items-changed"));
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Inbox" })).toHaveAttribute("aria-current", "page"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page"));
   const lists = calls.filter((c) => c.cmd === "list_items");
   expect(lists[lists.length - 1].args.view).toEqual({ kind: "inbox" });
 });
@@ -762,7 +769,7 @@ test("the draft survives a visit to an archived Topic", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
   expect(await screen.findByLabelText("New Item")).toHaveValue("half a thought");
 });
 
@@ -897,7 +904,7 @@ test("the Notice goes on dismiss, or when the view changes", async () => {
   await openDelete("Work");
   await userEvent.click(screen.getByRole("button", { name: "Delete" }));
   expect(await screen.findByText('Deleted "Work".')).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
   expect(screen.queryByText('Deleted "Work".')).not.toBeInTheDocument();
 });
 
@@ -974,14 +981,16 @@ test("arrow keys move through a menu and open and close its submenu", async () =
   backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "squat 100", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+  expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+  expect(screen.getByRole("menuitem", { name: "Move to Trash" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}");
-  expect(screen.getByRole("menuitem", { name: "Copy text" })).toHaveFocus();
-  await userEvent.keyboard("{ArrowDown}");
-  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+  expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus();
   await userEvent.keyboard("{End}");
-  expect(screen.getByRole("menuitem", { name: "Copy text" })).toHaveFocus();
-  await userEvent.keyboard("{Home}{ArrowRight}");
+  expect(screen.getByRole("menuitem", { name: "Move to Trash" })).toHaveFocus();
+  await userEvent.keyboard("{Home}");
+  expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}{ArrowRight}");
   expect(screen.getByRole("menuitemradio", { name: "Inbox" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}");
   expect(screen.getByRole("menuitemradio", { name: "Gym" })).toHaveFocus();
@@ -1066,4 +1075,353 @@ test("Items that fail to load are shown in the Error dialog", async () => {
   backend(configured, { failing: { list_items: "The local store is busy" } });
   render(<App />);
   expect(await screen.findByRole("alertdialog", { name: "Couldn't load the Items" })).toHaveTextContent("The local store is busy");
+});
+
+const trashOf = async (text: string, user: { click: (el: Element) => Promise<void> } = userEvent) => {
+  const article = (await screen.findByText(text)).closest("article")!;
+  await user.click(within(article as HTMLElement).getByRole("button", { name: "Item actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Move to Trash" }));
+};
+
+test("the Item menu is Edit, Move to…, Copy text, then Move to Trash in red after a separator", async () => {
+  backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  const menu = screen.getByRole("menu", { name: "Item actions" });
+  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Edit", "Move to…", "Copy text", "Move to Trash"]);
+  expect(within(menu).getByRole("separator")).toBeInTheDocument();
+  expect(within(menu).getByRole("menuitem", { name: "Move to Trash" })).toHaveClass("is-danger");
+});
+
+test("Move to Trash acts at once, and Undo restores the Item and highlights it", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await trashOf("squat 100");
+  expect(calls).toContainEqual({ cmd: "trash_item", args: { itemId: "1" } });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await screen.findByText("Item moved to Trash");
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(calls).toContainEqual({ cmd: "restore_item", args: { itemId: "1" } });
+  await vi.waitFor(() => expect(screen.getByRole("article")).toHaveClass("is-highlight"));
+  expect(screen.queryByText("Item moved to Trash")).not.toBeInTheDocument();
+});
+
+test("Undo highlights the Item even when it isn't back in the list yet", async () => {
+  const calls: { cmd: string }[] = backend(configured, {
+    items: () => (calls.some((c) => c.cmd === "trash_item") && !calls.some((c) => c.cmd === "restore_item") ? [] : [filed("1", "squat 100", null)]),
+  });
+  render(<App />);
+  await trashOf("squat 100");
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.queryByRole("article")).not.toBeInTheDocument());
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  await vi.waitFor(() => expect(screen.getByRole("article")).toHaveClass("is-highlight"));
+});
+
+test("a second Move to Trash replaces the Notice, and Undo restores the second Item", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)] });
+  render(<App />);
+  await trashOf("squat 100");
+  await trashOf("bench 70");
+  expect(screen.getAllByText("Item moved to Trash")).toHaveLength(1);
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(calls.filter((c) => c.cmd === "restore_item")).toEqual([{ cmd: "restore_item", args: { itemId: "2" } }]);
+});
+
+test("a new Notice gets its own 8 seconds", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)] });
+    render(<App />);
+    await trashOf("squat 100", user);
+    await act(async () => vi.advanceTimersByTime(6000));
+    await trashOf("bench 70", user);
+    await act(async () => vi.advanceTimersByTime(4000));
+    expect(screen.getByText("Item moved to Trash")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("⌘Z runs Undo while the Notice shows, but not while typing or after it's gone", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await trashOf("squat 100");
+  await screen.findByText("Item moved to Trash");
+  await userEvent.type(screen.getByLabelText("New Item"), "abc{Meta>}z{/Meta}");
+  expect(calls.some((c) => c.cmd === "restore_item")).toBe(false);
+  screen.getByLabelText("New Item").blur();
+  await userEvent.keyboard("{Meta>}z{/Meta}");
+  expect(calls.filter((c) => c.cmd === "restore_item")).toHaveLength(1);
+  await userEvent.keyboard("{Meta>}z{/Meta}");
+  expect(calls.filter((c) => c.cmd === "restore_item")).toHaveLength(1);
+});
+
+test("a failed Move to Trash is shown in a dialog, with no Notice", async () => {
+  backend(configured, { items: () => [filed("1", "squat 100", null)], failing: { trash_item: "disk full" } });
+  render(<App />);
+  await trashOf("squat 100");
+  expect(await screen.findByRole("alertdialog", { name: "Couldn't move the Item to Trash" })).toHaveTextContent("disk full");
+  expect(screen.queryByText("Item moved to Trash")).not.toBeInTheDocument();
+});
+
+const editorOf = () => screen.getByRole("textbox", { name: "Edit Item" }).closest(".nb-editor") as HTMLElement;
+const openEdit = async (text: string) => {
+  const article = (await screen.findByText(text)).closest("article") as HTMLElement;
+  await userEvent.click(within(article).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+};
+
+test("Edit opens in place with the composer still there; Shift+Enter adds a line and Enter saves", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await openEdit("squat 100");
+  const box = screen.getByRole("textbox", { name: "Edit Item" });
+  expect(box).toHaveValue("squat 100");
+  expect(box).toHaveFocus();
+  expect(screen.getByLabelText("New Item")).toBeVisible();
+  await userEvent.type(box, " x5{Shift>}{Enter}{/Shift}felt good{Enter}");
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100 x5\nfelt good", addIds: [], removeIds: [] } });
+  await vi.waitFor(() => expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument());
+});
+
+test("double-clicking an Item opens Edit, and Escape puts it back unchanged", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await userEvent.dblClick(await screen.findByText("squat 100"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), " changed{Escape}");
+  expect(calls.some((c) => c.cmd === "edit_item")).toBe(false);
+  expect(screen.getByText("squat 100")).toBeInTheDocument();
+});
+
+test("Enter while composing text with an input method doesn't save", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await openEdit("squat 100");
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit Item" }), { key: "Enter", isComposing: true });
+  expect(calls.some((c) => c.cmd === "edit_item")).toBe(false);
+});
+
+test("emptying the Item turns Save into Move to Trash, which shows the undo Notice", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)], edited: { trashed: true } });
+  render(<App />);
+  await openEdit("squat 100");
+  await userEvent.clear(screen.getByRole("textbox", { name: "Edit Item" }));
+  expect(editorOf()).toHaveClass("is-empty");
+  expect(within(editorOf()).getByText("An empty Item goes to Trash.")).toBeInTheDocument();
+  expect(within(editorOf()).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Move to Trash" }));
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "", addIds: [], removeIds: [] } });
+  expect(await screen.findByText("Item moved to Trash")).toBeInTheDocument();
+});
+
+test("files can be added, pasted and removed while editing, into the editor and not the composer", async () => {
+  const calls = backend(configured, {
+    items: () => [{ ...filed("1", "receipt", null), attachments: [report] }],
+    picked: { staged: [scan], errors: [] },
+    staged: [{ id: "s2", filename: "Pasted image.png", size_bytes: 10, mime_type: "image/png" }],
+  });
+  render(<App />);
+  await openEdit("receipt");
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Attach files" }));
+  fireEvent.paste(screen.getByRole("textbox", { name: "Edit Item" }), { clipboardData: { files: [new File(["x"], "")] } });
+  await within(editorOf()).findByText("Pasted image.png");
+  expect(within(screen.getByLabelText("New Item").closest("form")!).queryByText("Pasted image.png")).not.toBeInTheDocument();
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Remove report.pdf" }));
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt", addIds: ["s1", "s2"], removeIds: ["a1"] } });
+});
+
+test("a refetch while editing doesn't make Save remove the Item's files", async () => {
+  const calls = backend(configured, { items: () => [{ ...filed("1", "receipt", null), attachments: [{ ...report }] }] });
+  render(<App />);
+  await openEdit("receipt");
+  await act(() => emit("items-changed"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!{Enter}");
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt!", addIds: [], removeIds: [] } });
+});
+
+test("Enter that confirms an input method's text doesn't save or send", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await openEdit("squat 100");
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit Item" }), { key: "Enter", keyCode: 229 });
+  fireEvent.change(screen.getByLabelText("New Item"), { target: { value: "日本" } });
+  fireEvent.keyDown(screen.getByLabelText("New Item"), { key: "Enter", keyCode: 229 });
+  expect(calls.some((c) => c.cmd === "edit_item" || c.cmd === "capture")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "New Topic" }));
+  fireEvent.change(screen.getByLabelText("Topic name"), { target: { value: "ジム" } });
+  fireEvent.keyDown(screen.getByLabelText("Topic name"), { key: "Enter", keyCode: 229 });
+  expect(calls.some((c) => c.cmd === "create_topic")).toBe(false);
+});
+
+test("Cancel unstages the files added in the editor", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "receipt", null)], picked: { staged: [scan], errors: [] } });
+  render(<App />);
+  await openEdit("receipt");
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Attach files" }));
+  await within(editorOf()).findByText("scan.png");
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Cancel" }));
+  expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
+});
+
+test("a failed save keeps the editor open with the reason", async () => {
+  backend(configured, { items: () => [filed("1", "squat 100", null)], failing: { edit_item: "That's too long to save (1 MB max)" } });
+  render(<App />);
+  await openEdit("squat 100");
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!{Enter}");
+  expect(await within(editorOf()).findByRole("alert")).toHaveTextContent("Couldn't save the edit. Your changes are kept. That's too long to save (1 MB max)");
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("squat 100!");
+});
+
+test("an Item deleted elsewhere shows the Error dialog and the text stays in the editor", async () => {
+  let items = [filed("1", "squat 100", null)];
+  backend(configured, { items: () => items, failing: { edit_item: "That Item no longer exists" } });
+  render(<App />);
+  await openEdit("squat 100");
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), " kept");
+  items = [];
+  await act(() => emit("items-changed"));
+  await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Couldn't save the edit" });
+  expect(dialog).toHaveTextContent("That Item no longer exists");
+  await userEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("squat 100 kept");
+});
+
+test("opening Edit on a second Item saves the first, unless that save fails", async () => {
+  const failing: Record<string, string> = {};
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)], failing });
+  render(<App />);
+  await openEdit("squat 100");
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!");
+  await userEvent.dblClick(screen.getByText("bench 70"));
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [] } });
+  await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("bench 70"));
+
+  failing.edit_item = "disk full";
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!");
+  await userEvent.dblClick(screen.getByText("squat 100"));
+  expect(await within(editorOf()).findByRole("alert")).toHaveTextContent("disk full");
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("bench 70!");
+});
+
+test("switching views saves the open edit, and stays put if that save fails", async () => {
+  const failing: Record<string, string> = {};
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)], failing });
+  render(<App />);
+  await openEdit("squat 100");
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!");
+  failing.edit_item = "disk full";
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(await within(editorOf()).findByRole("alert")).toHaveTextContent("disk full");
+  expect(screen.getByRole("button", { name: "All Items" })).toHaveAttribute("aria-current", "page");
+  delete failing.edit_item;
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(calls.filter((c) => c.cmd === "edit_item")).toEqual(Array(2).fill({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [] } }));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page"));
+  expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
+});
+
+test("Items in an archived Topic can be edited and moved to Trash", async () => {
+  backend(configured, { topics: [topic("o", "Old", { archived: true, item_count: 1 })], items: () => [filed("1", "old note", "o")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Archived 1" }));
+  await userEvent.click(screen.getByRole("button", { name: "Old" }));
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Move to Trash" })).toBeInTheDocument();
+});
+
+const DAY_MS = 86_400_000;
+const inTrash = (it: FeedItem, daysLeft: number | null): FeedItem => ({
+  ...it,
+  purge_at_us: daysLeft === null ? null : (Date.now() + daysLeft * DAY_MS - 60_000) * 1000,
+});
+const rowOf = (text: string) => screen.getByText(text).closest("article") as HTMLElement;
+
+test("Trash lists deleted Items with where Restore puts them and days left, with no menu or editing", async () => {
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym")],
+    items: ({ view }) =>
+      view.kind === "trash"
+        ? [inTrash(filed("1", "old shoe sizes", "g"), 15), inTrash(filed("2", "deadlift", null), 1), { ...inTrash(filed("3", "just now", null), null), pending: true }]
+        : [],
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  await screen.findByText("old shoe sizes");
+  expect(within(rowOf("old shoe sizes")).getByText("Gym")).toBeInTheDocument();
+  expect(within(rowOf("old shoe sizes")).getByText("15 days left")).toBeInTheDocument();
+  expect(within(rowOf("deadlift")).getByText("Inbox")).toBeInTheDocument();
+  expect(within(rowOf("deadlift")).getByText("1 day left")).toBeInTheDocument();
+  expect(within(rowOf("just now")).queryByText(/left$/)).not.toBeInTheDocument();
+  expect(within(rowOf("just now")).getByLabelText("Not synced yet")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Item actions" })).not.toBeInTheDocument();
+  await userEvent.dblClick(screen.getByText("deadlift"));
+  expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
+  expect(screen.getByText("Items in Trash are deleted for good after 30 days.")).toBeInTheDocument();
+  expect(screen.getByLabelText("New Item")).not.toBeVisible();
+  expect(calls).toContainEqual({ cmd: "list_items", args: { view: { kind: "trash" }, before: null } });
+});
+
+test("an empty Trash says so", async () => {
+  backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  expect(await screen.findByText("Trash is empty.")).toBeInTheDocument();
+  expect(screen.getByText("Deleted Items stay here for 30 days.")).toBeInTheDocument();
+});
+
+test("Restore puts the Item back, and Show opens its Topic with it highlighted even pages back", async () => {
+  const old = filed("x", "old shoe sizes", "g");
+  const page = (day: number, prefix: string) => Array.from({ length: 100 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym")],
+    items: ({ view, before }) =>
+      view.kind === "trash" ? [inTrash(old, 15)] : before === null ? page(16, "new") : before.id === "new99" ? page(15, "mid") : [old],
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  await screen.findByText("old shoe sizes");
+  await userEvent.click(within(rowOf("old shoe sizes")).getByRole("button", { name: "Restore" }));
+  expect(calls).toContainEqual({ cmd: "restore_item", args: { itemId: "x" } });
+  await screen.findByText("Restored to Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Show" }));
+  expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page");
+  await vi.waitFor(() => expect(rowOf("old shoe sizes")).toHaveClass("is-highlight"));
+});
+
+test("a failed restore is shown in a dialog", async () => {
+  backend(configured, { items: ({ view }) => (view.kind === "trash" ? [inTrash(filed("1", "gone", null), 3)] : []), failing: { restore_item: "That Item no longer exists" } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  await screen.findByText("gone");
+  await userEvent.click(within(rowOf("gone")).getByRole("button", { name: "Restore" }));
+  expect(await screen.findByRole("alertdialog", { name: "Couldn't restore the Item" })).toHaveTextContent("That Item no longer exists");
+});
+
+test("a drop in Trash attaches nothing and shows no drop target", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(screen.queryByText("scan.png")).not.toBeInTheDocument();
+});
+
+test("Inbox and Trash show counts, refetched when items change, and Trash stays selected", async () => {
+  let counts = { inbox: 17, trash: 3 };
+  backend(configured, { counts: () => counts });
+  render(<App />);
+  expect(within(await screen.findByRole("button", { name: /^Inbox/ })).getByText("17")).toBeInTheDocument();
+  const trash = screen.getByRole("button", { name: /^Trash/ });
+  expect(within(trash).getByText("3")).toBeInTheDocument();
+  await userEvent.click(trash);
+  counts = { inbox: 16, trash: 4 };
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(within(screen.getByRole("button", { name: /^Trash/ })).getByText("4")).toBeInTheDocument());
+  expect(screen.getByRole("button", { name: /^Trash/ })).toHaveAttribute("aria-current", "page");
 });

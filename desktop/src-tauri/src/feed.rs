@@ -54,7 +54,6 @@ pub struct Before {
 
 const GONE: &str = "That Item no longer exists";
 
-/// Trimmed, None when blank, and refused where the Server would refuse it.
 fn checked_text(text: &str) -> Result<Option<String>, String> {
     let text = text.trim();
     if text.len() > MAX_ITEM_TEXT_BYTES {
@@ -163,6 +162,10 @@ pub fn edit_item(
         }
         tx.commit().map_err(|e| e.to_string())?;
         return Ok(Edited { trashed: true });
+    }
+    // Only SetText and AddAttachment restore on the Server, and saving an Item always brings it back.
+    if trashed && adding.is_empty() && text == current {
+        ops::queue(&tx, ops::Op::RestoreItem { item_id: item() }, now_us)?;
     }
     // The Server trashes an Item that any single op leaves empty, so files go in first and out last.
     for a in adding {
@@ -517,6 +520,24 @@ mod tests {
         conn.execute("INSERT INTO items (id, text, capture_time, deleted_at, purge_at) VALUES ('i', 'x', 1, 3, 99)", []).unwrap();
         edit_item(&conn, d.path(), "i", "back", &[], &[], 4).unwrap();
         assert_eq!(list_items(&conn, &View::All, None, 0).unwrap()[0].text.as_deref(), Some("back"));
+    }
+
+    #[test]
+    fn saving_an_item_in_trash_without_an_edit_that_restores_queues_a_restore() {
+        let (d, conn) = fresh();
+        with_file(&conn, "i", Some("x"), "a");
+        conn.execute_batch(
+            "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES ('b', 'i', 'g.pdf', 'application/pdf', 1, 1, 0);
+             UPDATE items SET deleted_at = 3;",
+        )
+        .unwrap();
+        edit_item(&conn, d.path(), "i", "x", &[], &[], 4).unwrap();
+        assert_eq!(types(&conn), ["RestoreItem"]);
+        conn.execute_batch("DELETE FROM outbox; UPDATE items SET deleted_at = 5").unwrap();
+        edit_item(&conn, d.path(), "i", "x", &[], &["a".into()], 6).unwrap();
+        assert_eq!(types(&conn), ["RestoreItem", "RemoveAttachment"]);
+        assert_eq!(list_items(&conn, &View::All, None, 0).unwrap().len(), 1);
     }
 
     #[test]
