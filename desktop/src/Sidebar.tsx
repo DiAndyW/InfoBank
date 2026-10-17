@@ -1,14 +1,13 @@
 import { useRef, useState } from "react";
 import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type SyncStatus, type Topic } from "./api";
+import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
 
-const STATUS_LABELS: Record<SyncStatus, string> = {
-  synced: "● Synced",
-  syncing: "↻ Syncing…",
-  offline: "○ Offline, retrying",
-  unauthorized: "⚠ Secret rejected",
-  keychain: "⚠ Keychain access needed",
-  not_configured: "",
+const STATUS: Record<Exclude<SyncStatus, "unauthorized" | "not_configured">, [IconName, string, string]> = {
+  synced: ["synced", "Synced", "nb-sync-ok"],
+  syncing: ["syncing", "Syncing…", ""],
+  offline: ["offline", "Offline, retrying", ""],
+  keychain: ["key", "Keychain access needed", "nb-sync-warn"],
 };
 
 type Props = {
@@ -43,8 +42,10 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
   }
 
   const nameField = naming && (
-    <div className="name-field" key="name-field">
+    <div className={naming.error ? "nb-namefield has-error" : "nb-namefield"} key="name-field">
       <input
+        className="nb-input"
+        aria-invalid={naming.error ? true : undefined}
         aria-label="Topic name"
         placeholder="New Topic"
         autoFocus
@@ -60,33 +61,51 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
         }}
         onBlur={() => saving.current || setNaming(null)}
       />
-      {naming.error && <p role="alert">{naming.error}</p>}
+      {naming.error && (
+        <div className="nb-field-error" role="alert">
+          {naming.error}
+        </div>
+      )}
     </div>
   );
   const open = topics.filter((t) => !t.archived);
   const archived = topics.filter((t) => t.archived);
 
-  const entry = (key: string, label: string) => (
-    <button className={selected === key ? "selected" : undefined} onClick={() => onSelect(key)}>
-      {label}
+  const entry = (key: string, label: string, icon: IconName) => (
+    <button
+      className={selected === key ? "nb-nav is-selected" : "nb-nav"}
+      aria-current={selected === key ? "page" : undefined}
+      onClick={() => onSelect(key)}
+    >
+      <Icon name={icon} />
+      <span className="nb-nav-label">{label}</span>
     </button>
   );
 
   const row = (t: Topic) => {
     if (naming?.id === t.id) return nameField;
     const rename = { label: "Rename", onSelect: () => setNaming({ id: t.id, draft: t.name, error: null }) };
-    const remove = { label: "Delete…", onSelect: () => onDelete(t) };
+    const remove = { label: "Delete…", danger: true, onSelect: () => onDelete(t) };
+    const className = ["nb-topic", selected === t.id && "is-selected", t.archived && "is-archived", menuFor === t.id && "is-open"];
     return (
-      <div key={t.id} className={t.archived ? "topic-row archived" : "topic-row"}>
-        {entry(t.id, t.name)}
+      <div key={t.id} className={className.filter(Boolean).join(" ")}>
+        <button
+          className="nb-topic-name"
+          aria-current={selected === t.id ? "page" : undefined}
+          title={t.name}
+          onClick={() => onSelect(t.id)}
+        >
+          <span className="nb-nav-label">{t.name}</span>
+        </button>
+        <span className="nb-count">{t.item_count}</span>
         <Menu
           label={`${t.name} actions`}
           open={menuFor === t.id}
           onOpenChange={(o) => setMenuFor(o ? t.id : null)}
           entries={
             t.archived
-              ? [rename, { label: "Unarchive", onSelect: () => unarchiveTopic(t.id).catch((e) => onError("Couldn't unarchive the Topic", e)) }, remove]
-              : [rename, { label: "Archive", onSelect: () => archiveTopic(t.id).catch((e) => onError("Couldn't archive the Topic", e)) }, remove]
+              ? [rename, { label: "Unarchive", onSelect: () => unarchiveTopic(t.id).catch((e) => onError("Couldn't unarchive the Topic", e)) }, { separator: true }, remove]
+              : [rename, { label: "Archive", onSelect: () => archiveTopic(t.id).catch((e) => onError("Couldn't archive the Topic", e)) }, { separator: true }, remove]
           }
         />
       </div>
@@ -94,38 +113,54 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
   };
 
   return (
-    <nav className="sidebar">
-      {entry("all", "All Items")}
-      {entry("inbox", "Inbox")}
-      <div className="topics-heading">
-        <h2>Topics</h2>
-        <button aria-label="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>
-          +
+    <nav className="nb-sidebar">
+      {entry("all", "All Items", "all")}
+      {entry("inbox", "Inbox", "inbox")}
+      <div className="nb-section">
+        <span>Topics</span>
+        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>
+          <Icon name="plus" />
         </button>
       </div>
-      <div className="topic-list">
-        {open.length === 0 && naming?.id !== null ? <p className="hint">None yet</p> : open.map(row)}
+      <div className="nb-topic-list">
+        {open.length === 0 && naming?.id !== null ? <div className="nb-section-empty">None yet</div> : open.map(row)}
         {naming?.id === null && nameField}
-        {archived.length > 0 && (
-          <>
-            <button className="archived-toggle" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
-              <span aria-hidden="true">{showArchived ? "▾ " : "▸ "}</span>
-              Archived ({archived.length})
-            </button>
-            {showArchived && archived.map(row)}
-          </>
-        )}
+        <div className="nb-section">
+          <button className="nb-section-toggle" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
+            <span>Archived</span>
+            {archived.length > 0 && (
+              <>
+                {" "}
+                <span className="nb-count">{archived.length}</span>
+              </>
+            )}
+            <span className="nb-section-chevron">
+              <Icon name={showArchived ? "chevron-down" : "chevron-right"} />
+            </span>
+          </button>
+        </div>
+        {showArchived && (archived.length === 0 ? <div className="nb-section-empty">None yet</div> : archived.map(row))}
       </div>
-      {status === "unauthorized" ? (
-        <button className="status warn" onClick={onSettings}>
-          ⚠ Secret rejected
+      <div className="nb-sidebar-foot">
+        {status === "unauthorized" ? (
+          <button className="nb-sync nb-sync-danger is-action" title="Open Settings" onClick={onSettings}>
+            <Icon name="alert" />
+            <span>Secret rejected</span>
+            <Icon name="chevron-right" />
+          </button>
+        ) : (
+          status !== "not_configured" && (
+            <div className={`nb-sync ${STATUS[status][2]}`} role="status">
+              <Icon name={STATUS[status][0]} className={status === "syncing" ? "nb-spin" : undefined} />
+              <span>{STATUS[status][1]}</span>
+            </div>
+          )
+        )}
+        <button className="nb-nav" onClick={onSettings}>
+          <Icon name="settings" />
+          <span className="nb-nav-label">Settings</span>
         </button>
-      ) : (
-        <p className="status">{STATUS_LABELS[status]}</p>
-      )}
-      <button className="settings-button" onClick={onSettings}>
-        Settings
-      </button>
+      </div>
     </nav>
   );
 }

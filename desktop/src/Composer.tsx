@@ -2,7 +2,9 @@ import { useEffect, useState, type ClipboardEvent, type FormEvent, type Keyboard
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { capture, MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, type Staged, type StagedFiles } from "./api";
-import { FileIcon, formatSize, PaperclipIcon } from "./attachments";
+import { formatSize } from "./attachments";
+import Dialog from "./Dialog";
+import { Icon } from "./icons";
 
 export default function Composer({ topicId, placeholder, onCaptured }: { topicId: string | null; placeholder: string; onCaptured: () => void }) {
   const [draft, setDraft] = useState("");
@@ -84,71 +86,82 @@ export default function Composer({ topicId, placeholder, onCaptured }: { topicId
 
   return (
     <>
-      {dragging && <div className="drop-overlay">Drop to attach</div>}
-      {attachErrors.length > 0 && (
-        <div className="modal-backdrop">
-          <div
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="attach-errors-title"
-            className="modal"
-            onKeyDown={(e) => e.key === "Escape" && setAttachErrors([])}
-          >
-            <h2 id="attach-errors-title">
-              {attachErrors.length === 1 ? "Couldn't attach a file" : `Couldn't attach ${attachErrors.length} files`}
-            </h2>
-            <ul>
-              {attachErrors.map((e, i) => (
-                <li key={i}>{e}</li>
-              ))}
-            </ul>
-            <button type="button" autoFocus onClick={() => setAttachErrors([])}>
-              OK
-            </button>
+      {dragging && (
+        <div className="nb-drop">
+          <div className="nb-drop-target">
+            <Icon name="paperclip" size={24} />
+            <span>Drop to attach</span>
           </div>
         </div>
       )}
-      {error && (
-        <p role="alert" className="composer-error">
-          {error}
-        </p>
-      )}
-      <form className="composer" onSubmit={submit}>
-        {staged.length > 0 && (
-          <ul className="staged" aria-label="Attachments to send">
-            {staged.map((s) => (
-              <li key={s.id} className="chip">
-                <FileIcon />
-                <span className="name">{s.filename}</span>
-                <span className="size">{formatSize(s.size_bytes)}</span>
-                <button type="button" aria-label={`Remove ${s.filename}`} onClick={() => remove(s.id)}>
-                  ✕
-                </button>
-              </li>
+      {attachErrors.length > 0 && (
+        <Dialog
+          alert
+          title={attachErrors.length === 1 ? "Couldn't attach a file" : `Couldn't attach ${attachErrors.length} files`}
+          onClose={() => setAttachErrors([])}
+          actions={
+            <button type="button" className="nb-btn nb-btn-primary" autoFocus onClick={() => setAttachErrors([])}>
+              OK
+            </button>
+          }
+        >
+          <ul>
+            {attachErrors.map((e, i) => (
+              <li key={i}>{e}</li>
             ))}
           </ul>
+        </Dialog>
+      )}
+      <form className="nb-composer" onSubmit={submit}>
+        {error && (
+          <div role="alert" className="nb-send-error">
+            <Icon name="alert" />
+            {error}
+          </div>
         )}
-        <div className="composer-row">
-          <textarea
-            aria-label="New Item"
-            placeholder={placeholder}
-            rows={2}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-          />
-          <button
-            type="button"
-            className="attach"
-            aria-label="Attach files"
-            onClick={() => pickFiles().then(addAll, (err) => failed([String(err)]))}
-          >
-            <PaperclipIcon />
-          </button>
-          <button type="submit" disabled={empty}>
-            Send
-          </button>
+        <div className="nb-composer-box">
+          {staged.length > 0 && (
+            <ul className="nb-staged" aria-label="Attachments to send">
+              {staged.map((s) => (
+                <li key={s.id} className="nb-file is-staged">
+                  <Icon name={s.mime_type.startsWith("image/") ? "image" : "file"} />
+                  <span className="nb-file-text">
+                    <span className="nb-file-name">{s.filename}</span>
+                    <span className="nb-file-meta">{formatSize(s.size_bytes)}</span>
+                  </span>
+                  <button type="button" className="nb-iconbtn" aria-label={`Remove ${s.filename}`} title={`Remove ${s.filename}`} onClick={() => remove(s.id)}>
+                    <Icon name="x" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="nb-composer-row">
+            <textarea
+              aria-label="New Item"
+              placeholder={placeholder}
+              rows={2}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+            />
+            <div className="nb-composer-actions">
+              <button
+                type="button"
+                className="nb-iconbtn"
+                aria-label="Attach files"
+                title="Attach files"
+                onClick={() => pickFiles().then(addAll, (err) => failed([String(err)]))}
+              >
+                <Icon name="paperclip" />
+              </button>
+              <button type="submit" className="nb-btn nb-btn-primary" disabled={empty}>
+                <Icon name="send" />
+                Send
+              </button>
+            </div>
+          </div>
         </div>
       </form>
     </>

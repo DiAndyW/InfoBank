@@ -1,6 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { Icon } from "./icons";
 
-export type MenuEntry = { label: string; onSelect?: () => void; checked?: boolean; submenu?: MenuEntry[] };
+export type MenuEntry =
+  | { label: string; onSelect?: () => void; checked?: boolean; submenu?: MenuEntry[]; danger?: boolean }
+  | { separator: true };
 
 type Props = { label: string; entries: MenuEntry[]; open: boolean; onOpenChange: (open: boolean) => void };
 
@@ -44,13 +47,23 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
   }
 
   const list = (items: MenuEntry[], name: string, top = false) => (
-    <div role="menu" aria-label={name} className={top ? `menu menu-popup${place.above ? " above" : ""}` : "menu"} style={top ? place.style : undefined}>
-      {items.map((entry, i) =>
-        entry.submenu ? (
-          <div key={i} className="submenu-anchor" onMouseEnter={() => setSubmenu(i)}>
-            <button role="menuitem" aria-haspopup="menu" aria-expanded={submenu === i} onClick={() => setSubmenu(i)}>
-              {entry.label}
-              <span aria-hidden="true"> ▸</span>
+    <div role="menu" aria-label={name} className={top ? `nb-menu nb-menu-popup${place.above ? " above" : ""}` : "nb-menu nb-submenu"} style={top ? place.style : undefined}>
+      {items.map((entry, i) => {
+        if ("separator" in entry) return <div key={i} className="nb-menu-sep" role="separator" />;
+        const className = entry.danger ? "nb-menu-item is-danger" : "nb-menu-item";
+        const check = <span className="nb-menu-check">{entry.checked && <Icon name="check" />}</span>;
+        return entry.submenu ? (
+          <div key={i} className="nb-menu-wrap" onMouseEnter={() => setSubmenu(i)}>
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              aria-expanded={submenu === i}
+              className={submenu === i ? `${className} is-active` : className}
+              onClick={() => setSubmenu(i)}
+            >
+              {check}
+              <span className="nb-menu-label">{entry.label}</span>
+              <Icon name="chevron-left" className="nb-menu-sub" />
             </button>
             {submenu === i && list(entry.submenu, entry.label)}
           </div>
@@ -59,22 +72,23 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
             key={i}
             role={entry.checked === undefined ? "menuitem" : "menuitemradio"}
             aria-checked={entry.checked}
+            className={className}
             onClick={() => {
               close();
               entry.onSelect?.();
             }}
           >
-            {entry.label}
-            {entry.checked && <span aria-hidden="true"> ✓</span>}
+            {check}
+            <span className="nb-menu-label">{entry.label}</span>
           </button>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 
   return (
     <div
-      className="menu-root"
+      className="nb-menu-root"
       ref={root}
       onKeyDown={(e) => {
         if (e.key === "Escape" && open) {
@@ -83,8 +97,16 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
         }
       }}
     >
-      <button ref={trigger} className="menu-trigger" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => onOpenChange(!open)}>
-        ⋯
+      <button
+        ref={trigger}
+        className={open ? "nb-iconbtn nb-reveal is-active" : "nb-iconbtn nb-reveal"}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+      >
+        <Icon name="more" />
       </button>
       {open && list(entries, label, true)}
     </div>

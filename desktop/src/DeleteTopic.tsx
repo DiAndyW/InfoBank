@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { deleteTopic, listItems, type FeedItem, type Keep, type Topic } from "./api";
-import { PaperclipIcon } from "./attachments";
+import Dialog from "./Dialog";
+import { Icon } from "./icons";
 
 // list_items' page size.
 const PAGE_SIZE = 100;
@@ -42,77 +43,101 @@ export default function DeleteTopic({ topic, onClose, onError }: Props) {
     }
   }
 
-  const dialog = (titleId: string, className: string, children: ReactNode) => (
-    <div className="modal-backdrop">
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className={`modal ${className}`} onKeyDown={(e) => e.key === "Escape" && onClose()}>
-        {children}
-      </div>
+  const cancel = (
+    <button className="nb-btn nb-btn-secondary" autoFocus={!manual} onClick={onClose}>
+      Cancel
+    </button>
+  );
+  const noteId = useId();
+  const choice = (label: string, note: string, keep: Keep) => (
+    <div className={keep.kind === "none" ? "nb-choice is-danger" : "nb-choice"}>
+      <button className="nb-choice-label" aria-describedby={`${noteId}-${keep.kind}`} onClick={() => remove(keep)}>
+        {label}
+      </button>
+      <span className="nb-choice-note" id={`${noteId}-${keep.kind}`}>
+        {note}
+      </span>
     </div>
   );
 
   if (!manual) {
-    return dialog(
-      "delete-topic-title",
-      "delete-topic",
-      <>
-        <h2 id="delete-topic-title">Delete "{topic.name}"?</h2>
-        {topic.item_count === 0 ? (
-          <div className="actions">
-            <button className="secondary" autoFocus onClick={onClose}>
-              Cancel
-            </button>
-            <button onClick={() => remove({ kind: "none" })}>Delete</button>
-          </div>
-        ) : (
-          <>
-            <p>It has {topic.item_count === 1 ? "1 Item" : `${topic.item_count} Items`}.</p>
-            <div className="choice">
-              <button onClick={() => remove({ kind: "all" })}>Keep all</button>
-              <span>move them to the Inbox</span>
-            </div>
-            <div className="choice">
-              <button onClick={() => remove({ kind: "none" })}>Delete all</button>
-              <span>move them to Trash</span>
-            </div>
-            <div className="choice">
-              <button onClick={() => setManual(true)}>Select manually…</button>
-            </div>
-            <div className="actions">
-              <button className="secondary" autoFocus onClick={onClose}>
-                Cancel
+    const count = topic.item_count;
+    return (
+      <Dialog
+        title={`Delete "${topic.name}"?`}
+        onClose={onClose}
+        actions={
+          count === 0 ? (
+            <>
+              {cancel}
+              <button className="nb-btn nb-btn-danger" onClick={() => remove({ kind: "none" })}>
+                Delete
               </button>
+            </>
+          ) : (
+            cancel
+          )
+        }
+      >
+        {count > 0 && (
+          <>
+            <p>It has {count === 1 ? "1 Item" : `${count} Items`}.</p>
+            <div className="nb-choices">
+              {choice("Keep all", "move them to the Inbox", { kind: "all" })}
+              {choice("Delete all", "move them to Trash", { kind: "none" })}
+              <div className="nb-choice">
+                <button className="nb-choice-label" onClick={() => setManual(true)}>
+                  Select manually…
+                </button>
+                <Icon name="chevron-right" />
+              </div>
             </div>
           </>
         )}
-      </>,
+      </Dialog>
     );
   }
 
   const last = items[items.length - 1];
-  return dialog(
-    "keep-title",
-    "select-items",
-    <>
-      <h2 id="keep-title">Choose Items to keep from "{topic.name}"</h2>
-      <p className="hint">Checked Items move to the Inbox. The rest go to Trash.</p>
-      <ul className="pick">
+  const trashed = Math.max(0, topic.item_count - kept.length);
+  return (
+    <Dialog
+      wide
+      title={`Choose Items to keep from "${topic.name}"`}
+      hint="Checked Items move to the Inbox. The rest go to Trash."
+      onClose={onClose}
+      actions={
+        <>
+          {cancel}
+          <button className={trashed > 0 ? "nb-btn nb-btn-danger" : "nb-btn nb-btn-primary"} onClick={() => remove({ kind: "only", ids: kept })}>
+            Keep {kept.length} · Trash {trashed}
+          </button>
+        </>
+      }
+    >
+      <ul className="nb-selectlist">
         {items.map((it) => (
           <li key={it.id}>
-            <label>
-              <input
-                type="checkbox"
-                checked={kept.includes(it.id)}
-                onChange={() => setKept(kept.includes(it.id) ? kept.filter((k) => k !== it.id) : [...kept, it.id])}
-              />
+            <label className="nb-selectrow">
+              <span className="nb-check">
+                <input
+                  type="checkbox"
+                  checked={kept.includes(it.id)}
+                  onChange={() => setKept(kept.includes(it.id) ? kept.filter((k) => k !== it.id) : [...kept, it.id])}
+                />
+                <span className="nb-check-box" aria-hidden="true">
+                  <Icon name="check" size={12} />
+                </span>
+              </span>
               <time>
                 {new Date(it.capture_time_us / 1000).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
               </time>
-              <span className="summary">
+              <span className="nb-selectrow-text">
                 {it.text ? (
                   it.text.split("\n")[0]
                 ) : (
                   <>
-                    <PaperclipIcon /> {it.attachments.map((a) => a.filename).join(", ")}
+                    <Icon name="paperclip" /> {it.attachments.map((a) => a.filename).join(", ")}
                   </>
                 )}
               </span>
@@ -120,29 +145,23 @@ export default function DeleteTopic({ topic, onClose, onError }: Props) {
           </li>
         ))}
       </ul>
-      <div className="pager">
-        <button className="secondary" disabled={page === 0} onClick={() => setStarts(starts.slice(0, -1))}>
-          ‹ Prev
+      <div className="nb-pager">
+        <button className="nb-btn nb-btn-quiet" disabled={page === 0} onClick={() => setStarts(starts.slice(0, -1))}>
+          <Icon name="chevron-left" />
+          Prev
         </button>
-        <span>
+        <span className="nb-pager-label">
           Page {page + 1} of {pages}
         </span>
         <button
-          className="secondary"
+          className="nb-btn nb-btn-quiet"
           disabled={items.length < PAGE_SIZE}
           onClick={() => setStarts([...starts, { capture_time_us: last.capture_time_us, id: last.id }])}
         >
-          Next ›
+          Next
+          <Icon name="chevron-right" />
         </button>
       </div>
-      <div className="actions">
-        <button className="secondary" onClick={onClose}>
-          Cancel
-        </button>
-        <button onClick={() => remove({ kind: "only", ids: kept })}>
-          Keep {kept.length} · Trash {Math.max(0, topic.item_count - kept.length)}
-        </button>
-      </div>
-    </>,
+    </Dialog>
   );
 }

@@ -252,16 +252,16 @@ test("scrolling to the top loads older Items", async () => {
 test("a rejected secret shows in the sidebar and opens Settings", async () => {
   backend(configured, { status: "unauthorized" });
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: "⚠ Secret rejected" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Secret rejected" }));
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
 });
 
 test("the status line follows sync-status events", async () => {
   backend(configured);
   render(<App />);
-  expect(await screen.findByText("● Synced")).toBeInTheDocument();
+  expect(await screen.findByText("Synced")).toBeInTheDocument();
   await act(() => emit("sync-status", "offline"));
-  expect(await screen.findByText("○ Offline, retrying")).toBeInTheDocument();
+  expect(await screen.findByText("Offline, retrying")).toBeInTheDocument();
 });
 
 test("a slow load for the previous view doesn't replace the current one", async () => {
@@ -285,7 +285,7 @@ test("a slow load for the previous view doesn't replace the current one", async 
 test("a Keychain problem shows in the sidebar", async () => {
   backend(configured, { status: "keychain" });
   render(<App />);
-  expect(await screen.findByText("⚠ Keychain access needed")).toBeInTheDocument();
+  expect(await screen.findByText("Keychain access needed")).toBeInTheDocument();
 });
 
 test("the theme is Warm paper until another is chosen", async () => {
@@ -442,12 +442,19 @@ test("a second click while downloading is ignored", async () => {
   expect(calls.filter((c) => c.cmd === "open_attachment")).toHaveLength(1);
 });
 
+test("the Archived section is there with nothing archived, and says so when opened", async () => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Archived" }));
+  expect(screen.getAllByText("None yet")).toHaveLength(1);
+});
+
 test("archived Topics are under a collapsed Archived section", async () => {
   backend(configured, { topics: [topic("g", "Gym"), topic("o", "Old", { archived: true })] });
   render(<App />);
   expect(await screen.findByRole("button", { name: "Gym" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Old" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
   expect(screen.getByRole("button", { name: "Old" })).toBeInTheDocument();
 });
 
@@ -459,7 +466,7 @@ test("a Topic's menu archives it, and an archived one's unarchives it", async ()
   expect(calls).toContainEqual({ cmd: "archive_topic", args: { id: "g" } });
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
   await userEvent.click(screen.getByRole("button", { name: "Old actions" }));
   expect(screen.queryByRole("menuitem", { name: "Archive" })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive" }));
@@ -522,7 +529,7 @@ test("when the selected Topic disappears the Inbox is shown", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
   topics = [];
   await act(() => emit("items-changed"));
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Inbox" })).toHaveClass("selected"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Inbox" })).toHaveAttribute("aria-current", "page"));
   const lists = calls.filter((c) => c.cmd === "list_items");
   expect(lists[lists.length - 1].args.view).toEqual({ kind: "inbox" });
 });
@@ -642,7 +649,7 @@ test("a failed move is shown in a dialog", async () => {
   expect(await screen.findByRole("alertdialog", { name: "Couldn't move the Item" })).toHaveTextContent("That Topic is archived");
 });
 
-test("All Items labels each filed Item with its Topic, shown as text", async () => {
+test("All Items shows each Item's place as a chip, Topic names as text", async () => {
   backend(configured, {
     topics: [topic("g", "<b>Gym</b>")],
     // Newest first, as list_items returns them; the Feed shows them oldest first.
@@ -650,12 +657,18 @@ test("All Items labels each filed Item with its Topic, shown as text", async () 
   });
   render(<App />);
   const [first, second] = await screen.findAllByRole("article");
-  expect(first).toHaveTextContent("· <b>Gym</b>");
-  expect(second).not.toHaveTextContent("·");
-  expect(screen.getByRole("button", { name: "<b>Gym</b>" })).toBeInTheDocument();
+  expect(within(first).getByTitle("In <b>Gym</b>")).toHaveTextContent("<b>Gym</b>");
+  expect(within(second).getByTitle("In Inbox")).toHaveTextContent("Inbox");
 
   await userEvent.click(screen.getByRole("button", { name: "<b>Gym</b>" }));
-  await vi.waitFor(() => expect(screen.getAllByRole("article")[0]).not.toHaveTextContent("·"));
+  await vi.waitFor(() => expect(within(screen.getAllByRole("article")[0]).queryByTitle("In <b>Gym</b>")).not.toBeInTheDocument());
+});
+
+test("each Topic in the sidebar shows how many Items it has", async () => {
+  backend(configured, { topics: [topic("g", "Gym", { item_count: 12 })] });
+  render(<App />);
+  const name = await screen.findByRole("button", { name: "Gym" });
+  expect(name.parentElement).toHaveTextContent("12");
 });
 
 test("capturing in a Topic files the Item there", async () => {
@@ -670,7 +683,7 @@ test("capturing in a Topic files the Item there", async () => {
 test("an archived Topic shows a bar instead of the composer", async () => {
   const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })] });
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Archived 1" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
   expect(screen.getByLabelText("New Item")).not.toBeVisible();
@@ -722,12 +735,12 @@ test("Select manually pages through the Topic and keeps only checked Items", asy
   expect(within(dialog).getByRole("checkbox", { name: /note 3$/ })).not.toBeChecked();
   await userEvent.click(within(dialog).getByRole("checkbox", { name: /note 3$/ }));
 
-  await userEvent.click(within(dialog).getByRole("button", { name: "Next ›" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Next" }));
   await userEvent.click(await within(dialog).findByRole("checkbox", { name: /last one/ }));
   expect(within(dialog).getByText("Page 2 of 2")).toBeInTheDocument();
-  expect(within(dialog).getByRole("button", { name: "Next ›" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Next" })).toBeDisabled();
 
-  await userEvent.click(within(dialog).getByRole("button", { name: "‹ Prev" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "Prev" }));
   expect(await within(dialog).findByRole("checkbox", { name: /note 3$/ })).toBeChecked();
   await userEvent.click(within(dialog).getByRole("button", { name: "Keep 2 · Trash 99" }));
   expect(calls).toContainEqual({ cmd: "delete_topic", args: { id: "g", keep: { kind: "only", ids: ["p3", "last"] } } });
@@ -746,7 +759,7 @@ test("the draft survives a visit to an archived Topic", async () => {
   backend(configured, { topics: [topic("o", "Old", { archived: true })] });
   render(<App />);
   await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
-  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Inbox" }));

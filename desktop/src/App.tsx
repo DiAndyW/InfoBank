@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getSettings, listTopics, syncStatus, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
+import Dialog from "./Dialog";
 import Feed from "./Feed";
 import Settings from "./Settings";
 import Sidebar from "./Sidebar";
+import { Icon } from "./icons";
 import { applyTheme, storedTheme } from "./theme";
 
 export default function App() {
@@ -61,9 +63,14 @@ export default function App() {
 
   if (loadError) {
     return (
-      <div className="empty load-error">
-        <p role="alert">{loadError}</p>
-        <button onClick={load}>Try again</button>
+      <div className="nb-empty is-window">
+        <Icon name="alert" size={24} />
+        <p role="alert" className="nb-empty-title">
+          {loadError}
+        </p>
+        <button className="nb-btn nb-btn-secondary" onClick={load}>
+          Try again
+        </button>
       </div>
     );
   }
@@ -85,7 +92,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className="nb-app">
       <Sidebar topics={topics} selected={feed} onSelect={setFeed} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
       <Feed
         view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }}
@@ -94,21 +101,18 @@ export default function App() {
       />
       {deleting && <DeleteTopic topic={deleting} onClose={() => setDeleting(null)} onError={showError} />}
       {error && (
-        <div className="modal-backdrop">
-          <div
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="error-title"
-            className="modal"
-            onKeyDown={(e) => e.key === "Escape" && setError(null)}
-          >
-            <h2 id="error-title">{error.title}</h2>
-            <p>{error.message}</p>
-            <button type="button" autoFocus onClick={() => setError(null)}>
+        <Dialog
+          alert
+          title={error.title}
+          onClose={() => setError(null)}
+          actions={
+            <button type="button" className="nb-btn nb-btn-primary" autoFocus onClick={() => setError(null)}>
               OK
             </button>
-          </div>
-        </div>
+          }
+        >
+          <p>{error.message}</p>
+        </Dialog>
       )}
     </div>
   );

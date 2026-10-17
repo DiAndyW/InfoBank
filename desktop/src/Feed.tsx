@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { listItems, moveItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
 import { Attachments } from "./attachments";
 import Composer from "./Composer";
+import { Icon } from "./icons";
 import { linkify } from "./links";
 import Menu from "./Menu";
 
@@ -69,92 +70,107 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
   const shown = [...items].reverse();
   const today = new Date().toDateString();
   return (
-    <main className="feed">
-      <div className="items" ref={listRef} onScroll={onScroll} data-testid="feed-items">
-        {shown.length === 0 ? (
-          <div className="empty">
-            <p>Nothing here yet.</p>
-            <p className="hint">Capture something below.</p>
-          </div>
-        ) : (
-          shown.map((it, i) => {
-            const time = new Date(it.capture_time_us / 1000);
-            const prev = shown[i - 1];
-            const label = view.kind === "all" ? topics.find((t) => t.id === it.topic_id)?.name : undefined;
-            const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
-            return (
-              <Fragment key={it.id}>
-                {newDay && (
-                  <div className="day" role="separator">
-                    {time.toDateString() === today
-                      ? "Today"
-                      : time.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
-                  </div>
-                )}
-                <article
-                  className="item"
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setMenuFor(it.id);
-                  }}
-                >
-                  <time>{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
-                  <div className="body">
-                    {it.text && (
-                      <p className="text">
-                        {linkify(it.text).map((part, j) =>
-                          typeof part === "string" ? (
-                            part
-                          ) : (
-                            <a
-                              key={j}
-                              href={part.url}
-                              onClick={(e) => {
-                                e.preventDefault();
-                                openUrl(part.url);
-                              }}
-                            >
-                              {part.url}
-                            </a>
-                          ),
-                        )}
-                      </p>
-                    )}
-                    {it.attachments.length > 0 && <Attachments list={it.attachments} />}
-                    {label && <span className="topic-label">· {label}</span>}
-                  </div>
-                  {it.pending && (
-                    <span className="pending" aria-label="Not synced yet" title="Not synced yet">
-                      ◌
-                    </span>
+    <main className="nb-feed">
+      <div className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
+        <div className="nb-feed-col">
+          {shown.length === 0 ? (
+            <div className="nb-empty">
+              <p className="nb-empty-title">Nothing here yet.</p>
+              <p className="nb-empty-hint">Capture something below.</p>
+            </div>
+          ) : (
+            shown.map((it, i) => {
+              const time = new Date(it.capture_time_us / 1000);
+              const prev = shown[i - 1];
+              const place = view.kind !== "all" ? undefined : it.topic_id === null ? "Inbox" : topics.find((t) => t.id === it.topic_id)?.name;
+              const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
+              return (
+                <Fragment key={it.id}>
+                  {newDay && (
+                    <div className="nb-day" role="separator">
+                      <span>
+                        {time.toDateString() === today
+                          ? "Today"
+                          : time.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
+                      </span>
+                    </div>
                   )}
-                  <Menu
-                    label="Item actions"
-                    open={menuFor === it.id}
-                    onOpenChange={(o) => setMenuFor(o ? it.id : null)}
-                    entries={[
-                      {
-                        label: "Move to…",
-                        submenu: targets.map((t) => ({
-                          label: t.name,
-                          checked: it.topic_id === t.id,
-                          onSelect: () => {
-                            if (it.topic_id !== t.id) moveItem(it.id, t.id).catch((e) => onError("Couldn't move the Item", e));
+                  <article
+                    className={menuFor === it.id ? "nb-item is-open" : "nb-item"}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setMenuFor(it.id);
+                    }}
+                  >
+                    <div className="nb-item-body">
+                      {it.text && (
+                        <p className="nb-item-text">
+                          {linkify(it.text).map((part, j) =>
+                            typeof part === "string" ? (
+                              part
+                            ) : (
+                              <a
+                                key={j}
+                                className="nb-link"
+                                href={part.url}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  openUrl(part.url);
+                                }}
+                              >
+                                {part.url}
+                              </a>
+                            ),
+                          )}
+                        </p>
+                      )}
+                      {it.attachments.length > 0 && <Attachments list={it.attachments} />}
+                    </div>
+                    <div className="nb-item-meta">
+                      {place && (
+                        <span className="nb-topic-chip" title={`In ${place}`}>
+                          <Icon name={it.topic_id === null ? "inbox" : "topic"} size={12} />
+                          <span className="nb-chip-label">{place}</span>
+                        </span>
+                      )}
+                      {it.pending && (
+                        <span className="nb-pending" title="Not synced yet">
+                          <Icon name="pending" label="Not synced yet" />
+                        </span>
+                      )}
+                      <time className="nb-item-time">{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
+                      <Menu
+                        label="Item actions"
+                        open={menuFor === it.id}
+                        onOpenChange={(o) => setMenuFor(o ? it.id : null)}
+                        entries={[
+                          {
+                            label: "Move to…",
+                            submenu: targets.map((t) => ({
+                              label: t.name,
+                              checked: it.topic_id === t.id,
+                              onSelect: () => {
+                                if (it.topic_id !== t.id) moveItem(it.id, t.id).catch((e) => onError("Couldn't move the Item", e));
+                              },
+                            })),
                           },
-                        })),
-                      },
-                    ]}
-                  />
-                </article>
-              </Fragment>
-            );
-          })
-        )}
+                        ]}
+                      />
+                    </div>
+                  </article>
+                </Fragment>
+              );
+            })
+          )}
+        </div>
       </div>
       {current?.archived && (
-        <div className="archived-bar">
+        <div className="nb-archived-bar">
+          <Icon name="archive" />
           <span>"{current.name}" is archived.</span>
-          <button onClick={() => unarchiveTopic(current.id).catch((e) => onError("Couldn't unarchive the Topic", e))}>Unarchive</button>
+          <button className="nb-btn nb-btn-secondary" onClick={() => unarchiveTopic(current.id).catch((e) => onError("Couldn't unarchive the Topic", e))}>
+            Unarchive
+          </button>
         </div>
       )}
       {/* Hidden, not unmounted: the draft and staged files are shared by every view. */}
