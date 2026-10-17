@@ -13,11 +13,49 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<settings::Settin
     settings::get(&state.db.lock().unwrap(), &state.secret)
 }
 
+fn changed(app: &AppHandle, state: &AppState) {
+    state.wake.notify_one();
+    let _ = app.emit("items-changed", ());
+}
+
 #[tauri::command]
-pub async fn save_settings(state: State<'_, AppState>, server_url: String, secret: Option<String>) -> Result<(), String> {
+pub async fn save_settings(app: AppHandle, state: State<'_, AppState>, server_url: String, secret: Option<String>) -> Result<(), String> {
     settings::save(&state.db.lock().unwrap(), &state.secret, &server_url, secret.as_deref())?;
     state.settings_saved.notify_one();
-    state.wake.notify_one();
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn nav_counts(state: State<'_, AppState>) -> Result<feed::Counts, String> {
+    feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn edit_item(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    item_id: String,
+    text: String,
+    add_ids: Vec<String>,
+    remove_ids: Vec<String>,
+) -> Result<feed::Edited, String> {
+    let edited = feed::edit_item(&state.db.lock().unwrap(), &state.dir, &item_id, &text, &add_ids, &remove_ids, now_us())?;
+    changed(&app, &state);
+    Ok(edited)
+}
+
+#[tauri::command]
+pub async fn trash_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    feed::set_trashed(&state.db.lock().unwrap(), &item_id, true, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn restore_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    feed::set_trashed(&state.db.lock().unwrap(), &item_id, false, now_us())?;
+    changed(&app, &state);
     Ok(())
 }
 
@@ -32,7 +70,7 @@ pub async fn list_items(
     view: feed::View,
     before: Option<feed::Before>,
 ) -> Result<Vec<feed::FeedItem>, String> {
-    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref()).map_err(|e| e.to_string())
+    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -67,11 +105,6 @@ pub async fn stage_attachment_bytes(state: State<'_, AppState>, request: tauri::
 #[tauri::command]
 pub async fn unstage_attachment(state: State<'_, AppState>, id: String) -> Result<(), String> {
     files::unstage(&state.db.lock().unwrap(), &state.dir, &id)
-}
-
-fn changed(app: &AppHandle, state: &AppState) {
-    state.wake.notify_one();
-    let _ = app.emit("items-changed", ());
 }
 
 #[tauri::command]

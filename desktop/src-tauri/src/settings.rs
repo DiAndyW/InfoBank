@@ -43,13 +43,22 @@ pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Opt
             }
         }
     }
-    // A cursor only means something to the Server that issued it.
-    conn.execute(
-        "UPDATE device SET pull_cursor = CASE WHEN server_url IS ?1 THEN pull_cursor ELSE 0 END, server_url = ?1",
-        [&url],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let new_server: bool =
+        tx.query_row("SELECT server_url IS NOT ?1 FROM device", [&url], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if new_server {
+        // A cursor and mirror only mean something to the Server they came from; unsynced Captures and Topics go to the new one.
+        tx.execute_batch(
+            "DELETE FROM items WHERE id NOT IN
+                 (SELECT json_extract(op, '$.item_id') FROM outbox WHERE json_extract(op, '$.type') = 'CaptureItem');
+             DELETE FROM topics WHERE id NOT IN
+                 (SELECT json_extract(op, '$.topic_id') FROM outbox WHERE json_extract(op, '$.type') = 'CreateTopic');
+             UPDATE device SET pull_cursor = 0;",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.execute("UPDATE device SET server_url = ?1", [&url]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -153,5 +162,28 @@ mod tests {
 
         save(&conn, &secret, "https://b.example.com", Some("s3cret")).unwrap();
         assert_eq!(cursor(&conn), 0, "a new Server kept the old cursor");
+    }
+
+    #[test]
+    fn a_new_server_clears_the_old_ones_items_but_keeps_unsynced_captures_and_topics() {
+        let (d, conn, secret) = env();
+        save(&conn, &secret, "https://a.example.com", Some("s3cret")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO items (id, text, capture_time) VALUES ('pulled', 'x', 1);
+             INSERT INTO topics (id, name) VALUES ('old', 'Old');",
+        )
+        .unwrap();
+        crate::feed::capture(&conn, d.path(), "unsynced", &[], None, 2).unwrap();
+        crate::topics::create(&conn, "Mine", 3).unwrap();
+        let count = |table: &str| -> i64 { conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap() };
+
+        save(&conn, &secret, "https://a.example.com", None).unwrap();
+        assert_eq!(count("items"), 2, "the same Server lost Items");
+
+        save(&conn, &secret, "https://b.example.com", Some("s3cret")).unwrap();
+        let text: String = conn.query_row("SELECT text FROM items", [], |r| r.get(0)).unwrap();
+        let name: String = conn.query_row("SELECT name FROM topics", [], |r| r.get(0)).unwrap();
+        assert_eq!((count("items"), text.as_str(), count("topics"), name.as_str()), (1, "unsynced", 1, "Mine"));
+        assert_eq!(count("outbox"), 2);
     }
 }

@@ -20,6 +20,11 @@ pub enum Op {
     UnarchiveTopic { topic_id: String },
     DeleteTopic { topic_id: String, trash: Vec<String> },
     MoveItem { item_id: String, topic_id: Option<String> },
+    SetText { item_id: String, text: Option<String> },
+    AddAttachment { item_id: String, attachment: NewAttachment },
+    RemoveAttachment { item_id: String, attachment_id: String },
+    TrashItem { item_id: String },
+    RestoreItem { item_id: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -83,6 +88,28 @@ fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
         }
         Op::MoveItem { item_id, topic_id } => {
             conn.execute("UPDATE items SET topic_id = ?2 WHERE id = ?1", (item_id, topic_id))?;
+        }
+        Op::SetText { item_id, text } => {
+            conn.execute("UPDATE items SET text = ?2, deleted_at = NULL, purge_at = NULL WHERE id = ?1", (item_id, text))?;
+        }
+        Op::AddAttachment { item_id, attachment: a } => {
+            // A pull page may have purged the Item while this op waited.
+            conn.execute(
+                "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 0, 0 WHERE EXISTS (SELECT 1 FROM items WHERE id = ?2)
+                 ON CONFLICT (id) DO NOTHING",
+                (&a.id, item_id, &a.filename, &a.mime_type, a.size_bytes),
+            )?;
+            conn.execute("UPDATE items SET deleted_at = NULL, purge_at = NULL WHERE id = ?1", [item_id])?;
+        }
+        Op::RemoveAttachment { item_id, attachment_id } => {
+            conn.execute("DELETE FROM attachments WHERE id = ?2 AND item_id = ?1", (item_id, attachment_id))?;
+        }
+        Op::TrashItem { item_id } => {
+            conn.execute("UPDATE items SET deleted_at = ?2, purge_at = NULL WHERE id = ?1", (item_id, at))?;
+        }
+        Op::RestoreItem { item_id } => {
+            conn.execute("UPDATE items SET deleted_at = NULL, purge_at = NULL WHERE id = ?1", [item_id])?;
         }
     }
     Ok(())
@@ -164,5 +191,87 @@ mod tests {
         queue(&conn, Op::UnarchiveTopic { topic_id: "u".into() }, 8).unwrap();
         assert_eq!(topic("u").1, None);
         assert_eq!(outbox(&conn).len(), 6);
+    }
+
+    fn png(id: &str) -> NewAttachment {
+        NewAttachment { id: id.into(), filename: format!("{id}.png"), mime_type: "image/png".into(), size_bytes: 3 }
+    }
+
+    #[test]
+    fn item_edits_go_out_in_the_servers_format() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        for op in [
+            Op::SetText { item_id: "i".into(), text: None },
+            Op::AddAttachment { item_id: "i".into(), attachment: png("a") },
+            Op::RemoveAttachment { item_id: "i".into(), attachment_id: "a".into() },
+            Op::TrashItem { item_id: "i".into() },
+            Op::RestoreItem { item_id: "i".into() },
+        ] {
+            queue(&conn, op, 1).unwrap();
+        }
+        let bodies: Vec<serde_json::Value> = outbox(&conn)
+            .into_iter()
+            .map(|mut o| {
+                let fields = o.as_object_mut().unwrap();
+                fields.remove("id");
+                fields.remove("at");
+                o
+            })
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                serde_json::json!({"type": "SetText", "item_id": "i", "text": null}),
+                serde_json::json!({"type": "AddAttachment", "item_id": "i",
+                                   "attachment": {"id": "a", "filename": "a.png", "mime_type": "image/png", "size_bytes": 3}}),
+                serde_json::json!({"type": "RemoveAttachment", "item_id": "i", "attachment_id": "a"}),
+                serde_json::json!({"type": "TrashItem", "item_id": "i"}),
+                serde_json::json!({"type": "RestoreItem", "item_id": "i"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn item_edits_change_the_mirror() {
+        let (_d, conn) = fresh();
+        conn.execute_batch(
+            "INSERT INTO items (id, text, capture_time, deleted_at, purge_at) VALUES ('i', 'old', 1, 5, 99);
+             INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES ('old', 'i', 'o.png', 'image/png', 1, 1, 1);",
+        )
+        .unwrap();
+        let item = || -> (Option<String>, Option<i64>, Option<i64>) {
+            conn.query_row("SELECT text, deleted_at, purge_at FROM items WHERE id = 'i'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+        };
+        let files = || -> Vec<(String, bool)> {
+            let mut stmt = conn.prepare("SELECT id, uploaded FROM attachments ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
+        };
+
+        queue(&conn, Op::SetText { item_id: "i".into(), text: Some("edited".into()) }, 10).unwrap();
+        assert_eq!(item(), (Some("edited".into()), None, None), "an edit counts as a restore");
+        queue(&conn, Op::TrashItem { item_id: "i".into() }, 11).unwrap();
+        assert_eq!(item(), (Some("edited".into()), Some(11), None));
+        queue(&conn, Op::AddAttachment { item_id: "i".into(), attachment: png("new") }, 12).unwrap();
+        assert_eq!(item().1, None, "adding a file counts as a restore");
+        assert_eq!(files(), [("new".into(), false), ("old".into(), true)]);
+        queue(&conn, Op::RemoveAttachment { item_id: "other".into(), attachment_id: "new".into() }, 13).unwrap();
+        queue(&conn, Op::RemoveAttachment { item_id: "i".into(), attachment_id: "old".into() }, 13).unwrap();
+        assert_eq!(files(), [("new".into(), false)]);
+        queue(&conn, Op::TrashItem { item_id: "i".into() }, 14).unwrap();
+        queue(&conn, Op::RestoreItem { item_id: "i".into() }, 15).unwrap();
+        assert_eq!(item(), (Some("edited".into()), None, None));
+    }
+
+    #[test]
+    fn a_file_added_to_an_item_that_is_gone_is_skipped() {
+        let (_d, conn) = fresh();
+        queue(&conn, Op::AddAttachment { item_id: "gone".into(), attachment: png("a") }, 1).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM attachments", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 }

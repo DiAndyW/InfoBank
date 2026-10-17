@@ -402,6 +402,19 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_that_purges_an_item_with_a_queued_file_still_applies() {
+        let (_d, conn) = fresh();
+        let pulled = serde_json::json!({"items": [item("i", "x", vec![])], "topics": [], "tombstones": [], "cursor": 1, "has_more": false});
+        apply_pull(&conn, &page(pulled)).unwrap();
+        let png = crate::ops::NewAttachment { id: "a".into(), filename: "a.png".into(), mime_type: "image/png".into(), size_bytes: 3 };
+        crate::ops::queue(&conn, crate::ops::Op::AddAttachment { item_id: "i".into(), attachment: png }, 2).unwrap();
+        let purged = serde_json::json!({"items": [], "topics": [], "tombstones": ["i"], "cursor": 2, "has_more": false});
+        apply_pull(&conn, &page(purged)).unwrap();
+        let cursor: i64 = conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap();
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
     fn a_page_is_stored_and_its_cursor_saved() {
         let (_d, conn) = fresh();
         let p = page(serde_json::json!({
@@ -661,7 +674,7 @@ mod server_tests {
     }
 
     fn texts(d: &Device) -> Vec<String> {
-        let items = feed::list_items(&d.db.lock().unwrap(), &View::All, None).unwrap();
+        let items = feed::list_items(&d.db.lock().unwrap(), &View::All, None, 0).unwrap();
         items.into_iter().map(|i| i.text.unwrap()).collect()
     }
 
@@ -684,7 +697,7 @@ mod server_tests {
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
-        assert!(feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap().iter().all(|i| !i.pending));
+        assert!(feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap().iter().all(|i| !i.pending));
 
         sync(&b).await.unwrap();
         assert_eq!(texts(&b), ["captured later", "captured offline"]);
@@ -833,7 +846,7 @@ mod server_tests {
         assert_eq!(sync(&a).await, Ok(true));
         assert!(flag(&a, "uploaded", &id));
         assert!(flag(&a, "has_thumbnail", &id), "the pull after uploading didn't bring the thumbnail");
-        assert!(!feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap()[0].pending);
+        assert!(!feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].pending);
 
         let b = device(&server, &server.secret);
         sync(&b).await.unwrap();
@@ -1015,7 +1028,7 @@ mod server_tests {
     }
 
     fn only_item(d: &Device) -> String {
-        feed::list_items(&d.db.lock().unwrap(), &View::All, None).unwrap()[0].id.clone()
+        feed::list_items(&d.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].id.clone()
     }
 
     #[tokio::test]
@@ -1061,7 +1074,7 @@ mod server_tests {
         feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], Some(&gym), T0 + 2 * SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
-        let items = feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap();
+        let items = feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap();
         let (binned, kept) = (items[0].id.clone(), items[1].id.clone());
 
         topics::delete(&a.db.lock().unwrap(), &gym, &Keep::Only { ids: vec![kept.clone()] }, T0 + 3 * SECOND).unwrap();
@@ -1102,5 +1115,80 @@ mod server_tests {
             names.sort();
             assert_eq!(names, ["Books", "Books (1)"]);
         }
+    }
+
+    fn now() -> i64 {
+        chrono::Utc::now().timestamp_micros()
+    }
+
+    #[tokio::test]
+    async fn an_edit_reaches_another_device() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let first = capture_png(&a, "receipt");
+        sync(&a).await.unwrap();
+        let item = only_item(&a);
+        let second = crate::files::stage_bytes(&a.dir, "second.png", PIXEL_PNG).unwrap().id;
+        feed::edit_item(
+            &a.db.lock().unwrap(),
+            &a.dir,
+            &item,
+            "receipt, kept",
+            std::slice::from_ref(&second),
+            std::slice::from_ref(&first),
+            T0 + SECOND,
+        )
+        .unwrap();
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "uploaded", &second));
+
+        sync(&b).await.unwrap();
+        let got = &feed::list_items(&b.db.lock().unwrap(), &View::All, None, now()).unwrap()[0];
+        assert_eq!(got.text.as_deref(), Some("receipt, kept"));
+        assert_eq!(got.attachments.iter().map(|a| a.id.clone()).collect::<Vec<_>>(), [second]);
+    }
+
+    #[tokio::test]
+    async fn an_emptied_item_waits_in_trash_until_the_servers_deadline_and_comes_back_whole() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], None, T0).unwrap();
+        sync(&a).await.unwrap();
+        let item = only_item(&a);
+
+        let before = now();
+        assert!(feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "", &[], &[], T0 + SECOND).unwrap().trashed);
+        sync(&a).await.unwrap();
+        let after = now();
+        let trash = feed::list_items(&a.db.lock().unwrap(), &View::Trash, None, now()).unwrap();
+        let purge_at = trash[0].purge_at_us.expect("the pull brought the Server's deadline");
+        let thirty_days = 30 * 24 * 3600 * SECOND;
+        assert!((before - SECOND + thirty_days..=after + SECOND + thirty_days).contains(&purge_at), "{purge_at}");
+
+        feed::set_trashed(&a.db.lock().unwrap(), &item, false, T0 + 2 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        assert_eq!(texts(&b), ["squat 100"]);
+    }
+
+    #[tokio::test]
+    async fn an_edit_made_after_a_trash_elsewhere_brings_the_item_back() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        let item = only_item(&a);
+
+        feed::set_trashed(&b.db.lock().unwrap(), &item, true, T0 + 10 * SECOND).unwrap();
+        sync(&b).await.unwrap();
+        feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "shoes, size 10.5", &[], &[], T0 + 20 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        assert_eq!(place(&b, &item), (None, false));
+        assert_eq!(texts(&b), ["shoes, size 10.5"]);
     }
 }
