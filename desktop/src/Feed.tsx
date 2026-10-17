@@ -22,6 +22,7 @@ function daysLeft(purgeAtUs: number) {
 type Props = {
   view: View;
   topics: Topic[];
+  covered: boolean;
   editor: RefObject<EditorHandle | null>;
   notice: NoticeData | null;
   onDismissNotice: () => void;
@@ -32,7 +33,7 @@ type Props = {
   onHighlightDone: () => void;
 };
 
-export default function Feed({ view, topics, editor, notice, onDismissNotice, onError, onTrashed, onRestored, highlight, onHighlightDone }: Props) {
+export default function Feed({ view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, highlight, onHighlightDone }: Props) {
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
   const pages = useRef(1);
@@ -142,7 +143,7 @@ export default function Feed({ view, topics, editor, notice, onDismissNotice, on
   const shown = [...listed].reverse();
   const today = new Date().toDateString();
   return (
-    <main className="nb-feed">
+    <main className={covered ? "nb-feed is-covered" : "nb-feed"} aria-hidden={covered || undefined} inert={covered}>
       <div className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
         <div className="nb-feed-col">
           {loadingOlder && showLoadingOlder && (

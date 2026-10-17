@@ -2,7 +2,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{AppState, cache, feed, files, settings, topics};
+use crate::{AppState, cache, feed, files, search, settings, topics};
 
 fn now_us() -> i64 {
     chrono::Utc::now().timestamp_micros()
@@ -71,6 +71,15 @@ pub async fn list_items(
     before: Option<feed::Before>,
 ) -> Result<Vec<feed::FeedItem>, String> {
     feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn search_items(
+    state: State<'_, AppState>,
+    query: search::Query,
+    before: Option<feed::Before>,
+) -> Result<Vec<search::SearchItem>, String> {
+    search::search(&state.db.lock().unwrap(), &query, before.as_ref())
 }
 
 #[tauri::command]

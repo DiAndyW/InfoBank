@@ -11,6 +11,7 @@ export default defineConfig(() => ({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
+    env: { TZ: "America/Los_Angeles" },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

@@ -54,6 +54,13 @@ const PATHS = {
   pending: <circle cx={8} cy={8} r={4.5} strokeDasharray="2.2 2" />,
   reveal: <path d="M6.5 3H3v10h10V9.5M9 2.5h4.5V7M13.5 2.5 7.5 8.5" />,
   restore: <path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" />,
+  calendar: (
+    <>
+      <rect x={2.5} y={3.5} width={11} height={10} rx={1.5} />
+      <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+    </>
+  ),
+  search: <path d="M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10zM10.75 10.75 14 14" />,
 } satisfies Record<string, ReactElement>;
 
 export type IconName = keyof typeof PATHS;

@@ -4,13 +4,16 @@ body { margin: 0; background: var(--surface); }
 button, input, textarea, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .nb-icon { flex: none; display: block; }
-:where(.nb-btn, .nb-iconbtn, .nb-nav, .nb-topic-name, .nb-menu-item, .nb-choice, .nb-file, .nb-thumb, .nb-sync, .nb-input, .nb-search input, .nb-composer textarea):focus-visible,
+:where(.nb-btn, .nb-iconbtn, .nb-pill, .nb-nav, .nb-topic-name, .nb-menu-item, .nb-choice, .nb-file, .nb-thumb, .nb-sync, .nb-input, .nb-search input, .nb-composer textarea):focus-visible,
 .nb-check input:focus-visible + .nb-check-box { outline: 2px solid var(--focus); outline-offset: 2px; }
 .nb-link { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; word-break: break-all; }
 kbd { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--ink-muted); }
 
 /* App layout */
 .nb-app { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); height: 100vh; }
+/* Results lie over the Feed, which stays laid out so its scroll and drafts survive. */
+.nb-app > .nb-feed, .nb-app > .nb-results { grid-area: 1 / 2; }
+.nb-feed.is-covered { visibility: hidden; }
 .nb-sidebar { min-height: 0; border-right: 1px solid var(--line); }
 .nb-topic-list { display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; margin: 0 calc(-1 * var(--space-2)); padding: 0 var(--space-2); }
 .nb-section-toggle { display: flex; align-items: center; gap: var(--space-1); width: 100%; min-height: 28px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
@@ -250,3 +253,26 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 [data-theme="notepad"] .nb-item-meta { min-height: 28px; }
 [data-theme="notepad"] .nb-day { margin: 0; height: 28px; }
 [data-theme="notepad"] .nb-day::before, [data-theme="notepad"] .nb-day::after { background: transparent; }
+
+/* Search */
+.nb-search { margin-bottom: var(--space-2); padding-right: 2px; }
+/* The box shows focus, like the composer, so the ring matches what you see. */
+.nb-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.nb-search input:focus-visible { outline: none; }
+.nb-search .nb-iconbtn { width: 24px; height: 24px; }
+.nb-results { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); border-top: 4px solid var(--feed-bar); }
+.nb-results[hidden] { display: none; }
+.nb-results-head { max-width: var(--feed-measure); padding: var(--space-4) var(--space-4) var(--space-2); box-sizing: border-box; }
+.nb-results-title { margin: 0; font: 600 16px/24px var(--font-sans); }
+.nb-result { width: 100%; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.nb-result .nb-item-text { display: block; white-space: pre-wrap; }
+.nb-result-files { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
+.nb-result mark { background: var(--accent-soft); color: inherit; border-radius: 2px; }
+.nb-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
+.nb-filters .nb-input { height: 28px; width: auto; }
+.nb-pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--surface-raised); color: var(--ink); font: 500 13px/16px var(--font-sans); cursor: pointer; white-space: nowrap; }
+.nb-pill .nb-icon { color: var(--ink-muted); }
+.nb-pill:hover, .nb-pill.is-active { background: var(--hover); }
+.nb-pill.is-on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.nb-pill.is-on .nb-icon { color: inherit; }
+.nb-menu-heading { padding: var(--space-1) var(--space-2) 2px calc(var(--space-1) + 16px + var(--space-2)); font: 600 11px/16px var(--font-sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }

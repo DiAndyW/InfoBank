@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { expect, test, vi } from "vitest";
 import App from "./App";
-import { MAX_ATTACHMENT_BYTES, type Counts, type FeedAttachment, type FeedItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
+import { MAX_ATTACHMENT_BYTES, type Counts, type FeedAttachment, type FeedItem, type SearchItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
 
 type Options = {
   topics?: Topic[];
@@ -20,6 +20,7 @@ type Options = {
   failing?: Record<string, string>;
   counts?: () => Counts;
   edited?: { trashed: boolean };
+  search?: (args: any) => SearchItem[] | Promise<SearchItem[]>;
   // A command waits for its gate, so a test can act while the call is in flight.
   gates?: Record<string, Promise<void>>;
 };
@@ -37,6 +38,7 @@ function backend(settings: Settings, opts: Options = {}) {
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
       if (cmd === "list_items") return opts.items ? opts.items(args) : [];
+      if (cmd === "search_items") return opts.search ? opts.search(args) : [];
       if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, trash: 0 };
       if (cmd === "edit_item") return opts.edited ?? { trashed: false };
       if (["trash_item", "restore_item"].includes(cmd)) return null;
@@ -1424,4 +1426,341 @@ test("Inbox and Trash show counts, refetched when items change, and Trash stays 
   await act(() => emit("items-changed"));
   await vi.waitFor(() => expect(within(screen.getByRole("button", { name: /^Trash/ })).getByText("4")).toBeInTheDocument());
   expect(screen.getByRole("button", { name: /^Trash/ })).toHaveAttribute("aria-current", "page");
+});
+
+const found = (it: FeedItem, marked_text = it.text, marked_filenames = it.attachments.map((a) => a.filename)): SearchItem => ({ ...it, marked_text, marked_filenames });
+const feedHidden = () => screen.getByTestId("feed-items").closest("main")!.getAttribute("aria-hidden") === "true";
+// The results stay mounted, hidden, after one opens, so look only in the Feed.
+const feedRow = (text: string) => within(screen.getByTestId("feed-items")).getByText(text).closest("article") as HTMLElement;
+const searchCalls = (calls: { cmd: string; args: any }[]) => calls.filter((c) => c.cmd === "search_items");
+
+test("typing in Search shows marked results over the Feed, and Esc brings the Feed back", async () => {
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "in the feed", at(2026, 10, 14, 9, 41))],
+    search: () => [found(feedItem("2", "paid the invoice", at(2026, 10, 3, 14, 2)), "paid the \uE000invoice\uE001")],
+  });
+  render(<App />);
+  await screen.findByText("in the feed");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "invoice");
+  expect(await screen.findByRole("heading", { name: 'Results for "invoice"' })).toBeInTheDocument();
+  const result = await screen.findByRole("button", { name: /paid the invoice/ });
+  expect(within(result).getByText("invoice", { selector: "mark" })).toBeInTheDocument();
+  expect(within(result).getByText("Inbox")).toBeInTheDocument();
+  expect(feedHidden()).toBe(true);
+  expect(searchCalls(calls)).toEqual([
+    { cmd: "search_items", args: { query: { text: "invoice", place: { kind: "all" }, from_us: null, to_us: null, has_files: false }, before: null } },
+  ]);
+  await userEvent.keyboard("{Escape}");
+  expect(feedHidden()).toBe(false);
+  expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("");
+});
+
+test("Clear search empties the field, and a field of spaces doesn't search", async () => {
+  const calls = backend(configured, { items: () => [feedItem("1", "in the feed", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  await screen.findByText("in the feed");
+  const field = screen.getByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "   ");
+  await new Promise((r) => setTimeout(r, 300));
+  expect(searchCalls(calls)).toEqual([]);
+  expect(feedHidden()).toBe(false);
+  await userEvent.type(field, "x");
+  expect(await screen.findByText("No Items match.")).toBeInTheDocument();
+  expect(feedHidden()).toBe(true);
+  await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(field).toHaveValue("");
+  expect(feedHidden()).toBe(false);
+});
+
+test("⌘F focuses Search", async () => {
+  backend(configured);
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.keyboard("{Meta>}f{/Meta}");
+  expect(field).toHaveFocus();
+});
+
+test("an open edit survives a search and is still there after Esc", async () => {
+  backend(configured, { items: () => [feedItem("1", "draft me", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  fireEvent.doubleClick(await screen.findByText("draft me"));
+  const editor = screen.getByRole("textbox", { name: "Edit Item" });
+  await userEvent.type(editor, " more");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "zz{Escape}");
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("draft me more");
+});
+
+test("typing quickly sends one search, and a slow earlier answer never replaces a newer one", async () => {
+  let release!: () => void;
+  const slow = new Promise<void>((resolve) => (release = resolve));
+  const calls = backend(configured, {
+    search: async ({ query }) => {
+      if (query.text === "old") {
+        await slow;
+        return [found(feedItem("o", "stale answer", 1))];
+      }
+      return [found(feedItem("n", "fresh answer", 2))];
+    },
+  });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "old");
+  await vi.waitFor(() => expect(searchCalls(calls)).toHaveLength(1));
+  await userEvent.type(field, "er");
+  expect(await screen.findByText("fresh answer")).toBeInTheDocument();
+  await act(async () => release());
+  expect(screen.queryByText("stale answer")).not.toBeInTheDocument();
+  expect(searchCalls(calls).map((c) => c.args.query.text)).toEqual(["old", "older"]);
+});
+
+test("Search waits while an input method is composing, and its Esc doesn't clear", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  fireEvent.compositionStart(field);
+  fireEvent.change(field, { target: { value: "jie" } });
+  await new Promise((r) => setTimeout(r, 300));
+  expect(searchCalls(calls)).toEqual([]);
+  fireEvent.change(field, { target: { value: "截" } });
+  fireEvent.compositionEnd(field);
+  await vi.waitFor(() => expect(searchCalls(calls).map((c) => c.args.query.text)).toEqual(["截"]));
+  fireEvent.keyDown(field, { key: "Escape", keyCode: 229 });
+  expect(field).toHaveValue("截");
+});
+
+test("results follow changes from sync", async () => {
+  let answer: SearchItem[] = [found(feedItem("1", "soon trashed", 1))];
+  backend(configured, { search: () => answer });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "soon");
+  await screen.findByText("soon trashed");
+  answer = [];
+  await act(() => emit("items-changed"));
+  expect(await screen.findByText("No Items match.")).toBeInTheDocument();
+});
+
+test("a failed search shows the reason under the heading and keeps the text", async () => {
+  backend(configured, { failing: { search_items: "database is locked" } });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "x");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't search. database is locked");
+  expect(field).toHaveValue("x");
+});
+
+const pick = async (filter: string, choice: string) => {
+  await userEvent.click(await screen.findByRole("button", { name: filter }));
+  await userEvent.click(within(screen.getByRole("menu", { name: filter })).getByRole("menuitemradio", { name: choice }));
+};
+const lastQuery = (calls: { cmd: string; args: any }[]) => {
+  const all = searchCalls(calls);
+  return all[all.length - 1].args.query;
+};
+
+test("the place filter lists Inbox, open Topics, then archived ones, and narrows the search", async () => {
+  const calls = backend(configured, { topics: [topic("t", "Taxes"), topic("o", "Old", { archived: true })] });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  const place = await screen.findByRole("button", { name: "Place" });
+  expect(place).toHaveTextContent("Anywhere");
+  await userEvent.click(place);
+  const menu = screen.getByRole("menu", { name: "Place" });
+  expect(within(menu).getAllByRole("menuitemradio").map((o) => o.textContent)).toEqual(["Anywhere", "Inbox", "Taxes", "Old"]);
+  expect(within(menu).getByText("Archived")).toBeInTheDocument();
+  await userEvent.click(within(menu).getByRole("menuitemradio", { name: "Old" }));
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "topic", id: "o" }));
+  expect(place).toHaveTextContent("Old");
+  await pick("Place", "Inbox");
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "inbox" }));
+});
+
+test("date presets search back from now, and Has files narrows to Items with files", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  const before = Date.now();
+  await pick("Date", "Past week");
+  await vi.waitFor(() => expect(lastQuery(calls).from_us).not.toBeNull());
+  const weekAgo = new Date(before);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  expect(Math.abs(lastQuery(calls).from_us / 1000 - weekAgo.getTime())).toBeLessThan(5000);
+  expect(lastQuery(calls).to_us).toBeNull();
+  const hasFiles = screen.getByRole("button", { name: "Has files" });
+  expect(hasFiles).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(hasFiles);
+  await vi.waitFor(() => expect(lastQuery(calls).has_files).toBe(true));
+  expect(hasFiles).toHaveAttribute("aria-pressed", "true");
+});
+
+test("a custom range covers whole local days, even across a clock change", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  await pick("Date", "Custom…");
+  fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-11-01" } });
+  fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-11-01" } });
+  await vi.waitFor(() => expect(lastQuery(calls).to_us).not.toBeNull());
+  const { from_us, to_us } = lastQuery(calls);
+  expect(from_us).toBe(new Date(2026, 10, 1).getTime() * 1000);
+  // Daylight saving ends that night in Los Angeles, so the day is 25 hours long.
+  expect(to_us - from_us).toBe(25 * 60 * 60 * 1_000_000);
+});
+
+test("with filters set, no results offers Clear filters, which resets them", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  await screen.findByText("No Items match.");
+  expect(screen.queryByRole("button", { name: "Clear filters" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Has files" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Clear filters" }));
+  await vi.waitFor(() => expect(lastQuery(calls)).toEqual({ text: "note", place: { kind: "all" }, from_us: null, to_us: null, has_files: false }));
+  expect(screen.getByRole("button", { name: "Has files" })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a Topic chosen as the place that's deleted elsewhere falls back to Anywhere", async () => {
+  const topics = [topic("t", "Taxes")];
+  const calls = backend(configured, { topics });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  await pick("Place", "Taxes");
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "topic", id: "t" }));
+  topics.splice(0);
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "all" }));
+  expect(screen.getByRole("button", { name: "Place" })).toHaveTextContent("Anywhere");
+});
+
+test("opening a result shows it highlighted in its Topic even pages back, and the field brings the results back", async () => {
+  const old = filed("x", "the invoice", "g");
+  const page = (day: number, prefix: string) => Array.from({ length: 100 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
+  backend(configured, {
+    topics: [topic("g", "Gym")],
+    items: ({ before }) => (before === null ? page(16, "new") : before.id === "new99" ? page(15, "mid") : before.id === "mid99" ? [old] : []),
+    search: () => [found(old)],
+  });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "invoice");
+  await userEvent.click(await screen.findByRole("button", { name: /the invoice/ }));
+  expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page");
+  await vi.waitFor(() => expect(feedRow("the invoice")).toHaveClass("is-highlight"));
+  expect(field).toHaveValue("invoice");
+  expect(screen.queryByRole("heading", { name: 'Results for "invoice"' })).not.toBeInTheDocument();
+  await userEvent.click(field);
+  expect(screen.getByRole("heading", { name: 'Results for "invoice"' })).toBeInTheDocument();
+});
+
+test("a result in an archived Topic opens that Topic", async () => {
+  const it = filed("x", "kept note", "o");
+  backend(configured, { topics: [topic("o", "Old", { archived: true })], items: ({ view }) => (view.kind === "topic" ? [it] : []), search: () => [found(it)] });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "kept");
+  await userEvent.click(await screen.findByRole("button", { name: /kept note/ }));
+  expect(screen.getByRole("button", { name: "Old" })).toHaveAttribute("aria-current", "page");
+  await vi.waitFor(() => expect(feedRow("kept note")).toHaveClass("is-highlight"));
+});
+
+test("opening a result saves the open edit first, and shows the editor's error if that save fails", async () => {
+  const it = feedItem("1", "draft me", at(2026, 10, 14, 9, 41));
+  const calls = backend(configured, { items: () => [it], search: () => [found(feedItem("2", "elsewhere", 1))], failing: { edit_item: "disk full" } });
+  render(<App />);
+  fireEvent.doubleClick(await screen.findByText("draft me"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), " more");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "else");
+  await userEvent.click(await screen.findByRole("button", { name: /elsewhere/ }));
+  expect(calls.some((c) => c.cmd === "edit_item")).toBe(true);
+  expect(await screen.findByText(/Couldn't save the edit\. Your changes are kept\. disk full/)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("draft me more");
+  expect(screen.queryByRole("heading", { name: 'Results for "else"' })).not.toBeInTheDocument();
+});
+
+test("scrolling to the end of the results loads the next page", async () => {
+  const many = Array.from({ length: 100 }, (_, i) => found(feedItem(`n${i}`, `note ${i}`, 1000 - i)));
+  const calls = backend(configured, { search: ({ before }) => (before === null ? many : before.id === "n99" ? [found(feedItem("last", "the last note", 1))] : []) });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  await screen.findByText("note 0");
+  fireEvent.scroll(screen.getByTestId("results"));
+  expect(await screen.findByText("the last note")).toBeInTheDocument();
+  expect(searchCalls(calls).some((c) => c.args.before?.id === "n99")).toBe(true);
+});
+
+test("hidden results don't search on every sync, and catch up when shown again", async () => {
+  const it = feedItem("1", "found note", at(2026, 10, 14, 9, 41));
+  const calls = backend(configured, { items: () => [it], search: () => [found(it)] });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "found");
+  await userEvent.click(await screen.findByRole("button", { name: /found note/ }));
+  const before = searchCalls(calls).length;
+  await act(() => emit("items-changed"));
+  await new Promise((r) => setTimeout(r, 300));
+  expect(searchCalls(calls)).toHaveLength(before);
+  await userEvent.click(field);
+  await vi.waitFor(() => expect(searchCalls(calls)).toHaveLength(before + 1));
+});
+
+test("Past month and Past year on a day the earlier month lacks end on that month's last day", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2028, 2, 31, 12, 0));
+  try {
+    const calls = backend(configured);
+    render(<App />);
+    await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+    await pick("Date", "Past month");
+    await vi.waitFor(() => expect(lastQuery(calls).from_us).toBe(new Date(2028, 1, 29, 12, 0).getTime() * 1000));
+    vi.setSystemTime(new Date(2028, 1, 29, 12, 0));
+    await pick("Date", "Past year");
+    await vi.waitFor(() => expect(lastQuery(calls).from_us).toBe(new Date(2027, 1, 28, 12, 0).getTime() * 1000));
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("a submenu opened by hovering closes when the pointer leaves it", async () => {
+  backend(configured, { topics: [topic("t", "Taxes")], items: () => [feedItem("1", "hello", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  await screen.findByText("hello");
+  await userEvent.click(screen.getByRole("button", { name: "Item actions" }));
+  const moveTo = screen.getByRole("menuitem", { name: "Move to…" });
+  await userEvent.hover(moveTo);
+  expect(screen.getByRole("menu", { name: "Move to…" })).toBeInTheDocument();
+  await userEvent.unhover(moveTo);
+  expect(screen.queryByRole("menu", { name: "Move to…" })).not.toBeInTheDocument();
+  expect(screen.getByRole("menu", { name: "Item actions" })).toBeInTheDocument();
+});
+
+test("moving from Move to… toward its submenu keeps it open; straying outside that path or stopping short closes it", async () => {
+  backend(configured, { topics: [topic("t", "Taxes")], items: () => [feedItem("1", "hello", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  await screen.findByText("hello");
+  await userEvent.click(screen.getByRole("button", { name: "Item actions" }));
+  const moveTo = screen.getByRole("menuitem", { name: "Move to…" });
+  const open = async () => {
+    await userEvent.hover(moveTo);
+    const sub = screen.getByRole("menu", { name: "Move to…" });
+    // The submenu opens to the left: its near edge is x = 100, from y = 0 to 200.
+    vi.spyOn(sub, "getBoundingClientRect").mockReturnValue({ left: 0, right: 100, top: 0, bottom: 200, x: 0, y: 0, width: 100, height: 200, toJSON: () => ({}) });
+  };
+  const subOpen = () => screen.queryByRole("menu", { name: "Move to…" }) !== null;
+  const wrap = moveTo.parentElement!;
+
+  await open();
+  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
+  fireEvent.mouseMove(document, { clientX: 105, clientY: 60 });
+  expect(subOpen()).toBe(true);
+  await userEvent.hover(within(screen.getByRole("menu", { name: "Move to…" })).getByRole("menuitemradio", { name: "Taxes" }));
+  await new Promise((r) => setTimeout(r, 500));
+  expect(subOpen()).toBe(true);
+
+  await open();
+  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
+  fireEvent.mouseMove(document, { clientX: 120, clientY: 60 });
+  expect(subOpen()).toBe(false);
+
+  await open();
+  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
+  fireEvent.mouseMove(document, { clientX: 105, clientY: 60 });
+  await vi.waitFor(() => expect(subOpen()).toBe(false));
 });

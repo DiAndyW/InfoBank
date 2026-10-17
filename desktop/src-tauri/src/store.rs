@@ -7,6 +7,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_feed.sql"),
     include_str!("../migrations/0003_cache.sql"),
     include_str!("../migrations/0004_outbox_item.sql"),
+    include_str!("../migrations/0005_search.sql"),
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -95,5 +96,27 @@ mod tests {
         .unwrap();
         let left: i64 = conn.query_row("SELECT count(*) FROM attachments", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn the_search_migration_indexes_items_already_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebank.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..4] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 4).unwrap();
+            conn.execute_batch(
+                "INSERT INTO items (id, text, capture_time) VALUES ('i', 'old note', 1);
+                 INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+                 VALUES ('a', 'i', 'old.pdf', 'application/pdf', 1, 1, 0);",
+            )
+            .unwrap();
+        }
+        let conn = open(&path).unwrap();
+        let row: (String, String) = conn.query_row("SELECT text, names FROM search", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(row, ("old note".into(), "old.pdf".into()));
     }
 }

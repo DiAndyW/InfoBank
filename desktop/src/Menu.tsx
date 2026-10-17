@@ -1,16 +1,20 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { Icon } from "./icons";
 
 export type MenuEntry =
   | { label: string; onSelect?: () => void; checked?: boolean; submenu?: MenuEntry[]; danger?: boolean }
-  | { separator: true };
+  | { separator: true }
+  | { heading: string };
 
-type Props = { label: string; entries: MenuEntry[]; open: boolean; onOpenChange: (open: boolean) => void };
+// Without `trigger` the menu opens from a ⋯ button; with it, from a pill showing `trigger`.
+type Props = { label: string; entries: MenuEntry[]; open: boolean; onOpenChange: (open: boolean) => void; trigger?: ReactNode };
 
 // Room the popup needs below its trigger before it opens above instead.
 const ROOM_BELOW_PX = 240;
+// How long a pointer heading for a submenu may pause before it closes.
+const AIM_MS = 400;
 
-export default function Menu({ label, entries, open, onOpenChange }: Props) {
+export default function Menu({ label, entries, open, onOpenChange, trigger: shown }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [submenu, setSubmenu] = useState<number | null>(null);
@@ -21,9 +25,9 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
   useLayoutEffect(() => {
     if (!open) return;
     const r = trigger.current!.getBoundingClientRect();
-    const right = window.innerWidth - r.right;
+    const side = shown === undefined ? { right: window.innerWidth - r.right } : { left: r.left };
     const above = window.innerHeight - r.bottom < ROOM_BELOW_PX;
-    setPlace({ style: above ? { bottom: window.innerHeight - r.top, right } : { top: r.bottom, right }, above });
+    setPlace({ style: above ? { bottom: window.innerHeight - r.top, ...side } : { top: r.bottom, ...side }, above });
   }, [open]);
 
   useEffect(() => {
@@ -48,6 +52,37 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
     focusSubmenu.current = false;
     root.current?.querySelector<HTMLElement>(".nb-submenu [role^=menuitem]")?.focus();
   }, [submenu]);
+
+  // After the pointer leaves a submenu's row, the submenu stays while the pointer moves inside the triangle
+  // from where it left to the submenu's near edge, so a diagonal path doesn't cross another row and close it.
+  const stopAiming = useRef<(() => void) | null>(null);
+  useEffect(() => () => stopAiming.current?.(), []);
+
+  function aim(from: { x: number; y: number }, sub: HTMLElement | null) {
+    stopAiming.current?.();
+    if (!sub) return setSubmenu(null);
+    const r = sub.getBoundingClientRect();
+    const edge = from.x >= r.right ? r.right : r.left;
+    let timer = setTimeout(close, AIM_MS);
+    const onMove = (e: MouseEvent) => {
+      const t = (e.clientX - from.x) / (edge - from.x);
+      const inside = t > 0 && t <= 1 && e.clientY >= from.y + t * (r.top - from.y) && e.clientY <= from.y + t * (r.bottom - from.y);
+      if (!inside) return close();
+      clearTimeout(timer);
+      timer = setTimeout(close, AIM_MS);
+    };
+    function stop() {
+      clearTimeout(timer);
+      document.removeEventListener("mousemove", onMove);
+      stopAiming.current = null;
+    }
+    function close() {
+      stop();
+      setSubmenu(null);
+    }
+    document.addEventListener("mousemove", onMove);
+    stopAiming.current = stop;
+  }
 
   function openSubmenu(i: number) {
     focusSubmenu.current = true;
@@ -88,10 +123,24 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
     <div role="menu" aria-label={name} className={top ? `nb-menu nb-menu-popup${place.above ? " above" : ""}` : "nb-menu nb-submenu"} style={top ? place.style : undefined}>
       {items.map((entry, i) => {
         if ("separator" in entry) return <div key={i} className="nb-menu-sep" role="separator" />;
+        if ("heading" in entry)
+          return (
+            <div key={i} className="nb-menu-heading" role="presentation">
+              {entry.heading}
+            </div>
+          );
         const className = entry.danger ? "nb-menu-item is-danger" : "nb-menu-item";
         const check = <span className="nb-menu-check">{entry.checked && <Icon name="check" />}</span>;
         return entry.submenu ? (
-          <div key={i} className="nb-menu-wrap" onMouseEnter={() => setSubmenu(i)}>
+          <div
+            key={i}
+            className="nb-menu-wrap"
+            onMouseEnter={() => {
+              stopAiming.current?.();
+              setSubmenu(i);
+            }}
+            onMouseLeave={(e) => aim({ x: e.clientX, y: e.clientY }, e.currentTarget.querySelector<HTMLElement>(".nb-submenu"))}
+          >
             <button
               role="menuitem"
               aria-haspopup="menu"
@@ -132,14 +181,14 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
     >
       <button
         ref={trigger}
-        className={open ? "nb-iconbtn nb-reveal is-active" : "nb-iconbtn nb-reveal"}
+        className={[shown === undefined ? "nb-iconbtn nb-reveal" : "nb-pill", open && "is-active"].filter(Boolean).join(" ")}
         aria-label={label}
         title={label}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => onOpenChange(!open)}
       >
-        <Icon name="more" />
+        {shown === undefined ? <Icon name="more" /> : <>{shown}<Icon name="chevron-down" /></>}
       </button>
       {open && list(entries, label, true)}
     </div>

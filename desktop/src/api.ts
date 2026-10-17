@@ -49,7 +49,12 @@ export const unstage = (id: string) => invoke<void>("unstage_attachment", { id }
 export const thumbnail = (id: string) => invoke<string>("thumbnail", { id });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
-// Nested keys aren't renamed by Tauri, so `before` keeps Rust's snake_case.
-export const listItems = (view: View, before: { capture_time_us: number; id: string } | null) =>
-  invoke<FeedItem[]>("list_items", { view, before });
+export type Before = { capture_time_us: number; id: string };
+// Nested keys aren't renamed by Tauri, so `before` and `query` keep Rust's snake_case.
+export const listItems = (view: View, before: Before | null) => invoke<FeedItem[]>("list_items", { view, before });
+export type Place = { kind: "all" } | { kind: "inbox" } | { kind: "topic"; id: string };
+export type SearchQuery = { text: string; place: Place; from_us: number | null; to_us: number | null; has_files: boolean };
+// Matches arrive wrapped in U+E000 … U+E001; marked_filenames follows attachments' order.
+export type SearchItem = FeedItem & { marked_text: string | null; marked_filenames: string[] };
+export const searchItems = (query: SearchQuery, before: Before | null) => invoke<SearchItem[]>("search_items", { query, before });
 export const syncStatus = () => invoke<SyncStatus>("sync_status");

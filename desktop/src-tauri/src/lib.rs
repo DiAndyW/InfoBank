@@ -3,6 +3,7 @@ mod commands;
 mod feed;
 mod files;
 mod ops;
+mod search;
 mod settings;
 mod store;
 mod sync;
@@ -98,6 +99,7 @@ pub fn run() {
             commands::open_attachment,
             commands::reveal_attachment,
             commands::list_items,
+            commands::search_items,
             commands::sync_status
         ])
         .run(tauri::generate_context!())

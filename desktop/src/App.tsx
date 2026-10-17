@@ -4,6 +4,7 @@ import { getSettings, listTopics, navCounts, restoreItem, syncStatus, type Count
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
+import SearchResults from "./SearchResults";
 import type { EditorHandle } from "./ItemEditor";
 import type { NoticeData } from "./Notice";
 import Settings from "./Settings";
@@ -42,10 +43,16 @@ export default function App() {
   const noticeId = useRef(0);
   const show = (message: string, action?: NoticeData["action"]) => setNotice({ id: ++noticeId.current, message, action });
   const editor = useRef<EditorHandle>(null);
+  const [searchText, setSearchText] = useState("");
+  const [resultsOpen, setResultsOpen] = useState(false);
+  const searchField = useRef<HTMLInputElement>(null);
+  const searching = searchText.trim() !== "";
   const select = async (key: string) => {
-    if (editor.current && !(await editor.current.save())) return;
+    if (editor.current && !(await editor.current.save())) return false;
     setFeed(key);
     setNotice(null);
+    setResultsOpen(false);
+    return true;
   };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
 
@@ -82,6 +89,17 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [notice]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "f" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return;
+      e.preventDefault();
+      searchField.current?.focus();
+      searchField.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function load() {
     try {
@@ -120,10 +138,19 @@ export default function App() {
   }
   return (
     <div className="nb-app">
-      <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
+      <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
+        search={searchText}
+        onSearch={(text) => {
+          setSearchText(text);
+          setResultsOpen(true);
+        }}
+        onSearchFocus={() => setResultsOpen(true)}
+        searchRef={searchField}
+      />
       <Feed
         view={feed === "all" || feed === "inbox" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
         topics={topics}
+        covered={searching && resultsOpen}
         editor={editor}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
@@ -147,6 +174,19 @@ export default function App() {
         highlight={highlight}
         onHighlightDone={() => setHighlight(null)}
       />
+      {searching && (
+        <SearchResults
+          text={searchText}
+          topics={topics}
+          hidden={!resultsOpen}
+          onOpen={async (it) => {
+            const place = topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";
+            if (await select(place)) setHighlight(it.id);
+            // The save failed: uncover the Feed so the editor's error line shows.
+            else setResultsOpen(false);
+          }}
+        />
+      )}
       {editing && (
         <Settings
           initial={settings}

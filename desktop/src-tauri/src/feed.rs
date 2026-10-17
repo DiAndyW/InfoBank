@@ -8,7 +8,7 @@ use crate::ops;
 
 // The Server's limit, so the Server never rejects a Capture.
 const MAX_ITEM_TEXT_BYTES: usize = 1 << 20;
-const PAGE_SIZE: i64 = 100;
+pub(crate) const PAGE_SIZE: i64 = 100;
 
 #[derive(Serialize)]
 pub struct FeedItem {
@@ -215,6 +215,11 @@ pub fn move_item(conn: &Connection, item_id: &str, topic_id: Option<&str>, now_u
     tx.commit().map_err(|e| e.to_string())
 }
 
+// Unsynced: an op still queued for the Item, or one of its files not uploaded yet.
+pub(crate) const PENDING: &str = "EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id)
+    OR EXISTS (SELECT 1 FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
+               WHERE a.item_id = items.id AND a.uploaded = 0)";
+
 // Past purge_at the Server is about to delete it; an empty Item can't be restored. `?1` is now.
 const IN_TRASH: &str = "deleted_at IS NOT NULL AND (purge_at IS NULL OR purge_at > ?1)
     AND (text IS NOT NULL OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id))";
@@ -228,11 +233,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
         View::Topic { id } => ("topic", Some(id.as_str())),
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, text, capture_time, topic_id,
-                EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id)
-                OR EXISTS (SELECT 1 FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
-                           WHERE a.item_id = items.id AND a.uploaded = 0),
-                purge_at
+        "SELECT id, text, capture_time, topic_id, {PENDING}, purge_at
          FROM items
          WHERE CASE ?2 WHEN 'trash' THEN {IN_TRASH}
                ELSE deleted_at IS NULL
@@ -257,7 +258,11 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
             },
         )?
         .collect::<rusqlite::Result<_>>()?;
+    attach(conn, &mut items)?;
+    Ok(items)
+}
 
+pub(crate) fn attach(conn: &Connection, items: &mut [FeedItem]) -> rusqlite::Result<()> {
     let ids = serde_json::to_string(&items.iter().map(|i| &i.id).collect::<Vec<_>>()).expect("strings serialize");
     let mut stmt = conn.prepare(
         "SELECT item_id, id, filename, mime_type, size_bytes, has_thumbnail FROM attachments
@@ -278,7 +283,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
             });
         }
     }
-    Ok(items)
+    Ok(())
 }
 
 pub fn nav_counts(conn: &Connection, now_us: i64) -> rusqlite::Result<Counts> {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
@@ -19,9 +19,16 @@ type Props = {
   onSettings: () => void;
   onError: (title: string, err: unknown) => void;
   onDelete: (topic: Topic) => void;
+  search: string;
+  onSearch: (text: string) => void;
+  onSearchFocus: () => void;
+  searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete }: Props) {
+export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, searchRef }: Props) {
+  // The field shows what's typed even mid-composition; the query only follows once the input method is done.
+  const [draft, setDraft] = useState(search);
+  const composing = useRef(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   // id null = a new Topic.
@@ -141,6 +148,44 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
 
   return (
     <nav className="nb-sidebar" ref={nav}>
+      <div className="nb-search">
+        <Icon name="search" />
+        <input
+          ref={searchRef}
+          aria-label="Search"
+          placeholder="Search"
+          value={draft}
+          onFocus={onSearchFocus}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (!composing.current) onSearch(e.target.value);
+          }}
+          onCompositionStart={() => (composing.current = true)}
+          onCompositionEnd={(e) => {
+            composing.current = false;
+            onSearch(e.currentTarget.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              setDraft("");
+              onSearch("");
+            }
+          }}
+        />
+        {draft !== "" && (
+          <button
+            className="nb-iconbtn"
+            aria-label="Clear search"
+            title="Clear search"
+            onClick={() => {
+              setDraft("");
+              onSearch("");
+            }}
+          >
+            <Icon name="x" />
+          </button>
+        )}
+      </div>
       {entry("all", "All Items", "all")}
       {entry("inbox", "Inbox", "inbox", counts.inbox)}
       {entry("trash", "Trash", "trash", counts.trash)}
