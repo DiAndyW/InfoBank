@@ -4,7 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { capture, MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, type Staged, type StagedFiles } from "./api";
 import { FileIcon, formatSize, PaperclipIcon } from "./attachments";
 
-export default function Composer({ onCaptured }: { onCaptured: () => void }) {
+export default function Composer({ topicId, placeholder, onCaptured }: { topicId: string | null; placeholder: string; onCaptured: () => void }) {
   const [draft, setDraft] = useState("");
   const [staged, setStaged] = useState<Staged[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +65,7 @@ export default function Composer({ onCaptured }: { onCaptured: () => void }) {
     e?.preventDefault();
     if (empty) return;
     try {
-      await capture(draft, staged.map((s) => s.id));
+      await capture(draft, staged.map((s) => s.id), topicId);
       setDraft("");
       setStaged([]);
       setError(null);
@@ -131,7 +131,7 @@ export default function Composer({ onCaptured }: { onCaptured: () => void }) {
         <div className="composer-row">
           <textarea
             aria-label="New Item"
-            placeholder="Write something…"
+            placeholder={placeholder}
             rows={2}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

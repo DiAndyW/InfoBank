@@ -17,6 +17,9 @@ type Options = {
   thumbnail?: string;
   openError?: string;
   openHang?: boolean;
+  failing?: Record<string, string>;
+  // A command waits for its gate, so a test can act while the call is in flight.
+  gates?: Record<string, Promise<void>>;
 };
 
 function backend(settings: Settings, opts: Options = {}) {
@@ -24,8 +27,10 @@ function backend(settings: Settings, opts: Options = {}) {
   mockWindows("main");
   mockConvertFileSrc("macos");
   mockIPC(
-    (cmd, args) => {
+    async (cmd, args) => {
       calls.push({ cmd, args });
+      await opts.gates?.[cmd];
+      if (opts.failing?.[cmd]) throw opts.failing[cmd];
       if (cmd === "get_settings") return settings;
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
@@ -55,6 +60,8 @@ function backend(settings: Settings, opts: Options = {}) {
         if (opts.openError) throw opts.openError;
         return null;
       }
+      if (cmd === "create_topic") return { id: "new", name: (args as { name: string }).name.trim(), archived: false, item_count: 0 };
+      if (["rename_topic", "archive_topic", "unarchive_topic", "delete_topic", "move_item"].includes(cmd)) return null;
       if (cmd === "plugin:opener|open_url") return null;
     },
     { shouldMockEvents: true },
@@ -77,6 +84,8 @@ const feedItem = (
   pending,
   attachments,
 });
+
+const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => ({ id, name, archived: false, item_count: 0, ...extra });
 
 const configured = { server_url: "https://notes.example.com", has_secret: true };
 
@@ -149,10 +158,7 @@ test("a load failure is shown and can be retried", async () => {
 
 test("the sidebar lists Topics", async () => {
   backend(configured, {
-    topics: [
-      { id: "1", name: "CS 111" },
-      { id: "2", name: "Mosaic" },
-    ],
+    topics: [topic("1", "CS 111"), topic("2", "Mosaic")],
   });
   render(<App />);
   expect(await screen.findByRole("button", { name: "CS 111" })).toBeInTheDocument();
@@ -168,7 +174,7 @@ test("Enter captures and Shift+Enter adds a line", async () => {
   expect(box).toHaveValue("a\nb");
   expect(calls.some((c) => c.cmd === "capture")).toBe(false);
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [] } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [], topicId: null } });
   expect(box).toHaveValue("");
 });
 
@@ -341,7 +347,7 @@ test("an Attachment alone can be sent", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
   await screen.findByText("scan.png");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"] } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"], topicId: null } });
   await vi.waitFor(() => expect(screen.queryByText("scan.png")).not.toBeInTheDocument());
 });
 
@@ -434,4 +440,330 @@ test("a second click while downloading is ignored", async () => {
   await userEvent.click(chip);
   await userEvent.click(chip);
   expect(calls.filter((c) => c.cmd === "open_attachment")).toHaveLength(1);
+});
+
+test("archived Topics are under a collapsed Archived section", async () => {
+  backend(configured, { topics: [topic("g", "Gym"), topic("o", "Old", { archived: true })] });
+  render(<App />);
+  expect(await screen.findByRole("button", { name: "Gym" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Old" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  expect(screen.getByRole("button", { name: "Old" })).toBeInTheDocument();
+});
+
+test("a Topic's menu archives it, and an archived one's unarchives it", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym"), topic("o", "Old", { archived: true })] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+  expect(calls).toContainEqual({ cmd: "archive_topic", args: { id: "g" } });
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Old actions" }));
+  expect(screen.queryByRole("menuitem", { name: "Archive" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive" }));
+  expect(calls).toContainEqual({ cmd: "unarchive_topic", args: { id: "o" } });
+});
+
+test("Escape closes a menu and returns focus to its button", async () => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  const button = await screen.findByRole("button", { name: "Gym actions" });
+  await userEvent.click(button);
+  expect(screen.getByRole("menu")).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(button).toHaveFocus();
+});
+
+test("scrolling elsewhere closes an open menu", async () => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym actions" }));
+  fireEvent.scroll(screen.getByTestId("feed-items"));
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+});
+
+test("the sidebar refetches Topics when items change", async () => {
+  let topics: Topic[] = [];
+  mockWindows("main");
+  mockIPC(
+    (cmd) => {
+      if (cmd === "get_settings") return configured;
+      if (cmd === "list_topics") return topics;
+      if (cmd === "sync_status") return "synced";
+      return [];
+    },
+    { shouldMockEvents: true },
+  );
+  render(<App />);
+  expect(await screen.findByText("None yet")).toBeInTheDocument();
+  topics = [topic("g", "From my phone")];
+  await act(() => emit("items-changed"));
+  expect(await screen.findByRole("button", { name: "From my phone" })).toBeInTheDocument();
+});
+
+test("when the selected Topic disappears the Inbox is shown", async () => {
+  let topics = [topic("g", "Gym")];
+  const calls: { cmd: string; args: any }[] = [];
+  mockWindows("main");
+  mockIPC(
+    (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === "get_settings") return configured;
+      if (cmd === "list_topics") return topics;
+      if (cmd === "sync_status") return "synced";
+      return [];
+    },
+    { shouldMockEvents: true },
+  );
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
+  topics = [];
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Inbox" })).toHaveClass("selected"));
+  const lists = calls.filter((c) => c.cmd === "list_items");
+  expect(lists[lists.length - 1].args.view).toEqual({ kind: "inbox" });
+});
+
+test("a failed Topic change is shown in a dialog", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], failing: { archive_topic: "That Topic no longer exists" } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Couldn't archive the Topic" });
+  expect(dialog).toHaveTextContent("That Topic no longer exists");
+  await userEvent.click(within(dialog).getByRole("button", { name: "OK" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+test("+ creates a Topic inline and opens it", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  await userEvent.type(screen.getByLabelText("Topic name"), "Books{Enter}");
+  expect(calls).toContainEqual({ cmd: "create_topic", args: { name: "Books" } });
+  await vi.waitFor(() => expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument());
+  const lists = calls.filter((c) => c.cmd === "list_items");
+  expect(lists[lists.length - 1].args.view).toEqual({ kind: "topic", id: "new" });
+});
+
+test("a name clash keeps the field open with the error", async () => {
+  backend(configured, { failing: { create_topic: 'A Topic named "Books" already exists' } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  await userEvent.type(screen.getByLabelText("Topic name"), "books{Enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent('A Topic named "Books" already exists');
+  expect(screen.getByLabelText("Topic name")).toHaveValue("books");
+});
+
+test("Escape cancels naming a Topic", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  await userEvent.type(screen.getByLabelText("Topic name"), "Books{Escape}");
+  expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "create_topic")).toBe(false);
+});
+
+test("Enter twice creates one Topic", async () => {
+  let release!: () => void;
+  const calls = backend(configured, { gates: { create_topic: new Promise<void>((resolve) => (release = resolve)) } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  // The first create is still in flight when the second Enter arrives.
+  await userEvent.type(screen.getByLabelText("Topic name"), "Books{Enter}{Enter}");
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument());
+  expect(calls.filter((c) => c.cmd === "create_topic")).toHaveLength(1);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("Rename edits a Topic's name in place", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const field = screen.getByLabelText("Topic name");
+  expect(field).toHaveValue("Gym");
+  await userEvent.clear(field);
+  await userEvent.type(field, "Lifting{Enter}");
+  expect(calls).toContainEqual({ cmd: "rename_topic", args: { id: "g", name: "Lifting" } });
+});
+
+const filed = (id: string, text: string, topic_id: string | null): FeedItem => ({ ...feedItem(id, text, at(2026, 10, 14, 9, 41)), topic_id });
+
+test("Move to… lists the Inbox and open Topics, with the current place ticked", async () => {
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym"), topic("w", "Work"), topic("o", "Old", { archived: true })],
+    items: () => [filed("1", "squat 100", null)],
+  });
+  render(<App />);
+  const article = await screen.findByRole("article");
+  await userEvent.click(within(article).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  const targets = within(screen.getByRole("menu", { name: "Move to…" })).getAllByRole("menuitemradio");
+  expect(targets.map((t) => [t.textContent?.replace(" ✓", ""), t.getAttribute("aria-checked")])).toEqual([
+    ["Inbox", "true"],
+    ["Gym", "false"],
+    ["Work", "false"],
+  ]);
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", topicId: "g" } });
+});
+
+test("moving an Item to where it is does nothing", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Inbox" }));
+  expect(calls.some((c) => c.cmd === "move_item")).toBe(false);
+});
+
+test("right-clicking an Item opens its menu", async () => {
+  backend(configured, { items: () => [filed("1", "x", null)] });
+  render(<App />);
+  fireEvent.contextMenu(await screen.findByRole("article"));
+  expect(screen.getByRole("menu", { name: "Item actions" })).toBeInTheDocument();
+});
+
+test("a failed move is shown in a dialog", async () => {
+  backend(configured, {
+    topics: [topic("g", "Gym")],
+    items: () => [filed("1", "x", null)],
+    failing: { move_item: "That Topic is archived" },
+  });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  expect(await screen.findByRole("alertdialog", { name: "Couldn't move the Item" })).toHaveTextContent("That Topic is archived");
+});
+
+test("All Items labels each filed Item with its Topic, shown as text", async () => {
+  backend(configured, {
+    topics: [topic("g", "<b>Gym</b>")],
+    // Newest first, as list_items returns them; the Feed shows them oldest first.
+    items: () => [filed("2", "loose", null), filed("1", "squat 100", "g")],
+  });
+  render(<App />);
+  const [first, second] = await screen.findAllByRole("article");
+  expect(first).toHaveTextContent("· <b>Gym</b>");
+  expect(second).not.toHaveTextContent("·");
+  expect(screen.getByRole("button", { name: "<b>Gym</b>" })).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole("button", { name: "<b>Gym</b>" }));
+  await vi.waitFor(() => expect(screen.getAllByRole("article")[0]).not.toHaveTextContent("·"));
+});
+
+test("capturing in a Topic files the Item there", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  expect(await screen.findByPlaceholderText("Write to Inbox…")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Gym" }));
+  await userEvent.type(await screen.findByPlaceholderText("Write to Gym…"), "squat 100{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat 100", attachmentIds: [], topicId: "g" } });
+});
+
+test("an archived Topic shows a bar instead of the composer", async () => {
+  const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Old" }));
+  expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
+  expect(screen.getByLabelText("New Item")).not.toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Unarchive" }));
+  expect(calls).toContainEqual({ cmd: "unarchive_topic", args: { id: "o" } });
+});
+
+async function openDelete(name: string) {
+  await userEvent.click(await screen.findByRole("button", { name: `${name} actions` }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
+}
+
+test("deleting an empty Topic just confirms", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  await openDelete("Gym");
+  const dialog = screen.getByRole("dialog", { name: 'Delete "Gym"?' });
+  expect(within(dialog).queryByRole("button", { name: "Keep all" })).not.toBeInTheDocument();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+  expect(calls).toContainEqual({ cmd: "delete_topic", args: { id: "g", keep: { kind: "none" } } });
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+test("Keep all and Delete all send their choice", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym", { item_count: 3 })] });
+  render(<App />);
+  await openDelete("Gym");
+  expect(screen.getByRole("dialog")).toHaveTextContent("It has 3 Items.");
+  await userEvent.click(screen.getByRole("button", { name: "Keep all" }));
+  expect(calls).toContainEqual({ cmd: "delete_topic", args: { id: "g", keep: { kind: "all" } } });
+
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Delete all" }));
+  expect(calls).toContainEqual({ cmd: "delete_topic", args: { id: "g", keep: { kind: "none" } } });
+});
+
+test("Select manually pages through the Topic and keeps only checked Items", async () => {
+  const notes = Array.from({ length: 100 }, (_, i) => feedItem(`p${i}`, `note ${i}`, at(2026, 10, 14, 9, 0) - i));
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 101 })],
+    items: (args) => (args.view.kind !== "topic" ? [] : args.before ? [feedItem("last", "last one", at(2026, 10, 1, 9, 0))] : notes),
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Select manually…" }));
+  const dialog = screen.getByRole("dialog", { name: 'Choose Items to keep from "Gym"' });
+  expect(await within(dialog).findByText("Page 1 of 2")).toBeInTheDocument();
+  expect(within(dialog).getByRole("checkbox", { name: /note 3$/ })).not.toBeChecked();
+  await userEvent.click(within(dialog).getByRole("checkbox", { name: /note 3$/ }));
+
+  await userEvent.click(within(dialog).getByRole("button", { name: "Next ›" }));
+  await userEvent.click(await within(dialog).findByRole("checkbox", { name: /last one/ }));
+  expect(within(dialog).getByText("Page 2 of 2")).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Next ›" })).toBeDisabled();
+
+  await userEvent.click(within(dialog).getByRole("button", { name: "‹ Prev" }));
+  expect(await within(dialog).findByRole("checkbox", { name: /note 3$/ })).toBeChecked();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Keep 2 · Trash 99" }));
+  expect(calls).toContainEqual({ cmd: "delete_topic", args: { id: "g", keep: { kind: "only", ids: ["p3", "last"] } } });
+});
+
+test("a failed delete keeps the dialog open and says why", async () => {
+  backend(configured, { topics: [topic("g", "Gym", { item_count: 1 })], failing: { delete_topic: "That Topic no longer exists" } });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Delete all" }));
+  expect(await screen.findByRole("alertdialog", { name: "Couldn't delete the Topic" })).toHaveTextContent("no longer exists");
+  expect(screen.getByRole("dialog", { name: 'Delete "Gym"?' })).toBeInTheDocument();
+});
+
+test("the draft survives a visit to an archived Topic", async () => {
+  backend(configured, { topics: [topic("o", "Old", { archived: true })] });
+  render(<App />);
+  await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
+  await userEvent.click(screen.getByRole("button", { name: /Archived \(1\)/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Old" }));
+  expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
+  expect(await screen.findByLabelText("New Item")).toHaveValue("half a thought");
+});
+
+test("clicking Delete all twice deletes once and shows no error", async () => {
+  let release!: () => void;
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 1 })],
+    gates: { delete_topic: new Promise<void>((resolve) => (release = resolve)) },
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.dblClick(screen.getByRole("button", { name: "Delete all" }));
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(calls.filter((c) => c.cmd === "delete_topic")).toHaveLength(1);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 });

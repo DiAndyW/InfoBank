@@ -86,6 +86,12 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
 pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<(), String> {
     archived(conn, id)?;
     let name = checked_name(conn, name, id)?;
+    let current: String =
+        conn.query_row("SELECT name FROM topics WHERE id = ?1", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    // A fresh stamp on an unchanged name would win over a newer rename from another Device.
+    if name == current {
+        return Ok(());
+    }
     queue_one(conn, Op::RenameTopic { topic_id: id.into(), name }, now_us)
 }
 
@@ -186,9 +192,11 @@ mod tests {
     #[test]
     fn renaming_to_the_same_name_or_case_works() {
         let (_d, conn) = fresh();
-        rename(&conn, "b", "books", 5).unwrap();
+        rename(&conn, "b", " books ", 5).unwrap();
+        assert!(outbox(&conn).is_empty(), "an unchanged name would overwrite a newer rename from another Device");
         rename(&conn, "b", "Books", 6).unwrap();
         assert_eq!(list(&conn).unwrap()[0].name, "Books");
+        assert_eq!(outbox(&conn).len(), 1);
         rename(&conn, "a", "Older", 7).unwrap(); // archived Topics can be renamed
     }
 

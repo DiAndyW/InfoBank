@@ -1,13 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Settings = { server_url: string | null; has_secret: boolean };
-export type Topic = { id: string; name: string };
+export type Topic = { id: string; name: string; archived: boolean; item_count: number };
+export type Keep = { kind: "all" } | { kind: "none" } | { kind: "only"; ids: string[] };
 
 export const getSettings = () => invoke<Settings>("get_settings");
 // secret null keeps the stored one.
 export const saveSettings = (serverUrl: string, secret: string | null) =>
   invoke<void>("save_settings", { serverUrl, secret });
 export const listTopics = () => invoke<Topic[]>("list_topics");
+export const createTopic = (name: string) => invoke<Topic>("create_topic", { name });
+export const renameTopic = (id: string, name: string) => invoke<void>("rename_topic", { id, name });
+export const archiveTopic = (id: string) => invoke<void>("archive_topic", { id });
+export const unarchiveTopic = (id: string) => invoke<void>("unarchive_topic", { id });
+export const deleteTopic = (id: string, keep: Keep) => invoke<void>("delete_topic", { id, keep });
 
 export type FeedItem = {
   id: string;
@@ -25,7 +31,9 @@ export type Staged = { id: string; filename: string; size_bytes: number; mime_ty
 export type StagedFiles = { staged: Staged[]; errors: string[] };
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
-export const capture = (text: string, attachmentIds: string[]) => invoke<void>("capture", { text, attachmentIds });
+export const moveItem = (itemId: string, topicId: string | null) => invoke<void>("move_item", { itemId, topicId });
+export const capture = (text: string, attachmentIds: string[], topicId: string | null) =>
+  invoke<void>("capture", { text, attachmentIds, topicId });
 export const pickFiles = () => invoke<StagedFiles>("pick_files");
 // Headers are ASCII, so the name is percent-encoded; Rust decodes it.
 export const stageBytes = (filename: string, bytes: Uint8Array) =>

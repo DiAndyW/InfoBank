@@ -131,3 +131,44 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .modal h2 { margin: 0 0 8px; font-size: 16px; }
 .modal ul { margin: 0 0 16px; padding-left: 18px; color: var(--error); overflow-wrap: anywhere; }
 .modal button { align-self: flex-end; padding: 6px 18px; border: 0; border-radius: 8px; background: var(--button-bg); color: var(--button-text); }
+
+.topics-heading { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 4px; }
+.topics-heading h2 { margin: 0 8px; }
+.topics-heading button { color: var(--muted); padding: 2px 8px; }
+.topic-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
+.topic-row { display: flex; align-items: center; position: relative; }
+.topic-row > button { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topic-row.archived > button { color: var(--muted); }
+.archived-toggle { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.menu-root { position: relative; }
+.menu-trigger { opacity: 0; background: none; border: 0; border-radius: 6px; padding: 2px 6px; color: var(--muted); cursor: pointer; }
+.topic-row:hover .menu-trigger, .item:hover .menu-trigger, .menu-trigger:focus-visible, .menu-trigger[aria-expanded="true"] { opacity: 1; }
+.menu { z-index: 15; min-width: 160px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); box-shadow: 0 6px 20px rgb(0 0 0 / 0.15); display: flex; flex-direction: column; }
+.menu-popup { position: fixed; }
+.menu button { text-align: left; background: none; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.menu button:hover, .menu button:focus-visible { background: var(--selected); }
+.submenu-anchor { position: relative; }
+.submenu-anchor > .menu { position: absolute; top: 0; right: 100%; max-height: 50vh; overflow-y: auto; }
+.menu-popup.above .submenu-anchor > .menu { top: auto; bottom: 0; }
+.modal p { margin: 0 0 16px; overflow-wrap: anywhere; }
+.name-field { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+.name-field input { padding: 5px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--field-bg); }
+.name-field [role="alert"] { margin: 0 4px; color: var(--error); font-size: 12px; overflow-wrap: anywhere; }
+.item { position: relative; }
+.item .menu-root { align-self: flex-start; }
+.topic-label { color: var(--muted); font-size: 12px; }
+.archived-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--sidebar-bg); color: var(--muted); }
+.archived-bar button { padding: 6px 14px; border: 0; border-radius: 8px; background: var(--button-bg); color: var(--button-text); cursor: pointer; }
+.modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.modal .actions button, .modal .choice button, .modal .pager button { align-self: auto; }
+.modal button.secondary { background: none; color: var(--text); border: 1px solid var(--border); }
+.modal button:disabled { opacity: 0.4; }
+.choice { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
+.choice button { min-width: 150px; text-align: left; }
+.choice span { color: var(--muted); font-size: 12px; }
+.select-items { width: min(720px, 90vw); max-width: none; max-height: 85vh; }
+.modal .pick { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text); }
+.pick label { display: flex; align-items: center; gap: 10px; padding: 6px 4px; cursor: pointer; }
+.pick time { color: var(--muted); font-size: 12px; min-width: 120px; }
+.pick .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 12px; }

@@ -1,18 +1,11 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getSettings, listTopics, syncStatus, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
+import DeleteTopic from "./DeleteTopic";
 import Feed from "./Feed";
 import Settings from "./Settings";
+import Sidebar from "./Sidebar";
 import { applyTheme, storedTheme } from "./theme";
-
-const STATUS_LABELS: Record<SyncStatus, string> = {
-  synced: "● Synced",
-  syncing: "↻ Syncing…",
-  offline: "○ Offline, retrying",
-  unauthorized: "⚠ Secret rejected",
-  keychain: "⚠ Keychain access needed",
-  not_configured: "",
-};
 
 export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -33,6 +26,22 @@ export default function App() {
       unlisten.then((stop) => stop());
     };
   }, []);
+
+  const [error, setError] = useState<{ title: string; message: string } | null>(null);
+  const [deleting, setDeleting] = useState<Topic | null>(null);
+  const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
+
+  useEffect(() => {
+    const unlisten = listen("items-changed", () => listTopics().then(setTopics, (e) => showError("Couldn't load Topics", e)));
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  // Only on a Topics change, so selecting a just-created Topic isn't undone before its refresh arrives.
+  useEffect(() => {
+    if (feed !== "all" && feed !== "inbox" && !topics.some((t) => t.id === feed)) setFeed("inbox");
+  }, [topics]);
 
   async function load() {
     try {
@@ -75,31 +84,32 @@ export default function App() {
     );
   }
 
-  const entry = (key: string, label: string) => (
-    <button key={key} className={feed === key ? "selected" : undefined} onClick={() => setFeed(key)}>
-      {label}
-    </button>
-  );
-
   return (
     <div className="app">
-      <nav className="sidebar">
-        {entry("all", "All Items")}
-        {entry("inbox", "Inbox")}
-        <h2>Topics</h2>
-        {topics.length === 0 ? <p className="hint">None yet</p> : topics.map((t) => entry(t.id, t.name))}
-        {status === "unauthorized" ? (
-          <button className="status warn" onClick={() => setEditing(true)}>
-            ⚠ Secret rejected
-          </button>
-        ) : (
-          <p className="status">{STATUS_LABELS[status]}</p>
-        )}
-        <button className="settings-button" onClick={() => setEditing(true)}>
-          Settings
-        </button>
-      </nav>
-      <Feed view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }} />
+      <Sidebar topics={topics} selected={feed} onSelect={setFeed} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
+      <Feed
+        view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }}
+        topics={topics}
+        onError={showError}
+      />
+      {deleting && <DeleteTopic topic={deleting} onClose={() => setDeleting(null)} onError={showError} />}
+      {error && (
+        <div className="modal-backdrop">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="error-title"
+            className="modal"
+            onKeyDown={(e) => e.key === "Escape" && setError(null)}
+          >
+            <h2 id="error-title">{error.title}</h2>
+            <p>{error.message}</p>
+            <button type="button" autoFocus onClick={() => setError(null)}>
+              OK
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
