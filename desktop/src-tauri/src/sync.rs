@@ -111,6 +111,7 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     for id in &page.tombstones {
         tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
     }
+    crate::ops::replay(&tx)?;
     tx.execute("UPDATE device SET pull_cursor = ?1", [page.cursor])?;
     tx.commit()?;
     Ok(!(page.items.is_empty() && page.topics.is_empty() && page.tombstones.is_empty()))
@@ -466,6 +467,44 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_never_hides_a_change_not_yet_pushed() {
+        use crate::ops::{self, Op};
+        let (_d, conn) = fresh();
+        let rows = |cursor: i64| {
+            let mut filed = item("j", "y", vec![]);
+            filed["topic_id"] = serde_json::json!("d");
+            page(serde_json::json!({
+                "items": [item("i", "x", vec![]), filed],
+                "topics": [{"id": "t", "name": "Gym", "archived_at": null, "deleted_at": null},
+                           {"id": "d", "name": "Old", "archived_at": null, "deleted_at": null}],
+                "tombstones": [], "cursor": cursor, "has_more": false,
+            }))
+        };
+        apply_pull(&conn, &rows(1)).unwrap();
+        ops::queue(&conn, Op::RenameTopic { topic_id: "t".into(), name: "Lifting".into() }, 5).unwrap();
+        ops::queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()) }, 5).unwrap();
+        ops::queue(&conn, Op::DeleteTopic { topic_id: "d".into(), trash: vec!["j".into()] }, 5).unwrap();
+
+        let state = |conn: &Connection| -> (String, Option<String>, bool, bool) {
+            conn.query_row(
+                "SELECT (SELECT name FROM topics WHERE id = 't'), (SELECT topic_id FROM items WHERE id = 'i'),
+                        (SELECT deleted_at IS NOT NULL FROM topics WHERE id = 'd'),
+                        (SELECT deleted_at IS NOT NULL AND topic_id IS NULL FROM items WHERE id = 'j')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+        // The same rows again, as a pull racing the push would bring them.
+        apply_pull(&conn, &rows(2)).unwrap();
+        assert_eq!(state(&conn), ("Lifting".into(), Some("t".into()), true, true));
+
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        apply_pull(&conn, &rows(3)).unwrap();
+        assert_eq!(state(&conn), ("Gym".into(), None, false, false));
+    }
+
+    #[test]
     fn after_a_cycle() {
         assert_eq!(outcome(&Ok(true), 0), ("synced", Wait::For(POLL_INTERVAL)));
         let failed = Err(SyncError::Failed("down".into()));
@@ -489,6 +528,7 @@ mod server_tests {
 
     use super::*;
     use crate::feed::{self, View};
+    use crate::topics::{self, Keep};
 
     // In the past, so the Server's cap on future timestamps never applies.
     const T0: i64 = 1_760_000_000_000_000;
@@ -635,12 +675,12 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let b = device(&server, &server.secret);
 
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], None, T0).unwrap();
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
         assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
 
         server.start();
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], T0 + 1_000_000).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], None, T0 + 1_000_000).unwrap();
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
@@ -655,7 +695,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, &server.secret);
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], None, T0).unwrap();
         let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
         sync(&a).await.unwrap();
         a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
@@ -671,7 +711,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, "not-the-secret");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], None, T0).unwrap();
         assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
         assert_eq!(count(&a, "outbox"), 1);
     }
@@ -682,7 +722,7 @@ mod server_tests {
         server.start();
         let a = device(&server, &server.secret);
         for i in 0..501 {
-            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], T0 + i).unwrap();
+            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], None, T0 + i).unwrap();
         }
         sync(&a).await.unwrap();
         assert_eq!(count(&a, "outbox"), 0);
@@ -770,7 +810,7 @@ mod server_tests {
 
     fn capture_png(d: &Device, text: &str) -> String {
         let id = crate::files::stage_bytes(&d.dir, "pixel.png", PIXEL_PNG).unwrap().id;
-        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), T0).unwrap();
+        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), None, T0).unwrap();
         id
     }
 
@@ -877,7 +917,7 @@ mod server_tests {
         });
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
 
         let started = std::time::Instant::now();
         assert_eq!(upload_pending(&a, &url, "s").await, Ok(true));
@@ -907,7 +947,7 @@ mod server_tests {
         let url = stall(b"");
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
         let res = tokio::time::timeout(IDLE_TIMEOUT * 3, upload_pending(&a, &url, "s")).await.expect("never gave up");
         assert!(matches!(res, Err(SyncError::Failed(e)) if e.contains("stalled")));
     }
@@ -933,7 +973,7 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let name = format!("{}.png", "x".repeat(251));
         let id = crate::files::stage_bytes(&a.dir, &name, PIXEL_PNG).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
         sync(&a).await.unwrap();
         let b = device(&server, &server.secret);
         sync(&b).await.unwrap();
@@ -948,7 +988,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let b = device(&server, &server.secret);
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], T0).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], None, T0).unwrap();
         sync(&b).await.unwrap();
         let a = device(&server, &server.secret);
         let id = capture_png(&a, "photo");
@@ -957,5 +997,110 @@ mod server_tests {
         assert_eq!(sync(&a).await, Ok(true));
         assert!(texts(&a).contains(&"from b".to_string()));
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))), "the failed upload was never reported");
+    }
+
+    const SECOND: i64 = 1_000_000;
+
+    fn place(d: &Device, item_id: &str) -> (Option<String>, bool) {
+        d.db.lock()
+            .unwrap()
+            .query_row("SELECT topic_id, deleted_at IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap()
+    }
+
+    fn topic_names(d: &Device) -> Vec<(String, bool)> {
+        topics::list(&d.db.lock().unwrap()).unwrap().into_iter().map(|t| (t.name, t.archived)).collect()
+    }
+
+    fn only_item(d: &Device) -> String {
+        feed::list_items(&d.db.lock().unwrap(), &View::All, None).unwrap()[0].id.clone()
+    }
+
+    #[tokio::test]
+    async fn a_move_into_a_topic_archived_elsewhere_comes_back() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], None, T0 + SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        let item = only_item(&a);
+
+        feed::move_item(&a.db.lock().unwrap(), &item, Some(&gym), T0 + 10 * SECOND).unwrap();
+        topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 20 * SECOND).unwrap();
+        sync(&b).await.unwrap();
+        sync(&a).await.unwrap();
+
+        assert_eq!(place(&a, &item), (None, false), "A still shows the move the Server rejected");
+        assert_eq!(topic_names(&a), [("Gym".to_string(), true)]);
+    }
+
+    #[tokio::test]
+    async fn topic_changes_reach_another_device() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let id = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
+        topics::rename(&a.db.lock().unwrap(), &id, "Lifting", T0 + SECOND).unwrap();
+        topics::set_archived(&a.db.lock().unwrap(), &id, true, T0 + 2 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        assert_eq!(topic_names(&b), [("Lifting".to_string(), true)]);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_topic_keeps_the_chosen_items_on_both_devices() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "keep me", &[], Some(&gym), T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], Some(&gym), T0 + 2 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        let items = feed::list_items(&a.db.lock().unwrap(), &View::All, None).unwrap();
+        let (binned, kept) = (items[0].id.clone(), items[1].id.clone());
+
+        topics::delete(&a.db.lock().unwrap(), &gym, &Keep::Only { ids: vec![kept.clone()] }, T0 + 3 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+
+        for d in [&a, &b] {
+            assert_eq!(place(d, &kept), (None, false));
+            assert_eq!(place(d, &binned), (None, true));
+            assert!(topic_names(d).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capture_into_a_topic_arrives_filed() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], Some(&gym), T0 + SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        assert_eq!(place(&b, &only_item(&b)), (Some(gym), false));
+    }
+
+    #[tokio::test]
+    async fn the_same_name_created_offline_on_two_devices_gets_a_number() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        topics::create(&a.db.lock().unwrap(), "Books", T0).unwrap();
+        topics::create(&b.db.lock().unwrap(), "Books", T0 + SECOND).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        sync(&a).await.unwrap();
+        for d in [&a, &b] {
+            let mut names: Vec<String> = topic_names(d).into_iter().map(|(n, _)| n).collect();
+            names.sort();
+            assert_eq!(names, ["Books", "Books (1)"]);
+        }
     }
 }

@@ -2,9 +2,11 @@ mod cache;
 mod commands;
 mod feed;
 mod files;
+mod ops;
 mod settings;
 mod store;
 mod sync;
+mod topics;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -79,6 +81,12 @@ pub fn run() {
             commands::save_settings,
             commands::list_topics,
             commands::capture,
+            commands::move_item,
+            commands::create_topic,
+            commands::rename_topic,
+            commands::archive_topic,
+            commands::unarchive_topic,
+            commands::delete_topic,
             commands::pick_files,
             commands::stage_attachment_bytes,
             commands::unstage_attachment,

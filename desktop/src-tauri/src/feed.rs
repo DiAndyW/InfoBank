@@ -1,9 +1,10 @@
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::files;
+use crate::ops;
 
 // The Server's limit, so the Server never rejects a Capture.
 const MAX_ITEM_TEXT_BYTES: usize = 1 << 20;
@@ -43,7 +44,14 @@ pub struct Before {
     pub id: String,
 }
 
-pub fn capture(conn: &Connection, dir: &Path, text: &str, attachment_ids: &[String], now_us: i64) -> Result<(), String> {
+pub fn capture(
+    conn: &Connection,
+    dir: &Path,
+    text: &str,
+    attachment_ids: &[String],
+    topic_id: Option<&str>,
+    now_us: i64,
+) -> Result<(), String> {
     let text = text.trim();
     if text.is_empty() && attachment_ids.is_empty() {
         return Err("Write something first".into());
@@ -54,6 +62,9 @@ pub fn capture(conn: &Connection, dir: &Path, text: &str, attachment_ids: &[Stri
     if text.contains('\0') {
         return Err("That text contains a character that can't be saved".into());
     }
+    if let Some(id) = topic_id {
+        crate::topics::require_open(conn, id)?;
+    }
     let mut attachments = Vec::new();
     for id in attachment_ids {
         let id = uuid::Uuid::parse_str(id).map_err(|_| "An attachment is missing; add it again")?.to_string();
@@ -62,42 +73,49 @@ pub fn capture(conn: &Connection, dir: &Path, text: &str, attachment_ids: &[Stri
             return Err(format!("{filename} is over 100 MB"));
         }
         let mime_type = files::mime_type(&filename);
-        attachments.push(serde_json::json!({"id": id, "filename": filename, "mime_type": mime_type, "size_bytes": size_bytes}));
+        attachments.push(ops::NewAttachment { id, filename, mime_type, size_bytes: size_bytes as i64 });
     }
-    let text = (!text.is_empty()).then_some(text);
-    let at = chrono::DateTime::from_timestamp_micros(now_us)
-        .ok_or("The system clock is out of range")?
-        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let text = (!text.is_empty()).then(|| text.to_string());
     let item_id = uuid::Uuid::new_v4().to_string();
-    let op = serde_json::json!({
-        "id": uuid::Uuid::new_v4().to_string(),
-        "type": "CaptureItem",
-        "at": at,
-        "item_id": item_id,
-        "topic_id": null,
-        "text": text,
-        "attachments": attachments,
-    });
 
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute("INSERT INTO items (id, text, capture_time) VALUES (?1, ?2, ?3)", (&item_id, text, now_us))
-        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO items (id, topic_id, text, capture_time) VALUES (?1, ?2, ?3, ?4)",
+        (&item_id, topic_id, &text, now_us),
+    )
+    .map_err(|e| e.to_string())?;
     for a in &attachments {
-        let (id, filename) = (a["id"].as_str().unwrap_or_default(), a["filename"].as_str().unwrap_or_default());
         tx.execute(
             "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
              VALUES (?1, ?2, ?3, ?4, ?5, 0, 0)",
-            (id, &item_id, filename, a["mime_type"].as_str(), a["size_bytes"].as_i64()),
+            (&a.id, &item_id, &a.filename, &a.mime_type, a.size_bytes),
         )
         .map_err(|e| e.to_string())?;
         // The pinned local copy: eviction skips it until the Server has the file.
         tx.execute(
             "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, 'file', ?2, ?3, ?4)",
-            (id, format!("files/{id}/{filename}"), a["size_bytes"].as_i64(), now_us),
+            (&a.id, format!("files/{}/{}", a.id, a.filename), a.size_bytes, now_us),
         )
         .map_err(|e| e.to_string())?;
     }
-    tx.execute("INSERT INTO outbox (op) VALUES (?1)", [op.to_string()]).map_err(|e| e.to_string())?;
+    ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), text, attachments }, now_us)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub fn move_item(conn: &Connection, item_id: &str, topic_id: Option<&str>, now_us: i64) -> Result<(), String> {
+    let current: Option<String> = conn
+        .query_row("SELECT topic_id FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or("That Item no longer exists")?;
+    if current.as_deref() == topic_id {
+        return Ok(());
+    }
+    if let Some(id) = topic_id {
+        crate::topics::require_open(conn, id)?;
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    ops::queue(&tx, ops::Op::MoveItem { item_id: item_id.into(), topic_id: topic_id.map(String::from) }, now_us)?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -176,7 +194,7 @@ mod tests {
     #[test]
     fn capture_writes_the_item_and_its_op_together() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "  hello\n", &[], 1_760_000_000_123_456).unwrap();
+        capture(&conn, d.path(), "  hello\n", &[], None, 1_760_000_000_123_456).unwrap();
 
         let items = list_items(&conn, &View::All, None).unwrap();
         assert_eq!(items.len(), 1);
@@ -203,12 +221,12 @@ mod tests {
         let (d, conn) = fresh();
         let too_long = "x".repeat(MAX_ITEM_TEXT_BYTES + 1);
         for text in ["", "  \n ", "a\0b", too_long.as_str()] {
-            assert!(capture(&conn, d.path(), text, &[], 1).is_err(), "accepted {:.20?}", text);
+            assert!(capture(&conn, d.path(), text, &[], None, 1).is_err(), "accepted {:.20?}", text);
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
         // The limit itself is allowed, so the guard above is the byte limit and not something stricter.
-        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], 1).unwrap();
+        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], None, 1).unwrap();
     }
 
     #[test]
@@ -251,7 +269,7 @@ mod tests {
     #[test]
     fn an_item_stops_pending_when_its_op_leaves_the_outbox() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "hi", &[], 1).unwrap();
+        capture(&conn, d.path(), "hi", &[], None, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(!list_items(&conn, &View::All, None).unwrap()[0].pending);
     }
@@ -264,7 +282,7 @@ mod tests {
     fn an_attachment_is_captured_with_its_item_in_one_transaction() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), 1_760_000_000_000_000).unwrap();
+        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), None, 1_760_000_000_000_000).unwrap();
 
         let item = &list_items(&conn, &View::All, None).unwrap()[0];
         assert_eq!(item.text, None);
@@ -291,18 +309,18 @@ mod tests {
         let (d, conn) = fresh();
         let never_staged = uuid::Uuid::new_v4().to_string();
         for bad in ["../files", never_staged.as_str()] {
-            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], 1).is_err(), "accepted {bad}");
+            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], None, 1).is_err(), "accepted {bad}");
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
-        assert!(capture(&conn, d.path(), " ", &[], 1).is_err(), "blank with no attachments");
+        assert!(capture(&conn, d.path(), " ", &[], None, 1).is_err(), "blank with no attachments");
     }
 
     #[test]
     fn an_item_stays_pending_until_its_files_are_uploaded() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), 1).unwrap();
+        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), None, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(list_items(&conn, &View::All, None).unwrap()[0].pending, "the file isn't on the Server yet");
         conn.execute("UPDATE attachments SET uploaded = 1", []).unwrap();
@@ -313,8 +331,60 @@ mod tests {
     fn the_feed_marks_files_that_can_run_code() {
         let (d, conn) = fresh();
         let ids = ["setup.command", "report.pdf"].map(|n| crate::files::stage_bytes(d.path(), n, b"x").unwrap().id);
-        capture(&conn, d.path(), "", &ids, 1).unwrap();
+        capture(&conn, d.path(), "", &ids, None, 1).unwrap();
         let item = &list_items(&conn, &View::All, None).unwrap()[0];
         assert_eq!(item.attachments.iter().map(|a| a.runnable).collect::<Vec<_>>(), [true, false]);
+    }
+
+    fn with_topics(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO topics (id, name) VALUES ('t', 'Gym');
+             INSERT INTO topics (id, name, archived_at) VALUES ('a', 'Old', 1);
+             INSERT INTO topics (id, name, deleted_at) VALUES ('d', 'Gone', 1);",
+        )
+        .unwrap();
+    }
+
+    fn outbox_ops(conn: &Connection) -> Vec<serde_json::Value> {
+        let mut stmt = conn.prepare("SELECT op FROM outbox ORDER BY seq").unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0)).unwrap().map(|o| serde_json::from_str(&o.unwrap()).unwrap()).collect()
+    }
+
+    #[test]
+    fn capture_files_the_item_in_the_topic() {
+        let (d, conn) = fresh();
+        with_topics(&conn);
+        capture(&conn, d.path(), "squat 100", &[], Some("t"), 1).unwrap();
+        let ids: Vec<String> = list_items(&conn, &View::Topic { id: "t".into() }, None).unwrap().into_iter().map(|i| i.id).collect();
+        assert_eq!(ids.len(), 1);
+        assert_eq!(outbox_ops(&conn)[0]["topic_id"], "t");
+    }
+
+    #[test]
+    fn capture_and_move_refuse_topics_that_cant_take_items() {
+        let (d, conn) = fresh();
+        with_topics(&conn);
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        for id in ["a", "d", "nope"] {
+            assert!(capture(&conn, d.path(), "hi", &[], Some(id), 1).is_err(), "captured into {id}");
+            assert!(move_item(&conn, "i", Some(id), 1).is_err(), "moved into {id}");
+        }
+        assert_eq!(count(&conn, "items"), 1);
+        assert_eq!(count(&conn, "outbox"), 0);
+    }
+
+    #[test]
+    fn move_item_queues_a_move_and_moving_in_place_does_nothing() {
+        let (_d, conn) = fresh();
+        with_topics(&conn);
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        move_item(&conn, "i", Some("t"), 2).unwrap();
+        assert_eq!(list_items(&conn, &View::Topic { id: "t".into() }, None).unwrap().len(), 1);
+        move_item(&conn, "i", Some("t"), 3).unwrap();
+        move_item(&conn, "i", None, 4).unwrap();
+        assert_eq!(list_items(&conn, &View::Inbox, None).unwrap().len(), 1);
+        let moves: Vec<serde_json::Value> = outbox_ops(&conn).into_iter().map(|o| o["topic_id"].clone()).collect();
+        assert_eq!(moves, [serde_json::json!("t"), serde_json::Value::Null]);
+        assert!(move_item(&conn, "missing", None, 5).is_err());
     }
 }

@@ -26,19 +26,6 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     Ok(conn)
 }
 
-#[derive(serde::Serialize)]
-pub struct Topic {
-    pub id: String,
-    pub name: String,
-}
-
-pub fn list_topics(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name FROM topics WHERE archived_at IS NULL AND deleted_at IS NULL ORDER BY lower(name)",
-    )?;
-    stmt.query_map([], |r| Ok(Topic { id: r.get(0)?, name: r.get(1)? }))?.collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,18 +94,5 @@ mod tests {
         .unwrap();
         let left: i64 = conn.query_row("SELECT count(*) FROM attachments", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);
-    }
-
-    #[test]
-    fn list_topics_shows_live_open_topics_by_name() {
-        let (_dir, conn) = fresh();
-        conn.execute_batch(
-            "INSERT INTO topics (id, name) VALUES ('1', 'mosaic'), ('2', 'CS 111'), ('3', 'Books');
-             INSERT INTO topics (id, name, archived_at) VALUES ('4', 'Old', 1);
-             INSERT INTO topics (id, name, deleted_at) VALUES ('5', 'Gone', 1);",
-        )
-        .unwrap();
-        let names: Vec<String> = list_topics(&conn).unwrap().into_iter().map(|t| t.name).collect();
-        assert_eq!(names, ["Books", "CS 111", "mosaic"]);
     }
 }

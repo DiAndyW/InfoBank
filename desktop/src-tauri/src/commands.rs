@@ -1,8 +1,8 @@
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{AppState, cache, feed, files, settings, store};
+use crate::{AppState, cache, feed, files, settings, topics};
 
 fn now_us() -> i64 {
     chrono::Utc::now().timestamp_micros()
@@ -22,8 +22,8 @@ pub async fn save_settings(state: State<'_, AppState>, server_url: String, secre
 }
 
 #[tauri::command]
-pub async fn list_topics(state: State<'_, AppState>) -> Result<Vec<store::Topic>, String> {
-    store::list_topics(&state.db.lock().unwrap()).map_err(|e| e.to_string())
+pub async fn list_topics(state: State<'_, AppState>) -> Result<Vec<topics::Topic>, String> {
+    topics::list(&state.db.lock().unwrap()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -69,10 +69,63 @@ pub async fn unstage_attachment(state: State<'_, AppState>, id: String) -> Resul
     files::unstage(&state.db.lock().unwrap(), &state.dir, &id)
 }
 
-#[tauri::command]
-pub async fn capture(state: State<'_, AppState>, text: String, attachment_ids: Vec<String>) -> Result<(), String> {
-    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, now_us())?;
+fn changed(app: &AppHandle, state: &AppState) {
     state.wake.notify_one();
+    let _ = app.emit("items-changed", ());
+}
+
+#[tauri::command]
+pub async fn capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+    attachment_ids: Vec<String>,
+    topic_id: Option<String>,
+) -> Result<(), String> {
+    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, topic_id.as_deref(), now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn move_item(app: AppHandle, state: State<'_, AppState>, item_id: String, topic_id: Option<String>) -> Result<(), String> {
+    feed::move_item(&state.db.lock().unwrap(), &item_id, topic_id.as_deref(), now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_topic(app: AppHandle, state: State<'_, AppState>, name: String) -> Result<topics::Topic, String> {
+    let topic = topics::create(&state.db.lock().unwrap(), &name, now_us())?;
+    changed(&app, &state);
+    Ok(topic)
+}
+
+#[tauri::command]
+pub async fn rename_topic(app: AppHandle, state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
+    topics::rename(&state.db.lock().unwrap(), &id, &name, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn archive_topic(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    topics::set_archived(&state.db.lock().unwrap(), &id, true, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unarchive_topic(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    topics::set_archived(&state.db.lock().unwrap(), &id, false, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_topic(app: AppHandle, state: State<'_, AppState>, id: String, keep: topics::Keep) -> Result<(), String> {
+    topics::delete(&state.db.lock().unwrap(), &id, &keep, now_us())?;
+    changed(&app, &state);
     Ok(())
 }
 

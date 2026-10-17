@@ -87,6 +87,18 @@ func (b *batch) applyOnce(o pushOp) (opResult, error) {
 	if err != nil {
 		return opResult{}, err
 	}
+	if res.Status == "rejected" {
+		// The Device already shows the op's effect; new seqs make its next pull bring the Server's version.
+		if _, err := b.tx.Exec(b.ctx, `UPDATE items SET seq = nextval('sync_seq') WHERE id = ANY($1)`,
+			append([]uuid.UUID{o.ItemID}, o.Trash...)); err != nil {
+			return opResult{}, err
+		}
+		if o.TopicID != nil {
+			if _, err := b.tx.Exec(b.ctx, `UPDATE topics SET seq = nextval('sync_seq') WHERE id = $1`, *o.TopicID); err != nil {
+				return opResult{}, err
+			}
+		}
+	}
 	res.OpID = o.ID
 	stored, err = json.Marshal(res)
 	if err != nil {

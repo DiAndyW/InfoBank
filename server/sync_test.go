@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -927,5 +928,85 @@ func TestConcurrentPushesNeverSkipAPullingDevice(t *testing.T) {
 	}
 	if missed > 0 || len(seen) != len(want) {
 		t.Fatalf("puller saw %d of %d changes, %d not exactly once", len(seen), len(want), missed)
+	}
+}
+
+// cursor pulls everything and returns the cursor after the last change.
+func (e *syncEnv) cursor() int64 {
+	e.t.Helper()
+	cursor := int64(0)
+	for {
+		page := e.pull(cursor)
+		cursor = page.Cursor
+		if !page.HasMore {
+			return cursor
+		}
+	}
+}
+
+func changedIDs(page pullPage) []string {
+	ids := []string{}
+	for _, it := range page.Items {
+		ids = append(ids, it.ID)
+	}
+	for _, tp := range page.Topics {
+		ids = append(ids, tp.ID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func TestARejectedOpMakesThePushingDevicePullTheRowsItNames(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, gone, itemID, filed := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gone, "name": "Gone"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": filed, "topic_id": gone, "text": "y"},
+		op{"type": "ArchiveTopic", "at": e.at(2), "topic_id": gym},
+		op{"type": "DeleteTopic", "at": e.at(3), "topic_id": gone, "trash": []string{}},
+		op{"type": "RenameTopic", "at": e.at(10), "topic_id": gym, "name": "Lifting"})
+
+	for _, tc := range []struct {
+		name string
+		o    op
+		want []string
+	}{
+		{"move into an archived Topic", op{"type": "MoveItem", "at": e.at(4), "item_id": itemID, "topic_id": gym}, []string{itemID, gym}},
+		{"superseded rename", op{"type": "RenameTopic", "at": e.at(5), "topic_id": gym, "name": "Gym day"}, []string{gym}},
+		{"delete of a deleted Topic", op{"type": "DeleteTopic", "at": e.at(6), "topic_id": gone, "trash": []string{filed}}, []string{filed, gone}},
+	} {
+		cursor := e.cursor()
+		if res := e.push(phoneID, tc.o); res[0].Status != "rejected" {
+			t.Fatalf("%s: result %+v, want rejected", tc.name, res[0])
+		}
+		want := slices.Sorted(slices.Values(tc.want))
+		if got := changedIDs(e.pull(cursor)); !slices.Equal(got, want) {
+			t.Errorf("%s: pulled %v, want %v", tc.name, got, want)
+		}
+
+		// push gave tc.o an id, so this is a replay.
+		cursor = e.cursor()
+		e.push(phoneID, tc.o)
+		if got := changedIDs(e.pull(cursor)); len(got) != 0 {
+			t.Errorf("%s: a replay re-marked %v", tc.name, got)
+		}
+	}
+}
+
+func TestAnAcceptedMoveSendsOnlyTheItem(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, itemID := uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"})
+	cursor := e.cursor()
+
+	if res := e.push(phoneID, op{"type": "MoveItem", "at": e.at(5), "item_id": itemID, "topic_id": gym}); res[0].Status != "accepted" {
+		t.Fatalf("move = %+v, want accepted", res[0])
+	}
+	if got := changedIDs(e.pull(cursor)); !slices.Equal(got, []string{itemID}) {
+		t.Fatalf("pulled %v, want only the Item", got)
 	}
 }
