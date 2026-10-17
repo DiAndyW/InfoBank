@@ -1,0 +1,105 @@
+:root {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Source Serif 4 Variable", Charter, Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+  --sidebar-width: 232px;
+  --feed-measure: 720px;
+  --time-column: 64px;
+  --row-height: 32px;
+  --dialog-width: 440px;
+  --dialog-wide: 720px;
+  --menu-flip: 240px;
+  --thumb-height: 160px;
+}
+
+:root, :root[data-theme="paper"] {
+  --surface: #f6f1e7;
+  --surface-sidebar: #ede6d8;
+  --surface-raised: #fffcf6;
+  --hover: #e5ddcc;
+  --line: #ddd3c2;
+  --line-strong: #8c8070;
+  --ink: #2a241c;
+  --ink-muted: #665b4d;
+  --accent: #1f4e79;
+  --on-accent: #fffcf6;
+  --accent-soft: #dde5ee;
+  --ok: #2e6b47;
+  --warn: #835500;
+  --warn-soft: #f3e4c2;
+  --danger: #a3301d;
+  --danger-soft: #f4dcd4;
+  --on-danger: #fffcf6;
+  --chip: #e8e0cf;
+  --feed-bar: #f6f1e700;
+  --focus: var(--accent);
+  --scrim: #2a241c59;
+  --drop-scrim: #f6f1e7e0;
+  --shadow-menu: 0 1px 2px #2a241c1f, 0 8px 24px #2a241c24;
+  --shadow-dialog: 0 2px 6px #2a241c1f, 0 24px 64px #2a241c33;
+}
+
+:root[data-theme="blackboard"] {
+  --surface: #1e2522;
+  --surface-sidebar: #171d1a;
+  --surface-raised: #2a322e;
+  --hover: #27302b;
+  --line: #34403a;
+  --line-strong: #76877d;
+  --ink: #ecefe6;
+  --ink-muted: #a9b3aa;
+  --accent: #e8cf74;
+  --on-accent: #1e2522;
+  --accent-soft: #38382a;
+  --ok: #9fd3a8;
+  --warn: #f0b860;
+  --warn-soft: #3b3220;
+  --danger: #ff9b87;
+  --danger-soft: #46291f;
+  --on-danger: #1e2522;
+  --chip: #2f3934;
+  --feed-bar: #1e252200;
+  --focus: var(--accent);
+  --scrim: #0000008c;
+  --drop-scrim: #1e2522e0;
+  --shadow-menu: 0 1px 2px #00000066, 0 8px 24px #00000080;
+  --shadow-dialog: 0 2px 6px #00000066, 0 24px 64px #000000a6;
+}
+
+:root[data-theme="notepad"] {
+  --surface: #fbfbf7;
+  --surface-sidebar: #eff0eb;
+  --surface-raised: #ffffff;
+  --hover: #e5e7e0;
+  --line: #dfe1da;
+  --line-strong: #858a80;
+  --ink: #1d2130;
+  --ink-muted: #5a5f6c;
+  --accent: #2449a6;
+  --on-accent: #ffffff;
+  --accent-soft: #e2e8f6;
+  --ok: #2e6b47;
+  --warn: #835500;
+  --warn-soft: #f6ead0;
+  --danger: #b3261e;
+  --danger-soft: #f8dedb;
+  --on-danger: #ffffff;
+  --chip: #eceee8;
+  --feed-bar: #c8372d;
+  --focus: var(--accent);
+  --scrim: #1d213059;
+  --drop-scrim: #fbfbf7e0;
+  --shadow-menu: 0 1px 2px #1d21301f, 0 8px 24px #1d213024;
+  --shadow-dialog: 0 2px 6px #1d21301f, 0 24px 64px #1d213033;
+}
