@@ -4,11 +4,21 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { listItems, moveItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
 import { Attachments } from "./attachments";
 import Composer from "./Composer";
+import { useShownAfterDelay } from "./delay";
 import { Icon } from "./icons";
 import { linkify } from "./links";
 import Menu from "./Menu";
+import Notice from "./Notice";
 
-export default function Feed({ view, topics, onError }: { view: View; topics: Topic[]; onError: (title: string, err: unknown) => void }) {
+type Props = {
+  view: View;
+  topics: Topic[];
+  notice: string | null;
+  onDismissNotice: () => void;
+  onError: (title: string, err: unknown) => void;
+};
+
+export default function Feed({ view, topics, notice, onDismissNotice, onError }: Props) {
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
   const pages = useRef(1);
@@ -20,6 +30,8 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
   const latestLoad = useRef(0);
   const viewKey = JSON.stringify(view);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const showLoadingOlder = useShownAfterDelay(loadingOlder);
   const current = view.kind === "topic" ? topics.find((t) => t.id === view.id) : undefined;
   const targets = [{ id: null as string | null, name: "Inbox" }, ...topics.filter((t) => !t.archived)];
 
@@ -27,13 +39,22 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
     const id = ++latestLoad.current;
     let all: FeedItem[] = [];
     let page: FeedItem[] = [];
-    for (let i = 0; i < pageCount; i++) {
-      const last = all[all.length - 1];
-      page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id } : null);
-      all = all.concat(page);
-      if (page.length === 0) break;
+    try {
+      for (let i = 0; i < pageCount; i++) {
+        const last = all[all.length - 1];
+        page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id } : null);
+        all = all.concat(page);
+        if (page.length === 0) break;
+      }
+    } catch (e) {
+      if (id !== latestLoad.current) return;
+      heightBeforeOlder.current = null;
+      setLoadingOlder(false);
+      onError("Couldn't load the Items", e);
+      return;
     }
     if (id !== latestLoad.current) return;
+    setLoadingOlder(false);
     pages.current = pageCount;
     setItems(all);
     setExhausted(page.length === 0);
@@ -63,6 +84,7 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     if (el.scrollTop === 0 && !exhausted && heightBeforeOlder.current === null) {
       heightBeforeOlder.current = el.scrollHeight;
+      setLoadingOlder(true);
       load(pages.current + 1);
     }
   }
@@ -73,6 +95,12 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
     <main className="nb-feed">
       <div className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
         <div className="nb-feed-col">
+          {loadingOlder && showLoadingOlder && (
+            <div className="nb-loading" role="status">
+              <Icon name="syncing" className="nb-spin" />
+              <span>Loading earlier Items…</span>
+            </div>
+          )}
           {shown.length === 0 ? (
             <div className="nb-empty">
               <p className="nb-empty-title">Nothing here yet.</p>
@@ -154,6 +182,7 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
                               },
                             })),
                           },
+                          ...(it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : []),
                         ]}
                       />
                     </div>
@@ -164,6 +193,7 @@ export default function Feed({ view, topics, onError }: { view: View; topics: To
           )}
         </div>
       </div>
+      <div className="nb-notice-slot">{notice && <Notice message={notice} onClose={onDismissNotice} />}</div>
       {current?.archived && (
         <div className="nb-archived-bar">
           <Icon name="archive" />

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Icon } from "./icons";
 
 export type MenuEntry =
@@ -14,6 +14,8 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [submenu, setSubmenu] = useState<number | null>(null);
+  // Set when the keyboard (or a click) opens the submenu, so focus follows; hovering opens it without moving focus.
+  const focusSubmenu = useRef(false);
   const [place, setPlace] = useState<{ style: CSSProperties; above: boolean }>({ style: {}, above: false });
 
   useLayoutEffect(() => {
@@ -41,6 +43,42 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
     };
   }, [open]);
 
+  useEffect(() => {
+    if (submenu === null || !focusSubmenu.current) return;
+    focusSubmenu.current = false;
+    root.current?.querySelector<HTMLElement>(".nb-submenu [role^=menuitem]")?.focus();
+  }, [submenu]);
+
+  function openSubmenu(i: number) {
+    focusSubmenu.current = true;
+    setSubmenu(i);
+  }
+
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape" && open) {
+      e.stopPropagation();
+      close();
+      return;
+    }
+    const item = (e.target as HTMLElement).closest<HTMLElement>("[role^=menuitem]");
+    const menu = item?.closest<HTMLElement>("[role=menu]");
+    if (!item || !menu) return;
+    const items = Array.from(menu.querySelectorAll<HTMLElement>("[role^=menuitem]")).filter((el) => el.closest("[role=menu]") === menu);
+    const at = items.indexOf(item);
+    const go = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[e.key];
+    if (go !== undefined) {
+      e.preventDefault();
+      items[(go + items.length) % items.length].focus();
+    } else if (e.key === "ArrowRight" && item.getAttribute("aria-haspopup")) {
+      e.preventDefault();
+      item.click();
+    } else if (e.key === "ArrowLeft" && menu.classList.contains("nb-submenu")) {
+      e.preventDefault();
+      setSubmenu(null);
+      menu.parentElement!.querySelector<HTMLElement>("[aria-haspopup]")!.focus();
+    }
+  }
+
   function close() {
     onOpenChange(false);
     trigger.current?.focus();
@@ -59,7 +97,7 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
               aria-haspopup="menu"
               aria-expanded={submenu === i}
               className={submenu === i ? `${className} is-active` : className}
-              onClick={() => setSubmenu(i)}
+              onClick={() => openSubmenu(i)}
             >
               {check}
               <span className="nb-menu-label">{entry.label}</span>
@@ -90,12 +128,7 @@ export default function Menu({ label, entries, open, onOpenChange }: Props) {
     <div
       className="nb-menu-root"
       ref={root}
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && open) {
-          e.stopPropagation();
-          close();
-        }
-      }}
+      onKeyDown={onKeyDown}
     >
       <button
         ref={trigger}

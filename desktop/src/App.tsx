@@ -9,6 +9,9 @@ import Sidebar from "./Sidebar";
 import { Icon } from "./icons";
 import { applyTheme, storedTheme } from "./theme";
 
+const byName = new Intl.Collator().compare;
+const sorted = (topics: Topic[]) => [...topics].sort((a, b) => byName(a.name, b.name));
+
 export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [editing, setEditing] = useState(false);
@@ -31,10 +34,15 @@ export default function App() {
 
   const [error, setError] = useState<{ title: string; message: string } | null>(null);
   const [deleting, setDeleting] = useState<Topic | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const select = (key: string) => {
+    setFeed(key);
+    setNotice(null);
+  };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
 
   useEffect(() => {
-    const unlisten = listen("items-changed", () => listTopics().then(setTopics, (e) => showError("Couldn't load Topics", e)));
+    const unlisten = listen("items-changed", () => listTopics().then((t) => setTopics(sorted(t)), (e) => showError("Couldn't load Topics", e)));
     return () => {
       unlisten.then((stop) => stop());
     };
@@ -49,7 +57,7 @@ export default function App() {
     try {
       const [s, t, st] = await Promise.all([getSettings(), listTopics(), syncStatus()]);
       setSettings(s);
-      setTopics(t);
+      setTopics(sorted(t));
       setStatus(st);
       setLoadError(null);
     } catch (err) {
@@ -76,30 +84,42 @@ export default function App() {
   }
   if (!settings) return null;
   const configured = settings.server_url !== null && settings.has_secret;
-  if (!configured || editing) {
-    return (
-      <Settings
-        initial={settings}
-        theme={theme}
-        onThemeChange={setTheme}
-        onSaved={() => {
-          setEditing(false);
-          load();
-        }}
-        onCancel={configured ? () => setEditing(false) : undefined}
-      />
-    );
+  if (!configured) {
+    return <Settings initial={settings} theme={theme} onThemeChange={setTheme} onSaved={load} />;
   }
-
   return (
     <div className="nb-app">
-      <Sidebar topics={topics} selected={feed} onSelect={setFeed} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
+      <Sidebar topics={topics} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting} />
       <Feed
         view={feed === "all" ? { kind: "all" } : feed === "inbox" ? { kind: "inbox" } : { kind: "topic", id: feed }}
         topics={topics}
+        notice={notice}
+        onDismissNotice={() => setNotice(null)}
         onError={showError}
       />
-      {deleting && <DeleteTopic topic={deleting} onClose={() => setDeleting(null)} onError={showError} />}
+      {editing && (
+        <Settings
+          initial={settings}
+          theme={theme}
+          onThemeChange={setTheme}
+          onSaved={() => {
+            setEditing(false);
+            load();
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      )}
+      {deleting && (
+        <DeleteTopic
+          topic={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={(message) => {
+            setDeleting(null);
+            setNotice(message);
+          }}
+          onError={showError}
+        />
+      )}
       {error && (
         <Dialog
           alert

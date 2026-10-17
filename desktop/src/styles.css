@@ -17,6 +17,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: 
 .nb-section-toggle .nb-count { letter-spacing: 0; }
 .nb-section-chevron { display: grid; place-items: center; width: 28px; height: 28px; margin-left: auto; border-radius: var(--radius-md); }
 .nb-section-toggle:hover .nb-section-chevron { background: var(--hover); color: var(--ink); }
+.nb-notice-slot { position: relative; max-width: var(--feed-measure); }
+.nb-notice-slot .nb-notice { position: absolute; bottom: var(--space-2); left: var(--space-4); right: var(--space-4); z-index: 5; }
 .nb-sidebar-foot { margin-top: auto; padding-top: var(--space-2); display: flex; flex-direction: column; gap: 2px; }
 .nb-feed { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .nb-feed-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
@@ -31,6 +33,7 @@ kbd { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: 
 .nb-thumb-note { position: absolute; left: var(--space-1); bottom: var(--space-1); padding: 0 var(--space-1); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--ink-muted); font: 400 12px/16px var(--font-sans); }
 ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-empty.is-window { height: 100vh; }
+.nb-dialog:focus { outline: none; }
 .nb-dialog { max-height: calc(100vh - 2 * var(--space-4)); overflow-y: auto; }
 .nb-dialog-body .nb-selectlist { list-style: none; margin: 0; padding: 0; }
 /* The note sits beside the button, not in it, so it describes the choice instead of renaming it. */
@@ -40,8 +43,9 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-choice-label::after { content: ""; position: absolute; inset: 0; }
 .nb-choice-label:focus-visible { outline: none; }
 .nb-settings-page { min-height: 100vh; display: grid; place-items: center; padding: var(--space-12) var(--space-4); }
-.nb-settings { width: 480px; padding: var(--space-8); }
-.nb-settings h1 { margin: 0 0 var(--space-6); font: 600 22px/28px var(--font-sans); letter-spacing: -0.01em; }
+.nb-dialog.nb-settings { width: 480px; padding: var(--space-8); }
+.nb-settings .nb-dialog-title { margin: 0 0 var(--space-6); font: 600 22px/28px var(--font-sans); letter-spacing: -0.01em; }
+.nb-settings .nb-dialog-body { margin: 0; }
 .nb-settings-fields { display: flex; flex-direction: column; gap: 20px; }
 .nb-settings .nb-send-error { margin: var(--space-6) 0 0; }
 .nb-settings .nb-dialog-actions { margin-top: var(--space-8); }

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type SyncStatus, type Topic } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
@@ -25,14 +25,38 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
   const [showArchived, setShowArchived] = useState(false);
   // id null = a new Topic.
   const [naming, setNaming] = useState<{ id: string | null; draft: string; error: string | null } | null>(null);
+  const open = topics.filter((t) => !t.archived);
+  const archived = topics.filter((t) => t.archived);
   const saving = useRef(false);
+  const nav = useRef<HTMLElement>(null);
+  const plus = useRef<HTMLButtonElement>(null);
+  // A Topic whose row should take focus once it's on screen (a new one arrives with the next Topics refresh).
+  const focusRow = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (archived.some((t) => t.id === selected)) setShowArchived(true);
+  }, [selected, topics]);
+
+  useEffect(() => {
+    if (focusRow.current === null) return;
+    const row = nav.current!.querySelector<HTMLElement>(`[data-topic="${CSS.escape(focusRow.current)}"]`);
+    if (!row) return;
+    row.focus();
+    focusRow.current = null;
+  }, [topics, naming, showArchived]);
 
   async function saveName() {
     if (!naming || saving.current) return;
     saving.current = true;
     try {
-      if (naming.id === null) onSelect((await createTopic(naming.draft)).id);
-      else await renameTopic(naming.id, naming.draft);
+      if (naming.id === null) {
+        const created = await createTopic(naming.draft);
+        focusRow.current = created.id;
+        onSelect(created.id);
+      } else {
+        await renameTopic(naming.id, naming.draft);
+        focusRow.current = naming.id;
+      }
       setNaming(null);
     } catch (err) {
       setNaming({ ...naming, error: String(err) });
@@ -56,6 +80,8 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
             e.preventDefault();
             saveName();
           } else if (e.key === "Escape") {
+            if (naming.id === null) plus.current!.focus();
+            else focusRow.current = naming.id;
             setNaming(null);
           }
         }}
@@ -68,8 +94,6 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
       )}
     </div>
   );
-  const open = topics.filter((t) => !t.archived);
-  const archived = topics.filter((t) => t.archived);
 
   const entry = (key: string, label: string, icon: IconName) => (
     <button
@@ -91,6 +115,7 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
       <div key={t.id} className={className.filter(Boolean).join(" ")}>
         <button
           className="nb-topic-name"
+          data-topic={t.id}
           aria-current={selected === t.id ? "page" : undefined}
           title={t.name}
           onClick={() => onSelect(t.id)}
@@ -113,12 +138,12 @@ export default function Sidebar({ topics, selected, onSelect, status, onSettings
   };
 
   return (
-    <nav className="nb-sidebar">
+    <nav className="nb-sidebar" ref={nav}>
       {entry("all", "All Items", "all")}
       {entry("inbox", "Inbox", "inbox")}
       <div className="nb-section">
         <span>Topics</span>
-        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>
+        <button ref={plus} className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>
           <Icon name="plus" />
         </button>
       </div>

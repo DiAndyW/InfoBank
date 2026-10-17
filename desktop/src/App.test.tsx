@@ -780,3 +780,290 @@ test("clicking Delete all twice deletes once and shows no error", async () => {
   expect(calls.filter((c) => c.cmd === "delete_topic")).toHaveLength(1);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 });
+
+test("Select manually takes focus on its first checkbox, so Escape closes it and focus goes back", async () => {
+  backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 2 })],
+    items: (args) => (args.view.kind === "topic" ? [feedItem("1", "one", at(2026, 10, 14, 9, 0)), feedItem("2", "two", at(2026, 10, 14, 8, 0))] : []),
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Select manually…" }));
+  await vi.waitFor(() => expect(screen.getByRole("checkbox", { name: /one$/ })).toHaveFocus());
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Gym actions" })).toHaveFocus();
+});
+
+test("closing the Error dialog returns focus to what opened it", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)], failing: { move_item: "That Topic is archived" } });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  await userEvent.click(await screen.findByRole("button", { name: "OK" }));
+  expect(screen.getByRole("button", { name: "Item actions" })).toHaveFocus();
+});
+
+test("a Topic of exactly 100 Items has one page", async () => {
+  const notes = Array.from({ length: 100 }, (_, i) => feedItem(`p${i}`, `note ${i}`, at(2026, 10, 14, 9, 0) - i));
+  backend(configured, { topics: [topic("g", "Gym", { item_count: 100 })], items: (args) => (args.view.kind === "topic" && !args.before ? notes : []) });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Select manually…" }));
+  expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
+  await screen.findByRole("checkbox", { name: /note 0$/ });
+  expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+});
+
+test("a slow page shows Loading and holds the pager and the confirm", async () => {
+  const notes = Array.from({ length: 100 }, (_, i) => feedItem(`p${i}`, `note ${i}`, at(2026, 10, 14, 9, 0) - i));
+  let release!: () => void;
+  const slow = new Promise<void>((resolve) => (release = resolve));
+  backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 101 })],
+    items: async (args) => {
+      if (args.view.kind !== "topic") return [];
+      if (!args.before) return notes;
+      await slow;
+      return [feedItem("last", "last one", at(2026, 10, 1, 9, 0))];
+    },
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Select manually…" }));
+  await screen.findByRole("checkbox", { name: /note 0$/ });
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+  expect(await screen.findByText("Loading Items…", {}, { timeout: 1500 })).toBeInTheDocument();
+  for (const name of ["Prev", "Next", "Keep 0 · Trash 101"]) expect(screen.getByRole("button", { name })).toBeDisabled();
+  await act(async () => release());
+  expect(await screen.findByRole("checkbox", { name: /last one/ })).toBeInTheDocument();
+  expect(screen.queryByText("Loading Items…")).not.toBeInTheDocument();
+});
+
+test("a page that fails to load says so in the list, keeps the ticks and can be retried", async () => {
+  const notes = Array.from({ length: 100 }, (_, i) => feedItem(`p${i}`, `note ${i}`, at(2026, 10, 14, 9, 0) - i));
+  let fail = true;
+  backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 101 })],
+    items: (args) => {
+      if (args.view.kind !== "topic") return [];
+      if (!args.before) return notes;
+      if (fail) throw "The local store is busy";
+      return [feedItem("last", "last one", at(2026, 10, 1, 9, 0))];
+    },
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Select manually…" }));
+  await userEvent.click(await screen.findByRole("checkbox", { name: /note 3$/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Next" }));
+  const dialog = screen.getByRole("dialog");
+  expect(await within(dialog).findByText("Couldn't load the Items")).toBeInTheDocument();
+  expect(dialog).toHaveTextContent("The local store is busy");
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  fail = false;
+  await userEvent.click(within(dialog).getByRole("button", { name: "Try again" }));
+  expect(await within(dialog).findByRole("checkbox", { name: /last one/ })).toBeInTheDocument();
+  expect(within(dialog).getByRole("button", { name: "Keep 1 · Trash 100" })).toBeInTheDocument();
+});
+
+test("a slow delete says what it's doing and holds Cancel, then a Notice says what happened", async () => {
+  let release!: () => void;
+  backend(configured, {
+    topics: [topic("g", "Gym", { item_count: 3 })],
+    gates: { delete_topic: new Promise<void>((resolve) => (release = resolve)) },
+  });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Keep all" }));
+  expect(await screen.findByText("Moving 3 Items to the Inbox…", {}, { timeout: 1500 })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Delete all" })).not.toBeInTheDocument();
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.getByText('Deleted "Gym". 3 Items moved to the Inbox.')).toBeInTheDocument();
+});
+
+test("the Notice goes on dismiss, or when the view changes", async () => {
+  backend(configured, { topics: [topic("g", "Gym", { item_count: 2 }), topic("w", "Work")] });
+  render(<App />);
+  await openDelete("Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Delete all" }));
+  expect(await screen.findByText('Deleted "Gym". 2 Items moved to Trash.')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByText(/Deleted "Gym"/)).not.toBeInTheDocument();
+
+  await openDelete("Work");
+  await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+  expect(await screen.findByText('Deleted "Work".')).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Inbox" }));
+  expect(screen.queryByText('Deleted "Work".')).not.toBeInTheDocument();
+});
+
+test("the Notice goes by itself after 8 seconds, but waits while hovered", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    backend(configured, { topics: [topic("g", "Gym")] });
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Gym actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const notice = await screen.findByText('Deleted "Gym".');
+    await user.hover(notice);
+    await act(async () => vi.advanceTimersByTime(9000));
+    expect(screen.getByText('Deleted "Gym".')).toBeInTheDocument();
+    await user.unhover(notice);
+    await act(async () => vi.advanceTimersByTime(8000));
+    expect(screen.queryByText('Deleted "Gym".')).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("Topics sort by name the way people read them, accents with their letter", async () => {
+  // The Rust side sorts by lowercased bytes, which puts "École" after "Zebra".
+  backend(configured, { topics: [topic("a", "apple"), topic("z", "Zebra"), topic("e", "École")] });
+  render(<App />);
+  await screen.findByRole("button", { name: "apple" });
+  const names = Array.from(document.querySelectorAll(".nb-topic-name")).map((b) => b.textContent);
+  expect(names).toEqual(["apple", "École", "Zebra"]);
+});
+
+test("archiving the open Topic opens the Archived section, so the selection stays in view", async () => {
+  const topics = [topic("g", "Gym")];
+  backend(configured, { topics });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
+  topics[0] = topic("g", "Gym", { archived: true });
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Archived 1" })).toHaveAttribute("aria-expanded", "true"));
+  expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page");
+});
+
+test("after renaming a Topic, focus is on its row", async () => {
+  const topics = [topic("g", "Gym")];
+  backend(configured, { topics });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  await userEvent.clear(screen.getByLabelText("Topic name"));
+  await userEvent.type(screen.getByLabelText("Topic name"), "Lifting{Enter}");
+  topics[0] = topic("g", "Lifting");
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Lifting" })).toHaveFocus());
+});
+
+test("after creating a Topic focus is on its row, and Escape puts focus back on +", async () => {
+  const topics: Topic[] = [];
+  backend(configured, { topics });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  await userEvent.keyboard("{Escape}");
+  expect(screen.getByRole("button", { name: "New Topic" })).toHaveFocus();
+
+  await userEvent.click(screen.getByRole("button", { name: "New Topic" }));
+  await userEvent.type(screen.getByLabelText("Topic name"), "Reading{Enter}");
+  topics.push(topic("new", "Reading"));
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Reading" })).toHaveFocus());
+});
+
+test("arrow keys move through a menu and open and close its submenu", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getByRole("menuitem", { name: "Copy text" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+  await userEvent.keyboard("{End}");
+  expect(screen.getByRole("menuitem", { name: "Copy text" })).toHaveFocus();
+  await userEvent.keyboard("{Home}{ArrowRight}");
+  expect(screen.getByRole("menuitemradio", { name: "Inbox" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getByRole("menuitemradio", { name: "Gym" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowLeft}");
+  expect(screen.queryByRole("menuitemradio", { name: "Gym" })).not.toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+});
+
+test("Copy text puts the Item's text on the clipboard", async () => {
+  const user = userEvent.setup();
+  backend(configured, { items: () => [filed("1", "squat 100\nfelt easy", null)] });
+  render(<App />);
+  await user.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Copy text" }));
+  expect(await navigator.clipboard.readText()).toBe("squat 100\nfelt easy");
+});
+
+test("an Item with only files has no Copy text", async () => {
+  backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [report])] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  expect(screen.queryByRole("menuitem", { name: "Copy text" })).not.toBeInTheDocument();
+});
+
+test("Settings opens as a panel over the window, keeping the draft, and Escape closes it", async () => {
+  backend(configured);
+  render(<App />);
+  await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  expect(screen.getByLabelText("Server URL")).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("New Item")).toHaveValue("half a thought");
+  expect(screen.getByRole("button", { name: "Settings" })).toHaveFocus();
+});
+
+test("on first launch Save waits for both the Server URL and the secret", async () => {
+  backend({ server_url: null, has_secret: false });
+  render(<App />);
+  const save = await screen.findByRole("button", { name: "Save" });
+  expect(save).toBeDisabled();
+  await userEvent.type(screen.getByLabelText("Server URL"), "https://notes.example.com");
+  expect(save).toBeDisabled();
+  await userEvent.type(screen.getByLabelText("Secret"), "s3cret");
+  expect(save).toBeEnabled();
+});
+
+test("a slow save says Saving…, holds both buttons and saves once", async () => {
+  let release!: () => void;
+  const calls = backend(configured, { gates: { save_settings: new Promise<void>((resolve) => (release = resolve)) } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await userEvent.dblClick(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByRole("button", { name: "Saving…" }, { timeout: 1500 })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+  expect(calls.filter((c) => c.cmd === "save_settings")).toHaveLength(1);
+});
+
+test("while older Items load, a Loading line shows at the top", async () => {
+  let release!: () => void;
+  const slow = new Promise<void>((resolve) => (release = resolve));
+  backend(configured, {
+    items: async (args) => {
+      if (!args.before) return [feedItem("2", "newest page", at(2026, 10, 14, 9, 41))];
+      await slow;
+      return [feedItem("1", "older page", at(2026, 10, 13, 9, 41))];
+    },
+  });
+  render(<App />);
+  await screen.findByText("newest page");
+  fireEvent.scroll(screen.getByTestId("feed-items"));
+  expect(await screen.findByText("Loading earlier Items…", {}, { timeout: 1500 })).toBeInTheDocument();
+  await act(async () => release());
+  expect(await screen.findByText("older page")).toBeInTheDocument();
+  expect(screen.queryByText("Loading earlier Items…")).not.toBeInTheDocument();
+});
+
+test("Items that fail to load are shown in the Error dialog", async () => {
+  backend(configured, { failing: { list_items: "The local store is busy" } });
+  render(<App />);
+  expect(await screen.findByRole("alertdialog", { name: "Couldn't load the Items" })).toHaveTextContent("The local store is busy");
+});
