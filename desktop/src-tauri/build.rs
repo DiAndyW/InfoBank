@@ -1,5 +1,15 @@
 fn main() {
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
+    let mut windows = tauri_build::WindowsAttributes::new();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // Test binaries need the Common Controls v6 manifest too (rfd imports TaskDialogIndirect), and
+        // tauri-build only embeds it in the app binary.
+        windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+        let manifest = std::env::current_dir().unwrap().join("windows-app-manifest.xml");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    }
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows).app_manifest(tauri_build::AppManifest::new().commands(&[
         "get_settings", "save_settings", "list_topics", "capture", "move_item", "edit_item", "trash_item",
         "restore_item", "nav_counts", "create_topic", "rename_topic", "archive_topic", "unarchive_topic",
         "delete_topic", "pick_files", "stage_attachment_bytes", "unstage_attachment", "thumbnail",
