@@ -23,10 +23,13 @@ type Props = {
   onSearch: (text: string) => void;
   onSearchFocus: () => void;
   onSearchEscape: () => void;
+  // While an Item is dragged: where it is now ("inbox" or a Topic id), and the row it would drop on.
+  drag: { from: string; over: string | null } | null;
+  onDragOver: (key: string | null) => void;
   searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef }: Props) {
+export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
   // The field shows what's typed even mid-composition; the query only follows once the input method is done.
   const [draft, setDraft] = useState(search);
   const composing = useRef(false);
@@ -104,11 +107,16 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
     </div>
   );
 
+  const dropClass = (key: string, takes: boolean) => drag && (!takes || key === drag.from ? "is-drop-off" : drag.over === key && "is-drop-target");
+  const dropHandlers = (key: string, takes: boolean) =>
+    drag && takes && key !== drag.from ? { onPointerEnter: () => onDragOver(key), onPointerLeave: () => onDragOver(null) } : {};
+
   const entry = (key: string, label: string, icon: IconName, count?: number) => (
     <button
-      className={selected === key ? "nb-nav is-selected" : "nb-nav"}
+      className={["nb-nav", selected === key && "is-selected", dropClass(key, key === "inbox")].filter(Boolean).join(" ")}
       aria-current={selected === key ? "page" : undefined}
       onClick={() => onSelect(key)}
+      {...dropHandlers(key, key === "inbox")}
     >
       <Icon name={icon} />
       <span className="nb-nav-label">{label}</span>
@@ -120,9 +128,9 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
     if (naming?.id === t.id) return nameField;
     const rename = { label: "Rename", onSelect: () => setNaming({ id: t.id, draft: t.name, error: null }) };
     const remove = { label: "Delete…", danger: true, onSelect: () => onDelete(t) };
-    const className = ["nb-topic", selected === t.id && "is-selected", t.archived && "is-archived", menuFor === t.id && "is-open"];
+    const className = ["nb-topic", selected === t.id && "is-selected", t.archived && "is-archived", menuFor === t.id && "is-open", dropClass(t.id, !t.archived)];
     return (
-      <div key={t.id} className={className.filter(Boolean).join(" ")}>
+      <div key={t.id} className={className.filter(Boolean).join(" ")} {...dropHandlers(t.id, !t.archived)}>
         <button
           className="nb-topic-name"
           data-topic={t.id}

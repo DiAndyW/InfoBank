@@ -718,6 +718,67 @@ test("moving an Item to where it is does nothing", async () => {
   expect(calls.some((c) => c.cmd === "move_item")).toBe(false);
 });
 
+const grip = (text: string) => within(screen.getByText(text).closest("article") as HTMLElement).getByTitle("Drag to a Topic");
+function drag(text: string, target: HTMLElement | null, distance = 10) {
+  fireEvent.pointerDown(grip(text), { clientX: 0, clientY: 0, button: 0 });
+  fireEvent.pointerMove(window, { clientX: distance, clientY: 0 });
+  if (target) fireEvent.pointerEnter(target);
+  fireEvent.pointerUp(window, { clientX: distance, clientY: 0 });
+}
+const moves = (calls: { cmd: string; args: any }[]) => calls.filter((c) => c.cmd === "move_item").map((c) => c.args);
+
+test("dragging an Item by its grip onto a Topic moves it, and Undo moves it back", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await screen.findByText("squat 100");
+  drag("squat 100", screen.getByRole("button", { name: "Gym" }));
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", topicId: "g" }]));
+  await screen.findByText("Moved to Gym");
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(moves(calls)).toEqual([{ itemId: "1", topicId: "g" }, { itemId: "1", topicId: null }]);
+});
+
+test("Move to… also says where the Item went", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  expect(await screen.findByText("Moved to Gym")).toBeInTheDocument();
+});
+
+test("only the Inbox and other open Topics take a dropped Item", async () => {
+  const calls = backend(configured, {
+    topics: [topic("g", "Gym"), topic("o", "Old", { archived: true })],
+    items: () => [filed("1", "squat 100", "g")],
+  });
+  render(<App />);
+  await screen.findByText("squat 100");
+  await userEvent.click(screen.getByRole("button", { name: /Archived/ }));
+  for (const target of [screen.getByRole("button", { name: "Gym" }), screen.getByRole("button", { name: "Old" }), screen.getByRole("button", { name: /^All Items/ }), screen.getByRole("button", { name: /^Trash/ })]) {
+    drag("squat 100", target);
+  }
+  expect(moves(calls)).toEqual([]);
+  drag("squat 100", screen.getByRole("button", { name: /^Inbox/ }));
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", topicId: null }]));
+  expect(await screen.findByText("Moved to the Inbox")).toBeInTheDocument();
+});
+
+test("a press that barely moves, or Escape mid-drag, moves nothing", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await screen.findByText("squat 100");
+  const gym = screen.getByRole("button", { name: "Gym" });
+  drag("squat 100", gym, 3);
+  fireEvent.pointerDown(grip("squat 100"), { clientX: 0, clientY: 0, button: 0 });
+  fireEvent.pointerMove(window, { clientX: 10, clientY: 0 });
+  fireEvent.pointerEnter(gym);
+  fireEvent.keyDown(window, { key: "Escape" });
+  fireEvent.pointerUp(window, { clientX: 10, clientY: 0 });
+  await new Promise((r) => setTimeout(r, 50));
+  expect(moves(calls)).toEqual([]);
+});
+
 test("right-clicking an Item opens its menu", async () => {
   backend(configured, { items: () => [filed("1", "x", null)] });
   render(<App />);

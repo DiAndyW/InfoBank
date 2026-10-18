@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listItems, moveItem, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
+import { listItems, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
 import { Attachments } from "./attachments";
 import Composer from "./Composer";
 import { useShownAfterDelay } from "./delay";
@@ -13,6 +13,7 @@ import Notice, { type NoticeData } from "./Notice";
 
 const HIGHLIGHT_MS = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DRAG_START_PX = 4;
 
 function daysLeft(purgeAtUs: number) {
   const days = Math.max(1, Math.ceil((purgeAtUs / 1000 - Date.now()) / DAY_MS));
@@ -29,11 +30,13 @@ type Props = {
   onError: (title: string, err: unknown) => void;
   onTrashed: (id: string) => void;
   onRestored: (item: FeedItem) => void;
+  onMove: (item: FeedItem, topicId: string | null) => void;
+  onDragStart: (item: FeedItem, x: number, y: number) => void;
   highlight: string | null;
   onHighlightDone: () => void;
 };
 
-export default function Feed({ view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, highlight, onHighlightDone }: Props) {
+export default function Feed({ view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
   const pages = useRef(1);
@@ -54,6 +57,23 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
   const trash = view.kind === "trash";
   const noComposer = trash || current?.archived === true;
   const targets = [{ id: null as string | null, name: "Inbox" }, ...topics.filter((t) => !t.archived)];
+
+  function startDrag(e: PointerEvent<HTMLElement>, it: FeedItem) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const [x0, y0] = [e.clientX, e.clientY];
+    const moved = (m: globalThis.PointerEvent) => {
+      if (Math.hypot(m.clientX - x0, m.clientY - y0) < DRAG_START_PX) return;
+      stop();
+      onDragStart(it, m.clientX, m.clientY);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", moved);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", moved);
+    window.addEventListener("pointerup", stop);
+  }
 
   async function load(pageCount: number) {
     const id = ++latestLoad.current;
@@ -209,6 +229,11 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                             }
                       }
                     >
+                      {!trash && (
+                        <span className="nb-grip nb-reveal" title="Drag to a Topic" aria-hidden="true" onPointerDown={(e) => startDrag(e, it)}>
+                          <Icon name="grip" />
+                        </span>
+                      )}
                       <div className="nb-item-body">
                         {it.text && (
                           <p className="nb-item-text">
@@ -270,7 +295,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                                   label: t.name,
                                   checked: it.topic_id === t.id,
                                   onSelect: () => {
-                                    if (it.topic_id !== t.id) moveItem(it.id, t.id).catch((e) => onError("Couldn't move the Item", e));
+                                    if (it.topic_id !== t.id) onMove(it, t.id);
                                   },
                                 })),
                               },

@@ -270,6 +270,13 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 [data-theme="notepad"] .nb-item-meta { min-height: 28px; }
 [data-theme="notepad"] .nb-day { margin: 0; height: 28px; }
 [data-theme="notepad"] .nb-day::before, [data-theme="notepad"] .nb-day::after { background: transparent; }
+[data-theme="notepad"] .nb-grip { left: -30px; top: 2px; }
+/* Attachments take whole lines (thumbnails 6, file chips 2), so the text after them stays on the rules. */
+[data-theme="notepad"] .nb-item-files { padding: 0; row-gap: 0; }
+[data-theme="notepad"] .nb-item-files > * { margin: 4px 0; }
+[data-theme="notepad"] .nb-thumb { display: flex; align-items: center; justify-content: center; box-sizing: border-box; height: 160px; }
+[data-theme="notepad"] .nb-thumb img { max-height: 158px; }
+[data-theme="notepad"] .nb-item-files > .nb-file { min-height: 48px; }
 
 /* Search */
 .nb-search { margin-bottom: var(--space-2); padding-right: 2px; }
@@ -293,3 +300,10 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-pill.is-on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .nb-pill.is-on .nb-icon { color: inherit; }
 .nb-menu-heading { padding: var(--space-1) var(--space-2) 2px calc(var(--space-1) + 16px + var(--space-2)); font: 600 11px/16px var(--font-sans); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); }
+
+.nb-item { position: relative; }
+.nb-grip { position: absolute; left: -14px; top: var(--space-1); display: grid; place-items: center; width: 14px; height: 24px; color: var(--ink-muted); cursor: grab; touch-action: none; }
+.nb-drag-card { position: fixed; z-index: 50; pointer-events: none; max-width: 240px; padding: var(--space-1) var(--space-2); border-radius: var(--radius-md); background: var(--surface-raised); box-shadow: var(--shadow-menu); font: 400 13px/18px var(--font-sans); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nb-dragging, .nb-dragging * { cursor: grabbing !important; user-select: none; }
+.nb-dragging .is-drop-off { opacity: .45; cursor: not-allowed !important; }
+.nb-nav.is-drop-target, .nb-topic.is-drop-target { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }

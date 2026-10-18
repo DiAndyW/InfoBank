@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type Settings as SettingsData, type StartupFailure, type SyncStatus, type Topic } from "./api";
+import { getSettings, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -60,6 +60,48 @@ export default function App() {
     return true;
   };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
+  const [dragging, setDragging] = useState<{ item: FeedItem; x: number; y: number } | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+
+  const move = (it: FeedItem, topicId: string | null) =>
+    moveItem(it.id, topicId).then(
+      () => {
+        const place = topics.find((t) => t.id === topicId);
+        show(place ? `Moved to ${place.name}` : "Moved to the Inbox", {
+          label: "Undo",
+          onAction: () => moveItem(it.id, it.topic_id).then(() => setHighlight(it.id), (e) => showError("Couldn't move the Item back", e)),
+        });
+      },
+      (e) => showError("Couldn't move the Item", e),
+    );
+
+  useEffect(() => {
+    if (!dragging) return;
+    const end = () => {
+      setDragging(null);
+      setDropOn(null);
+    };
+    const drop = () => {
+      if (dropOn) move(dragging.item, dropOn === "inbox" ? null : dropOn);
+      end();
+    };
+    const cancel = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      end();
+    };
+    window.addEventListener("pointerup", drop);
+    window.addEventListener("pointercancel", end);
+    window.addEventListener("keydown", cancel, true);
+    document.documentElement.classList.add("nb-dragging");
+    return () => {
+      window.removeEventListener("pointerup", drop);
+      window.removeEventListener("pointercancel", end);
+      window.removeEventListener("keydown", cancel, true);
+      document.documentElement.classList.remove("nb-dragging");
+    };
+  }, [dragging, dropOn]);
 
   useEffect(() => {
     const unlisten = listen("items-changed", () =>
@@ -168,6 +210,8 @@ export default function App() {
     <div className="nb-app">
       <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
         search={searchText}
+        drag={dragging && { from: dragging.item.topic_id ?? "inbox", over: dropOn }}
+        onDragOver={setDropOn}
         onSearch={(text) => {
           setSearchText(text);
           setResultsOpen(true);
@@ -190,6 +234,8 @@ export default function App() {
             onAction: () => restoreItem(id).then(() => setHighlight(id), (e) => showError("Couldn't restore the Item", e)),
           })
         }
+        onMove={move}
+        onDragStart={(item, x, y) => setDragging({ item, x, y })}
         onRestored={(it) => {
           const place = topics.find((t) => t.id === it.topic_id);
           show(`Restored to ${place ? place.name : "Inbox"}`, {
@@ -253,6 +299,22 @@ export default function App() {
           <p>{error.message}</p>
         </Dialog>
       )}
+      {dragging && <DragCard item={dragging.item} x={dragging.x} y={dragging.y} />}
+    </div>
+  );
+}
+
+function DragCard({ item, x, y }: { item: FeedItem; x: number; y: number }) {
+  const [at, setAt] = useState({ x, y });
+  useEffect(() => {
+    const follow = (e: PointerEvent) => setAt({ x: e.clientX, y: e.clientY });
+    window.addEventListener("pointermove", follow);
+    return () => window.removeEventListener("pointermove", follow);
+  }, []);
+  const label = item.text?.split("\n")[0] || item.attachments[0]?.filename || "Item";
+  return (
+    <div className="nb-drag-card" style={{ left: at.x + 12, top: at.y + 8 }}>
+      {label}
     </div>
   );
 }

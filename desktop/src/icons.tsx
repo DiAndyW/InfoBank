@@ -53,6 +53,7 @@ const PATHS = {
   ),
   pending: <circle cx={8} cy={8} r={4.5} strokeDasharray="2.2 2" />,
   reveal: <path d="M6.5 3H3v10h10V9.5M9 2.5h4.5V7M13.5 2.5 7.5 8.5" />,
+  grip: <path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01" strokeWidth={2.5} />,
   restore: <path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" />,
   calendar: (
     <>
