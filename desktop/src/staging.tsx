@@ -6,6 +6,8 @@ import { Icon } from "./icons";
 
 export function useStaging() {
   const [staged, setStaged] = useState<Staged[]>([]);
+  const latest = useRef(staged);
+  latest.current = staged;
   const [errors, setErrors] = useState<string[]>([]);
   // Bumped by discard, so a paste still staging then is unstaged instead of reappearing.
   const generation = useRef(0);
@@ -70,9 +72,10 @@ export function useStaging() {
     </Dialog>
   );
 
-  function discard() {
+  // Reads the latest list: a caller may still hold one from before a paste landed.
+  function discard(keep: string[] = []) {
     generation.current++;
-    for (const s of staged) unstage(s.id).catch(() => {});
+    for (const s of latest.current) if (!keep.includes(s.id)) unstage(s.id).catch(() => {});
     setStaged([]);
   }
 

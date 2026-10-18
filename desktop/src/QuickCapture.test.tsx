@@ -138,6 +138,18 @@ test("hiding while a capture is saving doesn't unstage its files", async () => {
   expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
 });
 
+test("a box hidden while saving still unstages a file pasted during the save", async () => {
+  let release!: () => void;
+  const calls = quickBackend({ staged: [staged], captureGate: new Promise((r) => (release = r)) });
+  render(<QuickCapture />);
+  await userEvent.type(box(), "milk{Enter}");
+  await pasteReceipt();
+  await act(() => emit("quick-capture-hidden"));
+  await act(async () => release());
+  await waitFor(() => expect(calls.filter((c) => c.cmd === "unstage_attachment").map((c) => c.args)).toEqual([{ id: "s1" }]));
+  expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
+});
+
 test("a paste still staging when the box hides doesn't turn up next time", async () => {
   let release!: () => void;
   const calls = quickBackend({ staged: [staged], stageGate: new Promise((r) => (release = r)) });

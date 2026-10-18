@@ -8,6 +8,35 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }, { "url": "http://*" }]
-    }
+    },
+    "allow-get-settings",
+    "allow-save-settings",
+    "allow-list-topics",
+    "allow-capture",
+    "allow-move-item",
+    "allow-edit-item",
+    "allow-trash-item",
+    "allow-restore-item",
+    "allow-nav-counts",
+    "allow-create-topic",
+    "allow-rename-topic",
+    "allow-archive-topic",
+    "allow-unarchive-topic",
+    "allow-delete-topic",
+    "allow-pick-files",
+    "allow-stage-attachment-bytes",
+    "allow-unstage-attachment",
+    "allow-thumbnail",
+    "allow-open-attachment",
+    "allow-reveal-attachment",
+    "allow-list-items",
+    "allow-search-items",
+    "allow-sync-status",
+    "allow-set-quick-capture-shortcut",
+    "allow-set-quick-capture-on",
+    "allow-dismiss-quick-capture",
+    "allow-startup-error",
+    "allow-show-data-folder",
+    "allow-quit"
   ]
 }

@@ -345,7 +345,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
         if result == Ok(true) {
             let _ = app.emit("items-changed", ());
             let now = chrono::Utc::now().timestamp_micros();
-            crate::cache::prefetch_thumbnails(&state, now).await;
+            crate::cache::start_prefetch(&app, now);
             if let Err(e) = crate::cache::evict(&state.db.lock().unwrap(), &state.dir, now, crate::cache::FILE_CACHE_BYTES) {
                 eprintln!("cache: eviction failed: {e}");
             }
@@ -780,6 +780,50 @@ mod server_tests {
     }
 
     #[tokio::test]
+    async fn prefetch_runs_beside_sync_and_one_at_a_time() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let _held = stream;
+                    std::thread::sleep(Duration::from_secs(30));
+                });
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_for(&url, &dir);
+        app.state::<AppState>()
+            .db
+            .lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO items (id, capture_time) VALUES ('i', {T0});
+                 INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+                 VALUES ('{}', 'i', 'p.png', 'image/png', 1, 1, 1);",
+                uuid::Uuid::new_v4()
+            ))
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        crate::cache::start_prefetch(app.handle(), T0);
+        assert!(started.elapsed() < Duration::from_millis(100), "sync waited for the prefetch");
+        for _ in 0..40 {
+            if seen(&requests) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(seen(&requests), 1);
+        crate::cache::start_prefetch(app.handle(), T0);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(seen(&requests), 1, "a second prefetch ran while the first was still going");
+    }
+
+    #[tokio::test]
     async fn a_rejected_secret_is_tried_once_per_save() {
         let (url, requests) = reject_all();
         let dir = tempfile::tempdir().unwrap();
@@ -963,6 +1007,104 @@ mod server_tests {
         feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
         let res = tokio::time::timeout(IDLE_TIMEOUT * 3, upload_pending(&a, &url, "s")).await.expect("never gave up");
         assert!(matches!(res, Err(SyncError::Failed(e)) if e.contains("stalled")));
+    }
+
+    /// A stand-in Server that reads one request's headers, sends `head` then `body`, and closes.
+    fn answer(head: &'static str, body: Vec<u8>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head_in = Vec::new();
+            while !head_in.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                std::io::Read::read_exact(&mut s, &mut byte).unwrap();
+                head_in.push(byte[0]);
+            }
+            let _ = std::io::Write::write_all(&mut s, head.as_bytes());
+            let _ = std::io::Write::write_all(&mut s, &body);
+        });
+        url
+    }
+
+    fn uploaded_attachment(d: &Device, size_bytes: usize) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        d.db.lock()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO items (id, capture_time) VALUES ('i', {T0});
+                 INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+                 VALUES ('{id}', 'i', 'r.bin', 'application/octet-stream', {size_bytes}, 1, 1);"
+            ))
+            .unwrap();
+        id
+    }
+
+    fn cached_count(d: &Device) -> i64 {
+        d.db.lock().unwrap().query_row("SELECT count(*) FROM cached_files", [], |r| r.get(0)).unwrap()
+    }
+
+    const CLOSE: &str = "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n";
+
+    #[tokio::test]
+    async fn a_file_of_exactly_its_size_downloads() {
+        let url = answer(CLOSE, b"abcd".to_vec());
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, 4);
+        let path = crate::cache::file(&b, &id, T0).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"abcd");
+    }
+
+    #[tokio::test]
+    async fn a_file_longer_than_its_size_stops_and_leaves_nothing() {
+        let url = answer(CLOSE, b"abcde".to_vec());
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, 4);
+        assert_eq!(crate::cache::file(&b, &id, T0).await.unwrap_err(), "The Server sent more than expected");
+        let left = std::fs::read_dir(b.dir.join("files").join(&id)).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(left, 0, "the partial download stayed behind");
+        assert_eq!(cached_count(&b), 0);
+    }
+
+    #[tokio::test]
+    async fn a_short_file_is_not_cached() {
+        let url = answer(CLOSE, b"abc".to_vec());
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, 4);
+        assert_eq!(crate::cache::file(&b, &id, T0).await.unwrap_err(), "The download was incomplete");
+        assert_eq!(cached_count(&b), 0);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_content_length_fails_without_waiting_for_the_body() {
+        let url = stall(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n");
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, 4);
+        let res = tokio::time::timeout(Duration::from_secs(2), crate::cache::file(&b, &id, T0)).await.expect("waited for the body");
+        assert_eq!(res.unwrap_err(), "The Server sent more than expected");
+    }
+
+    #[tokio::test]
+    async fn a_file_the_server_claims_is_over_the_limit_is_never_downloaded() {
+        let url = stall(b"HTTP/1.1 200 OK\r\n\r\n");
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, (crate::files::MAX_ATTACHMENT_BYTES + 1) as usize);
+        let res = tokio::time::timeout(Duration::from_secs(2), crate::cache::file(&b, &id, T0)).await.expect("started downloading");
+        assert_eq!(res.unwrap_err(), "The Server sent more than expected");
+    }
+
+    #[tokio::test]
+    async fn a_thumbnail_may_be_up_to_1_mib() {
+        let max = crate::cache::MAX_THUMBNAIL_BYTES as usize;
+        let url = answer(CLOSE, vec![0; max]);
+        let b = device_at(&url, "s");
+        let id = uploaded_attachment(&b, 10);
+        assert!(crate::cache::thumbnail(&b, &id, T0).await.is_ok());
+
+        let url = answer(CLOSE, vec![0; max + 1]);
+        let c = device_at(&url, "s");
+        let id = uploaded_attachment(&c, 10);
+        assert_eq!(crate::cache::thumbnail(&c, &id, T0).await.unwrap_err(), "The Server sent more than expected");
     }
 
     #[tokio::test]

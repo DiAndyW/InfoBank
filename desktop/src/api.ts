@@ -65,3 +65,8 @@ export const setQuickCaptureShortcut = (shortcut: string) => invoke<Hotkey>("set
 export const setQuickCaptureOn = (on: boolean) => invoke<Hotkey>("set_quick_capture_on", { on });
 const byName = new Intl.Collator().compare;
 export const sortedTopics = (topics: Topic[]) => [...topics].sort((a, b) => byName(a.name, b.name));
+
+export type StartupFailure = { message: string; data_dir: string | null };
+export const startupError = () => invoke<StartupFailure | null>("startup_error");
+export const showDataFolder = () => invoke<void>("show_data_folder");
+export const quit = () => invoke<void>("quit");

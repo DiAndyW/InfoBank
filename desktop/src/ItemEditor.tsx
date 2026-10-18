@@ -3,7 +3,7 @@ import { editItem, unstage, type FeedItem } from "./api";
 import { Icon } from "./icons";
 import { Chips, useStaging } from "./staging";
 
-export type EditorHandle = { save: () => Promise<boolean> };
+export type EditorHandle = { save: () => Promise<boolean>; focus: () => void };
 
 type Props = { item: FeedItem; onDone: (trashed: boolean) => void; onGone: (err: unknown) => void; ref: Ref<EditorHandle> };
 
@@ -13,6 +13,7 @@ export default function ItemEditor({ item, onDone, onGone, ref }: Props) {
   const { staged, onPaste, remove, pick, dialog } = useStaging();
   const [error, setError] = useState<string | null>(null);
   const saving = useRef(false);
+  const box = useRef<HTMLTextAreaElement>(null);
   const empty = draft.trim() === "" && kept.length === 0 && staged.length === 0;
 
   async function save() {
@@ -31,7 +32,7 @@ export default function ItemEditor({ item, onDone, onGone, ref }: Props) {
       saving.current = false;
     }
   }
-  useImperativeHandle(ref, () => ({ save }));
+  useImperativeHandle(ref, () => ({ save, focus: () => box.current?.focus() }));
 
   function cancel() {
     for (const s of staged) unstage(s.id).catch(() => {});
@@ -53,6 +54,7 @@ export default function ItemEditor({ item, onDone, onGone, ref }: Props) {
     <div className={empty ? "nb-editor is-empty" : "nb-editor"}>
       {dialog}
       <textarea
+        ref={box}
         aria-label="Edit Item"
         autoFocus
         rows={Math.max(1, draft.split("\n").length)}

@@ -27,3 +27,12 @@ test("only http and https become links", () => {
     expect(linkify(text)).toEqual([text]);
   }
 });
+
+test("a closing parenthesis stays when the link opened one", () => {
+  expect(linkify("https://en.wikipedia.org/wiki/Heat_(1995_film)")).toEqual([{ url: "https://en.wikipedia.org/wiki/Heat_(1995_film)" }]);
+  expect(linkify("(see https://en.wikipedia.org/wiki/Heat_(1995_film)).")).toEqual([
+    "(see ",
+    { url: "https://en.wikipedia.org/wiki/Heat_(1995_film)" },
+    ").",
+  ]);
+});

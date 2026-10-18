@@ -3,5 +3,14 @@
   "identifier": "quick-capture",
   "description": "Capability for the quick-capture window",
   "windows": ["quick-capture"],
-  "permissions": ["core:event:default"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-list-topics",
+    "allow-capture",
+    "allow-pick-files",
+    "allow-stage-attachment-bytes",
+    "allow-unstage-attachment",
+    "allow-dismiss-quick-capture"
+  ]
 }

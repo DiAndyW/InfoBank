@@ -22,10 +22,11 @@ type Props = {
   search: string;
   onSearch: (text: string) => void;
   onSearchFocus: () => void;
+  onSearchEscape: () => void;
   searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, searchRef }: Props) {
+export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef }: Props) {
   // The field shows what's typed even mid-composition; the query only follows once the input method is done.
   const [draft, setDraft] = useState(search);
   const composing = useRef(false);
@@ -169,6 +170,7 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
             if (e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
               setDraft("");
               onSearch("");
+              onSearchEscape();
             }
           }}
         />
@@ -180,6 +182,7 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
             onClick={() => {
               setDraft("");
               onSearch("");
+              searchRef.current?.focus();
             }}
           >
             <Icon name="x" />

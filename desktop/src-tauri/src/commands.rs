@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
@@ -230,4 +230,21 @@ pub async fn set_quick_capture_on(app: AppHandle, state: State<'_, AppState>, on
 #[tauri::command]
 pub fn dismiss_quick_capture(app: AppHandle) {
     crate::quick::dismiss(&app);
+}
+
+#[tauri::command]
+pub fn startup_error(app: AppHandle) -> Option<crate::StartupError> {
+    app.try_state::<crate::StartupError>().map(|s| s.inner().clone())
+}
+
+#[tauri::command]
+pub fn show_data_folder(app: AppHandle) -> Result<(), String> {
+    let failure = app.try_state::<crate::StartupError>().ok_or("No data folder")?;
+    let dir = failure.data_dir.as_deref().ok_or("No data folder")?;
+    app.opener().reveal_item_in_dir(dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn quit(app: AppHandle) {
+    app.exit(0);
 }

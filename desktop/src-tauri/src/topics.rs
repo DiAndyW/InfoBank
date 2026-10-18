@@ -32,7 +32,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
         .collect()
 }
 
-fn archived(conn: &Connection, id: &str) -> Result<bool, String> {
+fn archived_if_exists(conn: &Connection, id: &str) -> Result<bool, String> {
     conn.query_row("SELECT archived_at IS NOT NULL FROM topics WHERE id = ?1 AND deleted_at IS NULL", [id], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())?
@@ -40,7 +40,7 @@ fn archived(conn: &Connection, id: &str) -> Result<bool, String> {
 }
 
 pub fn require_open(conn: &Connection, id: &str) -> Result<(), String> {
-    if archived(conn, id)? {
+    if archived_if_exists(conn, id)? {
         return Err("That Topic is archived".into());
     }
     Ok(())
@@ -84,7 +84,7 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
 }
 
 pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<(), String> {
-    archived(conn, id)?;
+    archived_if_exists(conn, id)?;
     let name = checked_name(conn, name, id)?;
     let current: String =
         conn.query_row("SELECT name FROM topics WHERE id = ?1", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
@@ -96,14 +96,14 @@ pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<()
 }
 
 pub fn set_archived(conn: &Connection, id: &str, archived_now: bool, now_us: i64) -> Result<(), String> {
-    archived(conn, id)?;
+    archived_if_exists(conn, id)?;
     let topic_id = id.to_string();
     let op = if archived_now { Op::ArchiveTopic { topic_id } } else { Op::UnarchiveTopic { topic_id } };
     queue_one(conn, op, now_us)
 }
 
 pub fn delete(conn: &Connection, id: &str, keep: &Keep, now_us: i64) -> Result<(), String> {
-    archived(conn, id)?;
+    archived_if_exists(conn, id)?;
     let mut stmt =
         conn.prepare("SELECT id FROM items WHERE topic_id = ?1 AND deleted_at IS NULL").map_err(|e| e.to_string())?;
     let ids = stmt

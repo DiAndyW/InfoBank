@@ -15,19 +15,26 @@ pub struct Staged {
 }
 
 pub fn safe_name(name: &str) -> String {
-    let replaced: String =
-        name.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() { '_' } else { c }).collect();
-    let name = replaced.trim().trim_start_matches('.');
+    let replaced: String = name
+        .chars()
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*') || c.is_control() { '_' } else { c })
+        .collect();
+    let name = replaced.trim().trim_start_matches('.').trim_end_matches(['.', ' ']);
     let name = if name.is_empty() { "file" } else { name };
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9'));
+    let name = if reserved { format!("_{name}") } else { name.to_string() };
     if name.len() <= MAX_FILENAME_BYTES {
-        return name.to_string();
+        return name;
     }
     let ext = name.rsplit_once('.').map(|(_, e)| e).filter(|e| e.len() <= 16).unwrap_or("");
     let mut end = MAX_FILENAME_BYTES - if ext.is_empty() { 0 } else { ext.len() + 1 };
     while !name.is_char_boundary(end) {
         end -= 1;
     }
-    if ext.is_empty() { name[..end].to_string() } else { format!("{}.{ext}", &name[..end]) }
+    let head = name[..end].trim_end_matches(['.', ' ']);
+    if ext.is_empty() { head.to_string() } else { format!("{head}.{ext}") }
 }
 
 pub fn mime_type(filename: &str) -> String {
@@ -161,6 +168,25 @@ mod tests {
         assert!(long.len() <= 255 && long.ends_with(".png"), "{} bytes: {long:.20}…", long.len());
         let wide = safe_name(&format!("{}.jpg", "é".repeat(200)));
         assert!(wide.len() <= 255 && wide.ends_with(".jpg"));
+    }
+
+    #[test]
+    fn names_are_valid_on_windows_too() {
+        for (input, expected) in [
+            ("a?b.png", "a_b.png"),
+            ("<>\"|*.txt", "_____.txt"),
+            ("notes. . ", "notes"),
+            ("CON", "_CON"),
+            ("con.txt", "_con.txt"),
+            ("Lpt9.log", "_Lpt9.log"),
+            ("aux.tar.gz", "_aux.tar.gz"),
+            ("COM0.txt", "COM0.txt"),
+            ("CONSOLE.txt", "CONSOLE.txt"),
+            ("icon.png", "icon.png"),
+            ("résumé v2.pdf", "résumé v2.pdf"),
+        ] {
+            assert_eq!(safe_name(input), expected, "input {input:?}");
+        }
     }
 
     #[test]

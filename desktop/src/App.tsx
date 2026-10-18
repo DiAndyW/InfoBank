@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, sortedTopics, navCounts, restoreItem, syncStatus, type Counts, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
+import { getSettings, listTopics, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type Settings as SettingsData, type StartupFailure, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -21,14 +21,20 @@ export default function App() {
   const [counts, setCounts] = useState<Counts>({ inbox: 0, trash: 0 });
   const [highlight, setHighlight] = useState<string | null>(null);
 
+  const [startup, setStartup] = useState<StartupFailure | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [status, setStatus] = useState<SyncStatus>("synced");
+  // Rust only announces a change, so a stale read that lands after one would stick.
+  const statusEvents = useRef(0);
   const [theme, setTheme] = useState(storedTheme);
 
   useEffect(() => applyTheme(theme), [theme]);
 
   useEffect(() => {
-    const unlisten = listen<SyncStatus>("sync-status", (e) => setStatus(e.payload));
+    const unlisten = listen<SyncStatus>("sync-status", (e) => {
+      statusEvents.current++;
+      setStatus(e.payload);
+    });
     return () => {
       unlisten.then((stop) => stop());
     };
@@ -44,6 +50,8 @@ export default function App() {
   const [resultsOpen, setResultsOpen] = useState(false);
   const searchField = useRef<HTMLInputElement>(null);
   const searching = searchText.trim() !== "";
+  const covered = searching && resultsOpen;
+  const dialogOpen = () => document.querySelector('[aria-modal="true"]') !== null;
   const select = async (key: string) => {
     if (editor.current && !(await editor.current.save())) return false;
     setFeed(key);
@@ -75,21 +83,21 @@ export default function App() {
 
   useEffect(() => {
     const undo = notice?.action?.label === "Undo" ? notice.action : null;
-    if (!undo) return;
+    if (!undo || covered) return;
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement).closest("input, textarea, [contenteditable]");
-      if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || typing) return;
+      if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || typing || dialogOpen()) return;
       e.preventDefault();
       undo.onAction();
       setNotice(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [notice]);
+  }, [notice, covered]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "f" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return;
+      if (e.key !== "f" || !(e.metaKey || e.ctrlKey) || e.shiftKey || dialogOpen()) return;
       e.preventDefault();
       searchField.current?.focus();
       searchField.current?.select();
@@ -100,10 +108,13 @@ export default function App() {
 
   async function load() {
     try {
+      const failure = await startupError();
+      if (failure) return setStartup(failure);
+      const seen = statusEvents.current;
       const [s, t, st, c] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts()]);
       setSettings(s);
       setTopics(sortedTopics(t));
-      setStatus(st);
+      if (statusEvents.current === seen) setStatus(st);
       setCounts(c);
       setLoadError(null);
     } catch (err) {
@@ -115,6 +126,26 @@ export default function App() {
     load();
   }, []);
 
+  if (startup) {
+    return (
+      <div className="nb-empty is-window">
+        <Icon name="alert" size={24} />
+        <p className="nb-empty-title">NoteBank couldn't start</p>
+        <p role="alert">{startup.message}</p>
+        {startup.data_dir && <p className="nb-empty-hint">Your data is in {startup.data_dir}</p>}
+        <div className="nb-dialog-actions">
+          {startup.data_dir && (
+            <button className="nb-btn nb-btn-secondary" onClick={() => showDataFolder().catch(() => {})}>
+              Show folder
+            </button>
+          )}
+          <button className="nb-btn nb-btn-primary" onClick={() => quit()}>
+            Quit
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (loadError) {
     return (
       <div className="nb-empty is-window">
@@ -142,12 +173,13 @@ export default function App() {
           setResultsOpen(true);
         }}
         onSearchFocus={() => setResultsOpen(true)}
+        onSearchEscape={() => editor.current?.focus()}
         searchRef={searchField}
       />
       <Feed
         view={feed === "all" || feed === "inbox" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
         topics={topics}
-        covered={searching && resultsOpen}
+        covered={covered}
         editor={editor}
         notice={notice}
         onDismissNotice={() => setNotice(null)}

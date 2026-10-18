@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -24,6 +24,7 @@ type Options = {
   // A command waits for its gate, so a test can act while the call is in flight.
   gates?: Record<string, Promise<void>>;
   shortcutError?: string;
+  startup?: { message: string; data_dir: string | null };
 };
 
 function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opts: Options = {}) {
@@ -37,6 +38,8 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       calls.push({ cmd, args });
       await opts.gates?.[cmd];
       if (opts.failing?.[cmd]) throw opts.failing[cmd];
+      if (cmd === "startup_error") return opts.startup ?? null;
+      if (["show_data_folder", "quit"].includes(cmd)) return null;
       if (cmd === "get_settings") return settings;
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
@@ -105,6 +108,25 @@ const feedItem = (
 const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => ({ id, name, archived: false, item_count: 0, ...extra });
 
 const configured = { server_url: "https://notes.example.com", has_secret: true };
+
+test("a failed launch says why, and offers the data folder and Quit", async () => {
+  const calls = backend(configured, { startup: { message: "Couldn't open the database: file is not a database", data_dir: "/Users/me/data" } });
+  render(<App />);
+  expect(await screen.findByText("NoteBank couldn't start")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Couldn't open the database: file is not a database");
+  expect(screen.getByText(/\/Users\/me\/data/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Show folder" }));
+  await userEvent.click(screen.getByRole("button", { name: "Quit" }));
+  expect(calls.map((c) => c.cmd)).toEqual(["startup_error", "show_data_folder", "quit"]);
+});
+
+test("a failed launch with no data folder offers only Quit", async () => {
+  backend(configured, { startup: { message: "Couldn't find the data folder: no home", data_dir: null } });
+  render(<App />);
+  await screen.findByText("NoteBank couldn't start");
+  expect(screen.queryByRole("button", { name: "Show folder" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Quit" })).toBeInTheDocument();
+});
 
 test("first launch opens Settings", async () => {
   backend({ server_url: null, has_secret: false });
@@ -196,6 +218,20 @@ test("Enter captures and Shift+Enter adds a line", async () => {
   expect(box).toHaveValue("");
 });
 
+test("a file pasted while a Capture is saving stays for the next Item", async () => {
+  let release!: () => void;
+  const late: Staged = { id: "s1", filename: "late.png", size_bytes: 1, mime_type: "image/png" };
+  backend(configured, { staged: [late], gates: { capture: new Promise((r) => (release = r)) } });
+  render(<App />);
+  const box = await screen.findByLabelText("New Item");
+  await userEvent.type(box, "milk{Enter}");
+  fireEvent.paste(box, { clipboardData: { files: [new File(["x"], "late.png", { type: "image/png" })] } });
+  await screen.findByText("late.png");
+  await act(async () => release());
+  await vi.waitFor(() => expect(box).toHaveValue(""));
+  expect(screen.getByText("late.png")).toBeInTheDocument();
+});
+
 test("the main composer keeps autocorrect and Escape leaves its draft alone", async () => {
   const calls = backend(configured);
   render(<App />);
@@ -252,6 +288,18 @@ test("a link opens in the browser", async () => {
   });
 });
 
+test("middle-clicking a link opens it in the browser, never in the app", async () => {
+  const calls = backend(configured, { items: () => [feedItem("1", "read https://example.com/x", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  const link = await screen.findByRole("link", { name: "https://example.com/x" });
+  const middle = createEvent("auxclick", link, { button: 1, bubbles: true, cancelable: true }, { EventType: "MouseEvent" });
+  fireEvent(link, middle);
+  expect(middle.defaultPrevented).toBe(true);
+  await vi.waitFor(() =>
+    expect(calls).toContainEqual({ cmd: "plugin:opener|open_url", args: expect.objectContaining({ url: "https://example.com/x" }) }),
+  );
+});
+
 test("the Feed refetches when items change", async () => {
   let items: FeedItem[] = [];
   backend(configured, { items: () => items });
@@ -282,6 +330,17 @@ test("a rejected secret shows in the sidebar and opens Settings", async () => {
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Secret rejected" }));
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+});
+
+test("a status read that answers after a newer sync-status event doesn't undo it", async () => {
+  let release!: () => void;
+  const calls = backend(configured, { status: "syncing", gates: { sync_status: new Promise((r) => (release = r)) } });
+  render(<App />);
+  await vi.waitFor(() => expect(calls.some((c) => c.cmd === "sync_status")).toBe(true));
+  await act(() => emit("sync-status", "synced"));
+  await act(async () => release());
+  expect(await screen.findByText("Synced")).toBeInTheDocument();
+  expect(screen.queryByText("Syncing…")).not.toBeInTheDocument();
 });
 
 test("the status line follows sync-status events", async () => {
@@ -528,6 +587,7 @@ test("the sidebar refetches Topics when items change", async () => {
       if (cmd === "get_settings") return configured;
       if (cmd === "list_topics") return topics;
       if (cmd === "sync_status") return "synced";
+      if (cmd === "startup_error") return null;
       return [];
     },
     { shouldMockEvents: true },
@@ -549,6 +609,7 @@ test("when the selected Topic disappears the Inbox is shown", async () => {
       if (cmd === "get_settings") return configured;
       if (cmd === "list_topics") return topics;
       if (cmd === "sync_status") return "synced";
+      if (cmd === "startup_error") return null;
       return [];
     },
     { shouldMockEvents: true },
@@ -1179,6 +1240,30 @@ test("⌘Z runs Undo while the Notice shows, but not while typing or after it's 
   expect(calls.filter((c) => c.cmd === "restore_item")).toHaveLength(1);
 });
 
+const blur = () => (document.activeElement as HTMLElement | null)?.blur();
+
+test("⌘Z does nothing while search results cover the Notice or a dialog is open", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await trashOf("squat 100");
+  await screen.findByText("Item moved to Trash");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "x");
+  await screen.findByText("No Items match.");
+  blur();
+  await userEvent.keyboard("{Meta>}z{/Meta}");
+  expect(calls.some((c) => c.cmd === "restore_item")).toBe(false);
+  await userEvent.click(screen.getByRole("textbox", { name: "Search" }));
+  await userEvent.keyboard("{Escape}");
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  blur();
+  await userEvent.keyboard("{Meta>}z{/Meta}");
+  expect(calls.some((c) => c.cmd === "restore_item")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  blur();
+  await userEvent.keyboard("{Meta>}z{/Meta}");
+  expect(calls.filter((c) => c.cmd === "restore_item")).toHaveLength(1);
+});
+
 test("a failed Move to Trash is shown in a dialog, with no Notice", async () => {
   backend(configured, { items: () => [filed("1", "squat 100", null)], failing: { trash_item: "disk full" } });
   render(<App />);
@@ -1497,6 +1582,33 @@ test("⌘F focuses Search", async () => {
   const field = await screen.findByRole("textbox", { name: "Search" });
   await userEvent.keyboard("{Meta>}f{/Meta}");
   expect(field).toHaveFocus();
+});
+
+test("⌘F does nothing while a dialog is open", async () => {
+  backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  blur();
+  await userEvent.keyboard("{Meta>}f{/Meta}");
+  expect(screen.getByRole("textbox", { name: "Search" })).not.toHaveFocus();
+});
+
+test("Clear search leaves focus in the field, even though WebKit doesn't focus a clicked button", async () => {
+  backend(configured);
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "x");
+  blur();
+  fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(field).toHaveFocus();
+});
+
+test("Esc in Search puts focus back into an open edit", async () => {
+  backend(configured, { items: () => [feedItem("1", "draft me", at(2026, 10, 14, 9, 41))] });
+  render(<App />);
+  fireEvent.doubleClick(await screen.findByText("draft me"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "zz{Escape}");
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveFocus();
 });
 
 test("an open edit survives a search and is still there after Esc", async () => {

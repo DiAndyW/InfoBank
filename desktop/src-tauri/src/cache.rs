@@ -8,6 +8,13 @@ use crate::{AppState, files, sync};
 pub const FILE_CACHE_BYTES: i64 = 2 << 30;
 const THUMBNAIL_KEEP_US: i64 = 60 * 24 * 60 * 60 * 1_000_000;
 const OFFLINE: &str = "Can't download while offline";
+pub const MAX_THUMBNAIL_BYTES: u64 = 1 << 20;
+const TOO_BIG: &str = "The Server sent more than expected";
+
+enum Size {
+    Exactly(u64),
+    AtMost(u64),
+}
 
 fn cached(state: &AppState, id: &str, kind: &str, now_us: i64) -> Result<Option<PathBuf>, String> {
     let conn = state.db.lock().unwrap();
@@ -25,7 +32,7 @@ fn cached(state: &AppState, id: &str, kind: &str, now_us: i64) -> Result<Option<
     Ok(Some(state.dir.join(path)))
 }
 
-async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str, now_us: i64) -> Result<PathBuf, String> {
+async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str, size: Size, now_us: i64) -> Result<PathBuf, String> {
     let (url, token) = sync::server_access(state).map_err(|_| OFFLINE.to_string())?;
     let send = state.http.get(format!("{url}{route}")).bearer_auth(token).send();
     let mut res = tokio::time::timeout(sync::IDLE_TIMEOUT, send).await.ok().and_then(Result::ok).ok_or(OFFLINE)?;
@@ -35,16 +42,30 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
         reqwest::StatusCode::UNAUTHORIZED => return Err("The Server rejected the secret".into()),
         s => return Err(format!("The Server answered {s}")),
     }
+    let max = match size {
+        Size::Exactly(n) | Size::AtMost(n) => n,
+    };
+    if res.content_length().is_some_and(|n| n > max) {
+        return Err(TOO_BIG.into());
+    }
     let target = state.dir.join(rel);
     let partial = target.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
     let written: Result<(), String> = async {
         let save = |_| "Couldn't save the download".to_string();
         tokio::fs::create_dir_all(target.parent().expect("rel has a directory")).await.map_err(save)?;
         let mut out = tokio::fs::File::create(&partial).await.map_err(save)?;
+        let mut got: u64 = 0;
         while let Some(chunk) =
             tokio::time::timeout(sync::IDLE_TIMEOUT, res.chunk()).await.ok().and_then(Result::ok).ok_or(OFFLINE)?
         {
+            got += chunk.len() as u64;
+            if got > max {
+                return Err(TOO_BIG.to_string());
+            }
             out.write_all(&chunk).await.map_err(save)?;
+        }
+        if matches!(size, Size::Exactly(n) if got != n) {
+            return Err("The download was incomplete".to_string());
         }
         out.flush().await.map_err(save)?;
         tokio::fs::rename(&partial, &target).await.map_err(save)
@@ -89,7 +110,7 @@ pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBu
     if let Some(path) = own {
         return Ok(state.dir.join(path));
     }
-    download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), now_us).await
+    download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), Size::AtMost(MAX_THUMBNAIL_BYTES), now_us).await
 }
 
 pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, String> {
@@ -97,22 +118,38 @@ pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, St
     if let Some(path) = cached(state, &id, "file", now_us)? {
         return Ok(path);
     }
-    let (filename, uploaded): (String, bool) = state
+    let (filename, uploaded, size_bytes): (String, bool, i64) = state
         .db
         .lock()
         .unwrap()
-        .query_row("SELECT filename, uploaded FROM attachments WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row("SELECT filename, uploaded, size_bytes FROM attachments WHERE id = ?1", [&id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .map_err(|_| "Unknown attachment")?;
     if !uploaded {
         return Err("Not uploaded yet".into());
     }
+    let size_bytes = u64::try_from(size_bytes).ok().filter(|&n| n <= files::MAX_ATTACHMENT_BYTES).ok_or(TOO_BIG)?;
     let rel = format!("files/{id}/{}", files::safe_name(&filename));
-    let path = download(state, &id, "file", &format!("/attachments/{id}"), &rel, now_us).await?;
+    let path = download(state, &id, "file", &format!("/attachments/{id}"), &rel, Size::Exactly(size_bytes), now_us).await?;
     evict(&state.db.lock().unwrap(), &state.dir, now_us, FILE_CACHE_BYTES).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
-pub async fn prefetch_thumbnails(state: &AppState, now_us: i64) {
+pub fn start_prefetch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, now_us: i64) {
+    use tauri::Manager;
+    if app.state::<AppState>().prefetching.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        prefetch_thumbnails(&state, now_us).await;
+        state.prefetching.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+pub(crate) async fn prefetch_thumbnails(state: &AppState, now_us: i64) {
     let ids: Vec<String> = {
         let conn = state.db.lock().unwrap();
         let Ok(mut stmt) = conn.prepare(
@@ -124,9 +161,22 @@ pub async fn prefetch_thumbnails(state: &AppState, now_us: i64) {
         };
         stmt.query_map([now_us - THUMBNAIL_KEEP_US], |r| r.get(0)).map(|rows| rows.flatten().collect()).unwrap_or_default()
     };
-    for id in ids {
-        if thumbnail(state, &id, now_us).await.is_err() {
+    use futures_util::StreamExt;
+    let mut downloads = futures_util::stream::iter(ids).map(|id| async move { thumbnail(state, &id, now_us).await }).buffer_unordered(4);
+    while let Some(result) = downloads.next().await {
+        if result.is_err() {
             return;
+        }
+    }
+}
+
+pub fn sweep_partial_downloads(dir: &Path) {
+    let file_dirs = std::fs::read_dir(dir.join("files")).into_iter().flatten().flatten().map(|e| e.path());
+    for folder in file_dirs.chain([dir.join("thumbnails")]) {
+        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".dl-") {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 }
@@ -229,6 +279,18 @@ mod tests {
         evict(&conn, d.path(), 10, FILE_CACHE_BYTES).unwrap();
         assert!(kept(&conn, "thumbnail").is_empty());
         assert!(!d.path().join("thumbnails/gone.jpg").exists());
+    }
+
+    #[test]
+    fn partial_downloads_are_swept_and_cached_files_kept() {
+        let (d, _conn) = fresh();
+        for path in ["files/a/f.png", "files/a/.dl-1", "thumbnails/b.jpg", "thumbnails/.dl-2"] {
+            std::fs::create_dir_all(d.path().join(path).parent().unwrap()).unwrap();
+            std::fs::write(d.path().join(path), "x").unwrap();
+        }
+        sweep_partial_downloads(d.path());
+        assert!(d.path().join("files/a/f.png").exists() && d.path().join("thumbnails/b.jpg").exists());
+        assert!(!d.path().join("files/a/.dl-1").exists() && !d.path().join("thumbnails/.dl-2").exists());
     }
 
     #[tokio::test]

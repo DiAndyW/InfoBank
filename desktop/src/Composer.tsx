@@ -47,10 +47,10 @@ export default function Composer({ acceptsDrops, topicId, placeholder, onCapture
 
   const empty = draft.trim() === "" && staged.length === 0;
 
-  function clear() {
+  function clear(sentIds?: string[]) {
     sent.current = false;
     setDraft("");
-    setStaged([]);
+    setStaged((all) => (sentIds ? all.filter((s) => !sentIds.includes(s.id)) : []));
     setError(null);
   }
 
@@ -60,9 +60,14 @@ export default function Composer({ acceptsDrops, topicId, placeholder, onCapture
     sent.current = true;
     saving.current = true;
     try {
-      await capture(draft, staged.map((s) => s.id), topicId);
+      const ids = staged.map((s) => s.id);
+      await capture(draft, ids, topicId);
+      if (discardAfterSave.current) {
+        discardStaged(ids);
+        clear();
+      }
       // The quick box keeps its text until it's hidden, so it never flashes empty.
-      if (!onCancel || discardAfterSave.current) clear();
+      else if (!onCancel) clear(ids);
       onCaptured();
     } catch (err) {
       sent.current = false;

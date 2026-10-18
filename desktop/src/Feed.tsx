@@ -224,6 +224,11 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                                     e.preventDefault();
                                     openUrl(part.url);
                                   }}
+                                  onAuxClick={(e) => {
+                                    if (e.button !== 1) return;
+                                    e.preventDefault();
+                                    openUrl(part.url);
+                                  }}
                                 >
                                   {part.url}
                                 </a>
