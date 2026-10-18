@@ -5,6 +5,7 @@ use rusqlite::Connection;
 pub struct Settings {
     pub server_url: Option<String>,
     pub has_secret: bool,
+    pub quick_capture: crate::shortcut::Hotkey,
 }
 
 pub fn get(conn: &Connection, secret: &Entry) -> Result<Settings, String> {
@@ -16,7 +17,7 @@ pub fn get(conn: &Connection, secret: &Entry) -> Result<Settings, String> {
         Err(keyring_core::Error::NoEntry) => false,
         Err(e) => return Err(format!("Couldn't read the keychain: {e}")),
     };
-    Ok(Settings { server_url, has_secret })
+    Ok(Settings { server_url, has_secret, quick_capture: crate::shortcut::get(conn)? })
 }
 
 pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Option<&str>) -> Result<(), String> {
@@ -84,6 +85,7 @@ mod tests {
         let s = get(&conn, &secret).unwrap();
         assert_eq!(s.server_url, None);
         assert!(!s.has_secret);
+        assert!(s.quick_capture.on);
     }
 
     #[test]

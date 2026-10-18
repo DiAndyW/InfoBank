@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Settings = { server_url: string | null; has_secret: boolean };
+// shortcut is the stored form, e.g. "shift+super+Space"; it is kept while quick capture is off.
+export type Hotkey = { shortcut: string; on: boolean };
+export type Settings = { server_url: string | null; has_secret: boolean; quick_capture: Hotkey };
 export type Topic = { id: string; name: string; archived: boolean; item_count: number };
 export type Keep = { kind: "all" } | { kind: "none" } | { kind: "only"; ids: string[] };
 
@@ -58,3 +60,8 @@ export type SearchQuery = { text: string; place: Place; from_us: number | null; 
 export type SearchItem = FeedItem & { marked_text: string | null; marked_filenames: string[] };
 export const searchItems = (query: SearchQuery, before: Before | null) => invoke<SearchItem[]>("search_items", { query, before });
 export const syncStatus = () => invoke<SyncStatus>("sync_status");
+export const dismissQuickCapture = () => invoke<void>("dismiss_quick_capture");
+export const setQuickCaptureShortcut = (shortcut: string) => invoke<Hotkey>("set_quick_capture_shortcut", { shortcut });
+export const setQuickCaptureOn = (on: boolean) => invoke<Hotkey>("set_quick_capture_on", { on });
+const byName = new Intl.Collator().compare;
+export const sortedTopics = (topics: Topic[]) => [...topics].sort((a, b) => byName(a.name, b.name));

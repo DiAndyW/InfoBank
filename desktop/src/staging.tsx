@@ -1,4 +1,4 @@
-import { useState, type ClipboardEvent } from "react";
+import { useRef, useState, type ClipboardEvent } from "react";
 import { MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, type Staged, type StagedFiles } from "./api";
 import { formatSize } from "./attachments";
 import Dialog from "./Dialog";
@@ -7,14 +7,18 @@ import { Icon } from "./icons";
 export function useStaging() {
   const [staged, setStaged] = useState<Staged[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
+  // Bumped by discard, so a paste still staging then is unstaged instead of reappearing.
+  const generation = useRef(0);
 
   function failed(more: string[]) {
     if (more.length > 0) setErrors((all) => [...all, ...more]);
   }
 
   async function add(stage: () => Promise<Staged>) {
+    const at = generation.current;
     try {
       const s = await stage();
+      if (at !== generation.current) return void unstage(s.id).catch(() => {});
       setStaged((all) => [...all, s]);
     } catch (err) {
       failed([String(err)]);
@@ -66,7 +70,13 @@ export function useStaging() {
     </Dialog>
   );
 
-  return { staged, setStaged, addAll, onPaste, remove, pick, dialog };
+  function discard() {
+    generation.current++;
+    for (const s of staged) unstage(s.id).catch(() => {});
+    setStaged([]);
+  }
+
+  return { staged, setStaged, addAll, onPaste, remove, pick, discard, dialog };
 }
 
 type Chip = { id: string; filename: string; mime_type: string; size_bytes: number };

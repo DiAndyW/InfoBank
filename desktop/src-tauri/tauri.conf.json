@@ -10,13 +10,29 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "NoteBank",
         "width": 1100,
         "height": 720,
         "minWidth": 640,
         "minHeight": 420
+      },
+      {
+        "label": "quick-capture",
+        "title": "Quick capture",
+        "width": 600,
+        "height": 400,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {

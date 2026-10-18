@@ -1,7 +1,9 @@
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
 
+use crate::shortcut::Hotkey;
 use crate::{AppState, cache, feed, files, search, settings, topics};
 
 fn now_us() -> i64 {
@@ -90,10 +92,13 @@ pub async fn sync_status(state: State<'_, AppState>) -> Result<&'static str, Str
 #[tauri::command]
 pub async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<files::StagedFiles, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    state.picking_files.store(true, std::sync::atomic::Ordering::SeqCst);
     app.dialog().file().pick_files(move |picked| {
         let _ = tx.send(picked.unwrap_or_default());
     });
-    let paths = rx.await.map_err(|e| e.to_string())?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
+    let picked = rx.await;
+    state.picking_files.store(false, std::sync::atomic::Ordering::SeqCst);
+    let paths = picked.map_err(|e| e.to_string())?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
     Ok(files::stage_paths(&state.dir, &paths.map_err(|e| e.to_string())?))
 }
 
@@ -190,4 +195,39 @@ pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: Str
 pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
     app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+fn register(shortcuts: &GlobalShortcut<tauri::Wry>, shortcut: &Shortcut) -> Result<(), String> {
+    if shortcuts.is_registered(*shortcut) {
+        return Ok(());
+    }
+    shortcuts.register(*shortcut).map_err(|e| format!("Couldn't use this shortcut: {e}"))
+}
+
+#[tauri::command]
+pub async fn set_quick_capture_shortcut(app: AppHandle, state: State<'_, AppState>, shortcut: String) -> Result<Hotkey, String> {
+    let shortcuts = app.global_shortcut();
+    let conn = state.db.lock().unwrap();
+    let old = crate::shortcut::get(&conn)?;
+    let new = crate::shortcut::set_shortcut(&conn, &shortcut, |s| register(shortcuts, s))?;
+    if old.on && old.shortcut != new.shortcut {
+        let _ = shortcuts.unregister(crate::shortcut::parse(&old.shortcut)?);
+    }
+    Ok(new)
+}
+
+#[tauri::command]
+pub async fn set_quick_capture_on(app: AppHandle, state: State<'_, AppState>, on: bool) -> Result<Hotkey, String> {
+    let shortcuts = app.global_shortcut();
+    let hotkey = crate::shortcut::set_on(&state.db.lock().unwrap(), on, |s| register(shortcuts, s))?;
+    if !on {
+        let _ = shortcuts.unregister(crate::shortcut::parse(&hotkey.shortcut)?);
+    }
+    Ok(hotkey)
+}
+
+// Not async: it runs on the main thread, where AppKit expects app activation.
+#[tauri::command]
+pub fn dismiss_quick_capture(app: AppHandle) {
+    crate::quick::dismiss(&app);
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, navCounts, restoreItem, syncStatus, type Counts, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
+import { getSettings, listTopics, sortedTopics, navCounts, restoreItem, syncStatus, type Counts, type Settings as SettingsData, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -11,9 +11,6 @@ import Settings from "./Settings";
 import Sidebar from "./Sidebar";
 import { Icon } from "./icons";
 import { applyTheme, storedTheme } from "./theme";
-
-const byName = new Intl.Collator().compare;
-const sorted = (topics: Topic[]) => [...topics].sort((a, b) => byName(a.name, b.name));
 
 export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
@@ -60,7 +57,7 @@ export default function App() {
     const unlisten = listen("items-changed", () =>
       Promise.all([listTopics(), navCounts()]).then(
         ([t, c]) => {
-          setTopics(sorted(t));
+          setTopics(sortedTopics(t));
           setCounts(c);
         },
         (e) => showError("Couldn't load Topics", e),
@@ -105,7 +102,7 @@ export default function App() {
     try {
       const [s, t, st, c] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts()]);
       setSettings(s);
-      setTopics(sorted(t));
+      setTopics(sortedTopics(t));
       setStatus(st);
       setCounts(c);
       setLoadError(null);

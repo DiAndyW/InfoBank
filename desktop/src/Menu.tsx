@@ -142,6 +142,7 @@ export default function Menu({ label, entries, open, onOpenChange, trigger: show
             onMouseLeave={(e) => aim({ x: e.clientX, y: e.clientY }, e.currentTarget.querySelector<HTMLElement>(".nb-submenu"))}
           >
             <button
+              type="button"
               role="menuitem"
               aria-haspopup="menu"
               aria-expanded={submenu === i}
@@ -156,6 +157,7 @@ export default function Menu({ label, entries, open, onOpenChange, trigger: show
           </div>
         ) : (
           <button
+            type="button"
             key={i}
             role={entry.checked === undefined ? "menuitem" : "menuitemradio"}
             aria-checked={entry.checked}
@@ -180,6 +182,7 @@ export default function Menu({ label, entries, open, onOpenChange, trigger: show
       onKeyDown={onKeyDown}
     >
       <button
+        type="button"
         ref={trigger}
         className={[shown === undefined ? "nb-iconbtn nb-reveal" : "nb-pill", open && "is-active"].filter(Boolean).join(" ")}
         aria-label={label}

@@ -23,9 +23,12 @@ type Options = {
   search?: (args: any) => SearchItem[] | Promise<SearchItem[]>;
   // A command waits for its gate, so a test can act while the call is in flight.
   gates?: Record<string, Promise<void>>;
+  shortcutError?: string;
 };
 
-function backend(settings: Settings, opts: Options = {}) {
+function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opts: Options = {}) {
+  const settings: Settings = { quick_capture: { shortcut: "shift+super+Space", on: true }, ...given };
+  let hotkey = settings.quick_capture;
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
   mockConvertFileSrc("macos");
@@ -49,6 +52,12 @@ function backend(settings: Settings, opts: Options = {}) {
       if (cmd === "capture") {
         if (opts.captureError) throw opts.captureError;
         return null;
+      }
+      if (cmd === "set_quick_capture_shortcut" || cmd === "set_quick_capture_on") {
+        if (opts.shortcutError) throw opts.shortcutError;
+        const { on } = args as { on?: boolean };
+        hotkey = cmd === "set_quick_capture_on" ? { ...hotkey, on: on! } : { ...hotkey, shortcut: "control+alt+KeyK" };
+        return hotkey;
       }
       if (cmd === "pick_files") return opts.picked ?? { staged: [], errors: [] };
       if (cmd === "stage_attachment_bytes") {
@@ -185,6 +194,16 @@ test("Enter captures and Shift+Enter adds a line", async () => {
   await userEvent.type(box, "{Enter}");
   expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [], topicId: null } });
   expect(box).toHaveValue("");
+});
+
+test("the main composer keeps autocorrect and Escape leaves its draft alone", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  const box = await screen.findByLabelText("New Item");
+  expect(box).not.toHaveAttribute("autocorrect");
+  await userEvent.type(box, "draft{Escape}");
+  expect(box).toHaveValue("draft");
+  expect(calls.some((c) => c.cmd === "dismiss_quick_capture")).toBe(false);
 });
 
 test("Send is disabled for blank text", async () => {
@@ -1763,4 +1782,116 @@ test("moving from Move to… toward its submenu keeps it open; straying outside 
   fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
   fireEvent.mouseMove(document, { clientX: 105, clientY: 60 });
   await vi.waitFor(() => expect(subOpen()).toBe(false));
+});
+
+const openSettings = async () => userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+const recorder = () => screen.getByRole("button", { name: /^Quick capture shortcut/ });
+
+test("the quick-capture shortcut shows in Mac symbols on a Mac", async () => {
+  const mac = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
+  try {
+    backend(configured);
+    render(<App />);
+    await openSettings();
+    expect(recorder()).toHaveTextContent("⇧⌘Space");
+  } finally {
+    mac.mockRestore();
+  }
+});
+
+test("the shortcut shows as text elsewhere", async () => {
+  backend(configured);
+  render(<App />);
+  await openSettings();
+  expect(recorder()).toHaveTextContent("Shift+Win+Space");
+});
+
+test("recording a shortcut applies it at once, from the key's code", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await openSettings();
+  expect(recorder()).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(recorder());
+  expect(recorder()).toHaveTextContent("Press a shortcut… (Esc cancels)");
+  expect(recorder()).toHaveAttribute("aria-pressed", "true");
+  fireEvent.keyDown(recorder(), { key: "Control", code: "ControlLeft", ctrlKey: true });
+  expect(recorder()).toHaveTextContent("Press a shortcut…");
+  fireEvent.keyDown(recorder(), { key: "˚", code: "KeyK", ctrlKey: true, altKey: true });
+  await vi.waitFor(() => expect(recorder()).toHaveTextContent("Ctrl+Alt+K"));
+  expect(recorder()).toHaveAttribute("aria-pressed", "false");
+  expect(calls.filter((c) => c.cmd === "set_quick_capture_shortcut").map((c) => c.args)).toEqual([{ shortcut: "Control+Alt+KeyK" }]);
+});
+
+test("recording hears the keys even though WebKit doesn't focus a clicked button", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await openSettings();
+  fireEvent.click(recorder());
+  fireEvent.keyDown(document.activeElement!, { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+  await vi.waitFor(() => expect(calls.some((c) => c.cmd === "set_quick_capture_shortcut")).toBe(true));
+});
+
+test("Escape stops recording without closing Settings or changing anything", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await openSettings();
+  await userEvent.click(recorder());
+  fireEvent.keyDown(recorder(), { key: "Escape", code: "Escape" });
+  expect(recorder()).toHaveTextContent("Shift+Win+Space");
+  expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "set_quick_capture_shortcut")).toBe(false);
+});
+
+test("a shortcut that can't be used shows why and keeps the old one", async () => {
+  backend(configured, { shortcutError: "Couldn't use this shortcut: taken" });
+  render(<App />);
+  await openSettings();
+  await userEvent.click(recorder());
+  fireEvent.keyDown(recorder(), { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+  expect(await screen.findByText("Couldn't use this shortcut: taken")).toBeInTheDocument();
+  expect(recorder()).toHaveTextContent("Shift+Win+Space");
+});
+
+const quickSwitch = () => screen.getByRole("switch", { name: "Quick capture on" });
+const turnedOff = { ...configured, quick_capture: { shortcut: "shift+super+Space", on: false } };
+
+test("the switch turns quick capture off and on, keeping the shortcut", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await openSettings();
+  expect(quickSwitch()).toBeChecked();
+  await userEvent.click(quickSwitch());
+  await vi.waitFor(() => expect(quickSwitch()).not.toBeChecked());
+  expect(recorder()).toHaveTextContent("Shift+Win+Space");
+  await userEvent.click(quickSwitch());
+  await vi.waitFor(() => expect(quickSwitch()).toBeChecked());
+  expect(calls.filter((c) => c.cmd === "set_quick_capture_on").map((c) => c.args)).toEqual([{ on: false }, { on: true }]);
+  expect(calls.some((c) => c.cmd === "set_quick_capture_shortcut")).toBe(false);
+});
+
+test("turning on a shortcut that's taken says why and stays off", async () => {
+  backend(turnedOff, { shortcutError: "Couldn't use this shortcut: taken" });
+  render(<App />);
+  await openSettings();
+  await userEvent.click(quickSwitch());
+  expect(await screen.findByText("Couldn't use this shortcut: taken")).toBeInTheDocument();
+  expect(quickSwitch()).not.toBeChecked();
+});
+
+test("recording a shortcut while off saves it and stays off", async () => {
+  const calls = backend(turnedOff);
+  render(<App />);
+  await openSettings();
+  await userEvent.click(recorder());
+  fireEvent.keyDown(recorder(), { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+  await vi.waitFor(() => expect(recorder()).toHaveTextContent("Ctrl+Alt+K"));
+  expect(quickSwitch()).not.toBeChecked();
+  expect(calls.some((c) => c.cmd === "set_quick_capture_on")).toBe(false);
+});
+
+test("the shortcut row is on the first-launch page too", async () => {
+  backend({ server_url: null, has_secret: false });
+  render(<App />);
+  await screen.findByRole("heading", { name: "Settings" });
+  expect(recorder()).toBeInTheDocument();
 });
