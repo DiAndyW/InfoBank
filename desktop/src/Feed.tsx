@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listItems, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
+import { discardItem, listItems, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
 import { Attachments } from "./attachments";
 import Composer from "./Composer";
+import ConflictDialog from "./ConflictDialog";
 import { useShownAfterDelay } from "./delay";
+import Dialog from "./Dialog";
 import { Icon } from "./icons";
 import ItemEditor, { type EditorHandle } from "./ItemEditor";
 import { linkify } from "./links";
@@ -36,6 +38,12 @@ type Props = {
   onHighlightDone: () => void;
 };
 
+function refusal(reason: string) {
+  const why = reason === "invalid" ? "as invalid" : reason === "exists" ? "" : `(${reason})`;
+  const what = reason === "exists" ? "The Server already has an Item with this id." : `The Server refused this Item ${why}.`;
+  return `${what} It's only on this Device.`;
+}
+
 export default function Feed({ view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
@@ -50,6 +58,9 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
   const [loadedView, setLoadedView] = useState<string | null>(null);
   const sought = useRef<string | null>(null);
   const [editing, setEditing] = useState<FeedItem | null>(null);
+  const [initialText, setInitialText] = useState<string | null | undefined>(undefined);
+  const [resolving, setResolving] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState<FeedItem | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const showLoadingOlder = useShownAfterDelay(loadingOlder);
@@ -149,11 +160,15 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
     }
   }
 
-  async function edit(it: FeedItem) {
+  async function edit(it: FeedItem, text?: string | null) {
     if (editing?.id === it.id) return;
     if (editing && !(await editor.current!.save())) return;
+    setInitialText(text);
     setEditing(it);
   }
+
+  const open = (it: FeedItem) => (it.conflict ? setResolving(it.id) : edit(it));
+  const conflictItem = items.find((i) => i.id === resolving && i.conflict);
 
   // The editor keeps its Item on screen even after a refetch drops it (trashed or purged elsewhere).
   const listed =
@@ -191,6 +206,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
               const place = view.kind === "all" || trash ? (topic?.name ?? "Inbox") : undefined;
+              const copy = it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
               const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
               return (
                 <Fragment key={it.id}>
@@ -208,6 +224,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                       <ItemEditor
                         ref={editor}
                         item={it}
+                        initialText={initialText}
                         onDone={(trashed) => {
                           setEditing(null);
                           if (trashed) onTrashed(it.id);
@@ -218,7 +235,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                   ) : (
                     <article
                       data-item={it.id}
-                      onDoubleClick={trash ? undefined : () => edit(it)}
+                      onDoubleClick={trash || it.sync_error ? undefined : () => open(it)}
                       className={["nb-item", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
                       onContextMenu={
                         trash
@@ -229,7 +246,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                             }
                       }
                     >
-                      {!trash && (
+                      {!trash && !it.sync_error && (
                         <span className="nb-grip nb-reveal" title="Drag to a Topic" aria-hidden="true" onPointerDown={(e) => startDrag(e, it)}>
                           <Icon name="grip" />
                         </span>
@@ -271,6 +288,18 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                           </span>
                         )}
                         {trash && it.purge_at_us !== null && <span className="nb-days">{daysLeft(it.purge_at_us)}</span>}
+                        {it.sync_error && (
+                          <span className="nb-mark is-danger" title={refusal(it.sync_error)}>
+                            <Icon name="alert" size={12} />
+                            Couldn't sync
+                          </span>
+                        )}
+                        {it.conflict && (
+                          <button type="button" className="nb-mark is-warn" onClick={() => setResolving(it.id)}>
+                            <Icon name="alert" size={12} />
+                            Conflict
+                          </button>
+                        )}
                         {it.pending && (
                           <span className="nb-pending" title="Not synced yet">
                             <Icon name="pending" label="Not synced yet" />
@@ -287,8 +316,8 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                             label="Item actions"
                             open={menuFor === it.id}
                             onOpenChange={(o) => setMenuFor(o ? it.id : null)}
-                            entries={[
-                              { label: "Edit", onSelect: () => edit(it) },
+                            entries={it.sync_error ? [...copy, { label: "Discard…", onSelect: () => setDiscarding(it) }] : [
+                              { label: "Edit", onSelect: () => open(it) },
                               {
                                 label: "Move to…",
                                 submenu: targets.map((t) => ({
@@ -299,7 +328,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                                   },
                                 })),
                               },
-                              ...(it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : []),
+                              ...copy,
                               { separator: true },
                               {
                                 label: "Move to Trash",
@@ -318,6 +347,47 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
           )}
         </div>
       </div>
+      {conflictItem && (
+        <ConflictDialog
+          item={conflictItem}
+          onClose={() => setResolving(null)}
+          onResolve={(keep) =>
+            resolveConflict(conflictItem.id, keep).then(
+              ({ trashed }) => {
+                setResolving(null);
+                if (trashed) onTrashed(conflictItem.id);
+              },
+              (e) => onError("Couldn't resolve the conflict", e),
+            )
+          }
+          onEdit={(mineText) => {
+            setResolving(null);
+            edit(conflictItem, mineText);
+          }}
+        />
+      )}
+      {discarding && (
+        <Dialog
+          alert
+          title="Discard this Item?"
+          hint={`"${discarding.text?.split("\n")[0] || discarding.attachments[0]?.filename || "Item"}"${discarding.attachments.length > 0 ? ` and its ${discarding.attachments.length === 1 ? "file" : `${discarding.attachments.length} files`}` : ""} will be deleted from this Device. The Server never accepted it, so there is no Trash and no Undo.`}
+          onClose={() => setDiscarding(null)}
+          actions={
+            <>
+              <button type="button" className="nb-btn nb-btn-secondary" autoFocus onClick={() => setDiscarding(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="nb-btn nb-btn-danger"
+                onClick={() => discardItem(discarding.id).then(() => setDiscarding(null), (e) => onError("Couldn't discard the Item", e))}
+              >
+                Discard
+              </button>
+            </>
+          }
+        />
+      )}
       <div className="nb-notice-slot">{notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
       {current?.archived && (
         <div className="nb-archived-bar">

@@ -42,8 +42,28 @@ pub async fn edit_item(
     text: String,
     add_ids: Vec<String>,
     remove_ids: Vec<String>,
+    base_rev: i64,
 ) -> Result<feed::Edited, String> {
-    let edited = feed::edit_item(&state.db.lock().unwrap(), &state.dir, &item_id, &text, &add_ids, &remove_ids, now_us())?;
+    let edited = feed::edit_item(&state.db.lock().unwrap(), &state.dir, &item_id, &text, &add_ids, &remove_ids, base_rev, now_us())?;
+    changed(&app, &state);
+    Ok(edited)
+}
+
+#[tauri::command]
+pub async fn discard_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    feed::discard_item(&state.db.lock().unwrap(), &state.dir, &item_id)?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resolve_conflict(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    item_id: String,
+    keep: feed::Keep,
+) -> Result<feed::Edited, String> {
+    let edited = feed::resolve_conflict(&state.db.lock().unwrap(), &state.dir, &item_id, keep, now_us())?;
     changed(&app, &state);
     Ok(edited)
 }

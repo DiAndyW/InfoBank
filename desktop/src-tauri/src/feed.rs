@@ -18,7 +18,25 @@ pub struct FeedItem {
     pub topic_id: Option<String>,
     pub pending: bool,
     pub purge_at_us: Option<i64>,
+    pub edit_base: i64,
+    pub sync_error: Option<String>,
+    pub conflict: Option<Conflict>,
     pub attachments: Vec<FeedAttachment>,
+}
+
+/// The version of the text that is not on the Server.
+#[derive(Serialize)]
+pub struct Conflict {
+    pub text: Option<String>,
+    pub mine: bool,
+}
+
+pub(crate) const FEEDBACK: &str = "items.sync_error, (SELECT mine FROM conflicts WHERE item_id = items.id),
+    (SELECT text FROM conflicts WHERE item_id = items.id)";
+
+pub(crate) fn feedback(r: &rusqlite::Row, first: usize) -> rusqlite::Result<(Option<String>, Option<Conflict>)> {
+    let (mine, text): (Option<bool>, Option<String>) = (r.get(first + 1)?, r.get(first + 2)?);
+    Ok((r.get(first)?, mine.map(|mine| Conflict { text, mine })))
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -131,6 +149,7 @@ pub struct Edited {
     pub trashed: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn edit_item(
     conn: &Connection,
     dir: &Path,
@@ -138,6 +157,7 @@ pub fn edit_item(
     text: &str,
     add_ids: &[String],
     remove_ids: &[String],
+    base_rev: i64,
     now_us: i64,
 ) -> Result<Edited, String> {
     let text = checked_text(text)?;
@@ -154,6 +174,7 @@ pub fn edit_item(
     let (removing, kept): (Vec<String>, Vec<String>) = files.into_iter().partition(|id| remove_ids.contains(id));
 
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(|e| e.to_string())?;
     let item = || item_id.to_string();
     if text.is_none() && kept.is_empty() && adding.is_empty() {
         // Trash keeps the content, so Undo brings the whole Item back.
@@ -173,13 +194,64 @@ pub fn edit_item(
         ops::queue(&tx, ops::Op::AddAttachment { item_id: item(), attachment: a }, now_us)?;
     }
     if text != current {
-        ops::queue(&tx, ops::Op::SetText { item_id: item(), text }, now_us)?;
+        ops::queue(&tx, ops::Op::SetText { item_id: item(), text, base_rev }, now_us)?;
     }
     for attachment_id in removing {
         ops::queue(&tx, ops::Op::RemoveAttachment { item_id: item(), attachment_id }, now_us)?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(Edited { trashed: false })
+}
+
+pub fn discard_item(conn: &Connection, dir: &Path, item_id: &str) -> Result<(), String> {
+    let refused: bool = conn
+        .query_row("SELECT sync_error IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or(GONE)?;
+    if !refused {
+        return Err("Only an Item the Server refused can be discarded".into());
+    }
+    let cached: Vec<(String, String)> = conn
+        .prepare("SELECT c.kind, c.path FROM cached_files c JOIN attachments a ON a.id = c.attachment_id WHERE a.item_id = ?1")
+        .and_then(|mut stmt| stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+        .map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM attachments WHERE item_id = ?1)", [item_id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM items WHERE id = ?1", [item_id]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    for (kind, path) in cached {
+        let path = dir.join(path);
+        let _ = std::fs::remove_file(&path);
+        if kind == "file" {
+            let _ = path.parent().map(std::fs::remove_dir);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Keep {
+    Theirs,
+    Mine,
+}
+
+pub fn resolve_conflict(conn: &Connection, dir: &Path, item_id: &str, keep: Keep, now_us: i64) -> Result<Edited, String> {
+    let (text, mine): (Option<String>, bool) = conn
+        .query_row("SELECT text, mine FROM conflicts WHERE item_id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or("This conflict was already settled")?;
+    if mine == matches!(keep, Keep::Theirs) {
+        conn.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(|e| e.to_string())?;
+        return Ok(Edited { trashed: false });
+    }
+    let base_rev: i64 = conn
+        .query_row(&format!("SELECT {EDIT_BASE} FROM items WHERE id = ?1"), [item_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    edit_item(conn, dir, item_id, text.as_deref().unwrap_or(""), &[], &[], base_rev, now_us)
 }
 
 pub fn set_trashed(conn: &Connection, item_id: &str, trashed: bool, now_us: i64) -> Result<(), String> {
@@ -216,9 +288,16 @@ pub fn move_item(conn: &Connection, item_id: &str, topic_id: Option<&str>, now_u
 }
 
 // Unsynced: an op still queued for the Item, or one of its files not uploaded yet.
-pub(crate) const PENDING: &str = "EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id)
+pub(crate) const PENDING: &str = "(sync_error IS NULL AND (EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id)
     OR EXISTS (SELECT 1 FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
-               WHERE a.item_id = items.id AND a.uploaded = 0)";
+               WHERE a.item_id = items.id AND a.uploaded = 0)))";
+
+// The revision the user is looking at: their own unpushed text if any, else the Server's.
+pub(crate) const EDIT_BASE: &str = "COALESCE(
+    (SELECT json_extract(op, '$.base_rev') FROM outbox
+     WHERE json_extract(op, '$.item_id') = items.id AND json_extract(op, '$.type') = 'SetText'
+     ORDER BY seq DESC LIMIT 1),
+    items.text_rev)";
 
 // Past purge_at the Server is about to delete it; an empty Item can't be restored. `?1` is now.
 const IN_TRASH: &str = "deleted_at IS NOT NULL AND (purge_at IS NULL OR purge_at > ?1)
@@ -233,7 +312,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
         View::Topic { id } => ("topic", Some(id.as_str())),
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, text, capture_time, topic_id, {PENDING}, purge_at
+        "SELECT id, text, capture_time, topic_id, {PENDING}, purge_at, {EDIT_BASE}, {FEEDBACK}
          FROM items
          WHERE CASE ?2 WHEN 'trash' THEN {IN_TRASH}
                ELSE deleted_at IS NULL
@@ -246,6 +325,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
         .query_map(
             (now_us, kind, topic, before.map(|b| b.capture_time_us), before.map(|b| b.id.as_str()), PAGE_SIZE),
             |r| {
+                let (sync_error, conflict) = feedback(r, 7)?;
                 Ok(FeedItem {
                     id: r.get(0)?,
                     text: r.get(1)?,
@@ -253,6 +333,9 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
                     topic_id: r.get(3)?,
                     pending: r.get(4)?,
                     purge_at_us: r.get(5)?,
+                    edit_base: r.get(6)?,
+                    sync_error,
+                    conflict,
                     attachments: Vec::new(),
                 })
             },
@@ -466,7 +549,7 @@ mod tests {
         let (d, conn) = fresh();
         with_file(&conn, "i", Some("old"), "a");
         let new = png(&d);
-        let edited = edit_item(&conn, d.path(), "i", " new ", std::slice::from_ref(&new), &["a".into()], 5).unwrap();
+        let edited = edit_item(&conn, d.path(), "i", " new ", std::slice::from_ref(&new), &["a".into()], 0, 5).unwrap();
         assert!(!edited.trashed);
         assert_eq!(types(&conn), ["AddAttachment", "SetText", "RemoveAttachment"]);
         assert_eq!(outbox_ops(&conn)[1]["text"], "new");
@@ -480,15 +563,128 @@ mod tests {
         assert_eq!(pinned, 1, "the new file isn't pinned until uploaded");
 
         conn.execute("DELETE FROM outbox", []).unwrap();
-        edit_item(&conn, d.path(), "i", "new", &[], &[], 6).unwrap();
+        edit_item(&conn, d.path(), "i", "new", &[], &[], 0, 6).unwrap();
         assert_eq!(count(&conn, "outbox"), 0, "an unchanged save queued something");
+    }
+
+    #[test]
+    fn edit_base_follows_a_pending_set_text() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time, text_rev) VALUES ('i', 'x', 1, 3)", []).unwrap();
+        let base = |conn: &Connection| list_items(conn, &View::All, None, 0).unwrap()[0].edit_base;
+        assert_eq!(base(&conn), 3);
+        edit_item(&conn, d.path(), "i", "y", &[], &[], 3, 2).unwrap();
+        conn.execute("UPDATE items SET text_rev = 4", []).unwrap();
+        assert_eq!(base(&conn), 3);
+        edit_item(&conn, d.path(), "i", "z", &[], &[], 4, 3).unwrap();
+        assert_eq!(base(&conn), 4, "the newest pending edit decides");
+        conn.execute("UPDATE items SET text_rev = 5", []).unwrap();
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        assert_eq!(base(&conn), 5);
+    }
+
+    fn set_conflict(conn: &Connection, text: Option<&str>, mine: bool) {
+        conn.execute("INSERT INTO conflicts (item_id, text, mine) VALUES ('i', ?1, ?2)", (text, mine)).unwrap();
+    }
+
+    #[test]
+    fn discard_refuses_a_synced_item() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        assert!(discard_item(&conn, d.path(), "i").is_err());
+        assert_eq!(count(&conn, "items"), 1);
+    }
+
+    #[test]
+    fn discard_removes_a_refused_capture_and_its_files() {
+        let (d, conn) = fresh();
+        let id = png(&d);
+        capture(&conn, d.path(), "hi", std::slice::from_ref(&id), None, 1).unwrap();
+        conn.execute("UPDATE items SET sync_error = 'invalid'", []).unwrap();
+        let file = d.path().join("files").join(&id).join("scan.png");
+        assert!(file.exists());
+
+        discard_item(&conn, d.path(), &list_items(&conn, &View::All, None, 0).unwrap()[0].id).unwrap();
+        for table in ["items", "attachments", "cached_files"] {
+            assert_eq!(count(&conn, table), 0, "{table}");
+        }
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn keeping_the_version_already_on_the_server_only_clears_the_row() {
+        for (mine, keep) in [(true, Keep::Theirs), (false, Keep::Mine)] {
+            let (d, conn) = fresh();
+            conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+            set_conflict(&conn, Some("other"), mine);
+            resolve_conflict(&conn, d.path(), "i", keep, 2).unwrap();
+            assert_eq!(count(&conn, "conflicts"), 0);
+            assert_eq!(count(&conn, "outbox"), 0);
+        }
+    }
+
+    #[test]
+    fn keeping_the_other_version_sends_it_from_the_current_revision() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time, text_rev) VALUES ('i', 'x', 1, 4)", []).unwrap();
+        set_conflict(&conn, Some("mine"), true);
+        resolve_conflict(&conn, d.path(), "i", Keep::Mine, 2).unwrap();
+        let ops = outbox_ops(&conn);
+        assert_eq!(ops.len(), 1);
+        assert_eq!((ops[0]["type"].as_str(), ops[0]["text"].as_str(), ops[0]["base_rev"].as_i64()), (Some("SetText"), Some("mine"), Some(4)));
+        assert_eq!(count(&conn, "conflicts"), 0);
+    }
+
+    #[test]
+    fn keeping_the_other_devices_version_sends_its_stored_text() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time, text_rev) VALUES ('i', 'x', 1, 4)", []).unwrap();
+        set_conflict(&conn, Some("theirs"), false);
+        resolve_conflict(&conn, d.path(), "i", Keep::Theirs, 2).unwrap();
+        let ops = outbox_ops(&conn);
+        assert_eq!(ops.len(), 1);
+        assert_eq!((ops[0]["type"].as_str(), ops[0]["text"].as_str(), ops[0]["base_rev"].as_i64()), (Some("SetText"), Some("theirs"), Some(4)));
+        assert_eq!(count(&conn, "conflicts"), 0);
+    }
+
+    #[test]
+    fn keeping_a_null_text_with_no_files_trashes() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        set_conflict(&conn, None, true);
+        assert!(resolve_conflict(&conn, d.path(), "i", Keep::Mine, 2).unwrap().trashed);
+        assert_eq!(types(&conn), ["TrashItem"]);
+        assert_eq!(count(&conn, "conflicts"), 0);
+    }
+
+    #[test]
+    fn list_items_carries_sync_error_and_conflict() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time, sync_error) VALUES ('i', 'x', 1, 'invalid')", []).unwrap();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('j', 'y', 0)", []).unwrap();
+        conn.execute("INSERT INTO conflicts (item_id, text, mine) VALUES ('j', NULL, 0)", []).unwrap();
+        let items = list_items(&conn, &View::All, None, 0).unwrap();
+        assert_eq!(items[0].sync_error.as_deref(), Some("invalid"));
+        assert!(items[0].conflict.is_none());
+        assert_eq!(items[1].sync_error, None);
+        let c = items[1].conflict.as_ref().unwrap();
+        assert_eq!((c.text.as_deref(), c.mine), (None, false));
+    }
+
+    #[test]
+    fn saving_clears_the_items_conflict() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
+        conn.execute("INSERT INTO conflicts (item_id, text, mine) VALUES ('i', 'z', 1)", []).unwrap();
+        edit_item(&conn, d.path(), "i", "y", &[], &[], 0, 2).unwrap();
+        assert_eq!(count(&conn, "conflicts"), 0);
     }
 
     #[test]
     fn emptying_an_item_trashes_it_and_keeps_its_content() {
         let (d, conn) = fresh();
         with_file(&conn, "i", Some("x"), "a");
-        assert!(edit_item(&conn, d.path(), "i", "  ", &[], &["a".into()], 5).unwrap().trashed);
+        assert!(edit_item(&conn, d.path(), "i", "  ", &[], &["a".into()], 0, 5).unwrap().trashed);
         assert_eq!(types(&conn), ["TrashItem"]);
         let (text, deleted): (Option<String>, Option<i64>) =
             conn.query_row("SELECT text, deleted_at FROM items WHERE id = 'i'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -502,10 +698,10 @@ mod tests {
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
         let too_long = "x".repeat(MAX_ITEM_TEXT_BYTES + 1);
         for text in ["a\0b", too_long.as_str()] {
-            assert!(edit_item(&conn, d.path(), "i", text, &[], &[], 2).is_err(), "accepted {:.20?}", text);
+            assert!(edit_item(&conn, d.path(), "i", text, &[], &[], 0, 2).is_err(), "accepted {:.20?}", text);
         }
-        assert!(edit_item(&conn, d.path(), "i", "y", &["../files".into()], &[], 2).is_err());
-        assert_eq!(edit_item(&conn, d.path(), "nope", "y", &[], &[], 2).unwrap_err(), GONE);
+        assert!(edit_item(&conn, d.path(), "i", "y", &["../files".into()], &[], 0, 2).is_err());
+        assert_eq!(edit_item(&conn, d.path(), "nope", "y", &[], &[], 0, 2).unwrap_err(), GONE);
         assert_eq!(count(&conn, "outbox"), 0);
     }
 
@@ -514,7 +710,7 @@ mod tests {
         let (d, conn) = fresh();
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
         with_file(&conn, "j", Some("y"), "b");
-        edit_item(&conn, d.path(), "i", "x2", &[], &["b".into()], 2).unwrap();
+        edit_item(&conn, d.path(), "i", "x2", &[], &["b".into()], 0, 2).unwrap();
         assert_eq!(types(&conn), ["SetText"]);
         assert_eq!(count(&conn, "attachments"), 1);
     }
@@ -523,7 +719,7 @@ mod tests {
     fn editing_an_item_in_trash_restores_it() {
         let (d, conn) = fresh();
         conn.execute("INSERT INTO items (id, text, capture_time, deleted_at, purge_at) VALUES ('i', 'x', 1, 3, 99)", []).unwrap();
-        edit_item(&conn, d.path(), "i", "back", &[], &[], 4).unwrap();
+        edit_item(&conn, d.path(), "i", "back", &[], &[], 0, 4).unwrap();
         assert_eq!(list_items(&conn, &View::All, None, 0).unwrap()[0].text.as_deref(), Some("back"));
     }
 
@@ -537,10 +733,10 @@ mod tests {
              UPDATE items SET deleted_at = 3;",
         )
         .unwrap();
-        edit_item(&conn, d.path(), "i", "x", &[], &[], 4).unwrap();
+        edit_item(&conn, d.path(), "i", "x", &[], &[], 0, 4).unwrap();
         assert_eq!(types(&conn), ["RestoreItem"]);
         conn.execute_batch("DELETE FROM outbox; UPDATE items SET deleted_at = 5").unwrap();
-        edit_item(&conn, d.path(), "i", "x", &[], &["a".into()], 6).unwrap();
+        edit_item(&conn, d.path(), "i", "x", &[], &["a".into()], 0, 6).unwrap();
         assert_eq!(types(&conn), ["RestoreItem", "RemoveAttachment"]);
         assert_eq!(list_items(&conn, &View::All, None, 0).unwrap().len(), 1);
     }

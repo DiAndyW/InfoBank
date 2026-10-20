@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
-use serde::Deserialize;
+use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::AsyncReadExt;
 
@@ -46,6 +46,7 @@ struct PulledItem {
     capture_time: DateTime<Utc>,
     deleted_at: Option<DateTime<Utc>>,
     purge_at: Option<DateTime<Utc>>,
+    text_rev: i64,
     attachments: Vec<PulledAttachment>,
 }
 
@@ -84,12 +85,13 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     }
     for it in &page.items {
         tx.execute(
-            "INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at, text_rev)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT (id) DO UPDATE SET
                 topic_id = excluded.topic_id, text = excluded.text, capture_time = excluded.capture_time,
-                deleted_at = excluded.deleted_at, purge_at = excluded.purge_at",
-            (&it.id, &it.topic_id, &it.text, it.capture_time.timestamp_micros(), micros(it.deleted_at), micros(it.purge_at)),
+                deleted_at = excluded.deleted_at, purge_at = excluded.purge_at,
+                text_rev = excluded.text_rev, sync_error = NULL",
+            (&it.id, &it.topic_id, &it.text, it.capture_time.timestamp_micros(), micros(it.deleted_at), micros(it.purge_at), it.text_rev),
         )?;
         // Pull sends the Item's whole live set, so anything missing from it was removed.
         let keep: Vec<&str> = it.attachments.iter().map(|a| a.id.as_str()).collect();
@@ -155,6 +157,34 @@ struct PushResult {
     op_id: String,
     status: String,
     reason: Option<String>,
+    text: Option<String>,
+}
+
+/// A refusal or redirect the user should hear about; `topic_state` and `place` are filled in after the pull.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SyncNotice {
+    pub kind: &'static str,
+    pub item_id: String,
+    pub label: String,
+    pub topic: Option<String>,
+    pub topic_state: Option<&'static str>,
+    pub place: Option<String>,
+    #[serde(skip)]
+    topic_id: Option<String>,
+}
+
+fn label(conn: &Connection, item_id: &str) -> Option<String> {
+    let text: Option<String> =
+        conn.query_row("SELECT text FROM items WHERE id = ?1", [item_id], |r| r.get(0)).optional().ok()?.flatten();
+    let line = text.map(|t| t.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|t| !t.is_empty());
+    match line {
+        Some(l) if l.chars().count() > 40 => Some(l.chars().take(40).collect::<String>() + "…"),
+        Some(l) => Some(l),
+        None => conn
+            .query_row("SELECT filename FROM attachments WHERE item_id = ?1 ORDER BY rowid LIMIT 1", [item_id], |r| r.get(0))
+            .optional()
+            .ok()?,
+    }
 }
 
 async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
@@ -202,14 +232,107 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
         let body = serde_json::json!({"device_id": device_id, "ops": ops});
         let res = send(state.http.post(format!("{url}/sync/push")).timeout(HTTP_TIMEOUT).json(&body), &token).await?;
         let res: PushResponse = res.json().await.map_err(failed)?;
-        for r in res.results.iter().filter(|r| r.status == "rejected") {
-            eprintln!("sync: op {} rejected: {}", r.op_id, r.reason.as_deref().unwrap_or("no reason"));
+        let mut notices = Vec::new();
+        {
+            let conn = state.db.lock().unwrap();
+            let tx = conn.unchecked_transaction().map_err(failed)?;
+            for r in &res.results {
+                let Some(op) = ops.iter().find(|o| o["id"] == r.op_id.as_str()) else { continue };
+                let (ty, reason) = (op["type"].as_str().unwrap_or_default(), r.reason.as_deref().unwrap_or_default());
+                let item_id = op["item_id"].as_str();
+                let rejected = r.status == "rejected";
+                if rejected && ty == "CaptureItem" {
+                    tx.execute("UPDATE items SET sync_error = ?2 WHERE id = ?1", (item_id, reason)).map_err(failed)?;
+                    continue;
+                }
+                let refused_capture = match item_id {
+                    Some(id) => tx
+                        .query_row("SELECT sync_error IS NOT NULL FROM items WHERE id = ?1", [id], |r| r.get(0))
+                        .optional()
+                        .map_err(failed)?
+                        .unwrap_or(false),
+                    None => false,
+                };
+                if rejected && refused_capture {
+                    continue;
+                }
+                let conflict = match (r.status.as_str(), ty, reason) {
+                    ("rejected", "SetText", "superseded") => Some((op["text"].as_str(), 1)),
+                    ("changed", "SetText", "overwrote") => Some((r.text.as_deref(), 0)),
+                    _ => None,
+                };
+                if let (Some((text, mine)), Some(id)) = (conflict, item_id) {
+                    tx.execute(
+                        "INSERT INTO conflicts (item_id, text, mine) SELECT ?1, ?2, ?3 WHERE EXISTS (SELECT 1 FROM items WHERE id = ?1)
+                         ON CONFLICT (item_id) DO UPDATE SET text = excluded.text, mine = excluded.mine",
+                        (id, text, mine),
+                    )
+                    .map_err(failed)?;
+                    continue;
+                }
+                let kind = match (r.status.as_str(), ty, reason) {
+                    ("rejected", "MoveItem", "topic_unavailable") => "move",
+                    ("rejected", "SetText" | "AddAttachment" | "MoveItem" | "TrashItem" | "RestoreItem", "not_found") => "gone",
+                    ("rejected", "RestoreItem", "empty") => "empty",
+                    ("changed", "CaptureItem", "sent_to_inbox") => "inbox",
+                    _ => {
+                        if rejected {
+                            eprintln!("sync: op {} rejected: {}", r.op_id, r.reason.as_deref().unwrap_or("no reason"));
+                        }
+                        continue;
+                    }
+                };
+                let Some(item_id) = item_id else { continue };
+                let topic_id = op["topic_id"].as_str().filter(|_| matches!(kind, "move" | "inbox")).map(String::from);
+                let topic = topic_id.as_deref().and_then(|t| {
+                    tx.query_row("SELECT name FROM topics WHERE id = ?1", [t], |r| r.get(0)).optional().ok().flatten()
+                });
+                notices.push(SyncNotice {
+                    kind,
+                    item_id: item_id.into(),
+                    label: label(&tx, item_id).unwrap_or_default(),
+                    topic,
+                    topic_state: None,
+                    place: tx
+                        .query_row("SELECT topic_id FROM items WHERE id = ?1", [item_id], |r| r.get(0))
+                        .optional()
+                        .map_err(failed)?
+                        .flatten(),
+                    topic_id,
+                });
+            }
+            // Every op in the batch got an answer, so all of them leave the outbox; pull brings the Server's version.
+            tx.execute("DELETE FROM outbox WHERE seq <= ?1", [last_seq]).map_err(failed)?;
+            tx.commit().map_err(failed)?;
         }
-        // Every op in the batch got an answer, so all of them leave the outbox; pull brings the Server's version.
-        state.db.lock().unwrap().execute("DELETE FROM outbox WHERE seq <= ?1", [last_seq]).map_err(failed)?;
+        state.notices.lock().unwrap().extend(notices);
         changed = true;
     }
     changed |= pull(state, &url, &token).await?;
+    {
+        let conn = state.db.lock().unwrap();
+        for n in state.notices.lock().unwrap().iter_mut() {
+            n.place = conn
+                .query_row("SELECT topic_id FROM items WHERE id = ?1", [&n.item_id], |r| r.get(0))
+                .optional()
+                .map_err(failed)?
+                .flatten();
+            n.topic_state = n.topic_id.as_deref().and_then(|t| {
+                let state: Option<String> = conn
+                    .query_row(
+                        "SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted' WHEN archived_at IS NOT NULL THEN 'archived' END
+                         FROM topics WHERE id = ?1",
+                        [t],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten()
+                    .flatten();
+                state.map(|s| if s == "deleted" { "deleted" } else { "archived" })
+            });
+        }
+    }
     match upload_pending(state, &url, &token).await {
         Ok(false) => {}
         Ok(true) => {
@@ -243,8 +366,9 @@ pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<
         let mut stmt = conn
             .prepare(
                 "SELECT a.id, c.path, a.size_bytes FROM attachments a
+                 JOIN items i ON i.id = a.item_id
                  JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
-                 WHERE a.uploaded = 0 ORDER BY a.rowid",
+                 WHERE a.uploaded = 0 AND i.sync_error IS NULL ORDER BY a.rowid",
             )
             .map_err(failed)?;
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -350,6 +474,10 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
                 eprintln!("cache: eviction failed: {e}");
             }
         }
+        let notices = std::mem::take(&mut *state.notices.lock().unwrap());
+        if !notices.is_empty() {
+            let _ = app.emit("sync-notices", notices);
+        }
         let (status, wait) = outcome(&result, failures);
         set_status(&app, status);
         match wait {
@@ -393,12 +521,30 @@ mod tests {
     fn item(id: &str, text: &str, attachments: Vec<serde_json::Value>) -> serde_json::Value {
         serde_json::json!({"id": id, "topic_id": null, "text": text,
                            "capture_time": "2025-10-09T08:53:20.123456Z",
-                           "deleted_at": null, "purge_at": null, "attachments": attachments})
+                           "deleted_at": null, "purge_at": null, "text_rev": 0, "attachments": attachments})
     }
 
     fn attachment_ids(conn: &Connection) -> Vec<String> {
         let mut stmt = conn.prepare("SELECT id FROM attachments ORDER BY id").unwrap();
         stmt.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn a_label_is_one_short_line_or_the_first_filename() {
+        let (_d, conn) = fresh();
+        let long = format!("first   line\n{}\nsecond", "x".repeat(60));
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('t', ?1, 1)", [&long]).unwrap();
+        let expected = format!("first line {}…", "x".repeat(29));
+        assert_eq!(label(&conn, "t"), Some(expected));
+
+        conn.execute("INSERT INTO items (id, capture_time) VALUES ('f', 1)", []).unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
+             VALUES ('a', 'f', 'scan.png', 'image/png', 1, 1, 0)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(label(&conn, "f").as_deref(), Some("scan.png"));
     }
 
     #[test]
@@ -412,6 +558,19 @@ mod tests {
         apply_pull(&conn, &page(purged)).unwrap();
         let cursor: i64 = conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap();
         assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn a_pull_stores_the_text_revision_and_clears_a_sync_error() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time, sync_error) VALUES ('i', 'x', 1, 'exists')", []).unwrap();
+        let mut pulled = item("i", "x", vec![]);
+        pulled["text_rev"] = 7.into();
+        let p = page(serde_json::json!({"items": [pulled], "topics": [], "tombstones": [], "cursor": 1, "has_more": false}));
+        apply_pull(&conn, &p).unwrap();
+        let (rev, error): (i64, Option<String>) =
+            conn.query_row("SELECT text_rev, sync_error FROM items WHERE id = 'i'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((rev, error), (7, None));
     }
 
     #[test]
@@ -538,6 +697,7 @@ mod server_tests {
     use std::sync::OnceLock;
 
     use keyring_core::api::CredentialStoreApi;
+    use rusqlite::OptionalExtension;
 
     use super::*;
     use crate::feed::{self, View};
@@ -1191,6 +1351,230 @@ mod server_tests {
 
         assert_eq!(place(&a, &item), (None, false), "A still shows the move the Server rejected");
         assert_eq!(topic_names(&a), [("Gym".to_string(), true)]);
+        let notice = SyncNotice {
+            kind: "move",
+            item_id: item,
+            label: "squat 100".into(),
+            topic: Some("Gym".into()),
+            topic_state: Some("archived"),
+            place: None,
+            topic_id: Some(gym),
+        };
+        assert_eq!(*a.notices.lock().unwrap(), [notice]);
+    }
+
+    #[tokio::test]
+    async fn a_capture_into_a_topic_archived_elsewhere_lands_in_the_inbox_with_a_notice() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+
+        topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 10 * SECOND).unwrap();
+        sync(&b).await.unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], Some(&gym), T0 + 20 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+
+        let item = only_item(&a);
+        let notice = SyncNotice {
+            kind: "inbox",
+            item_id: item.clone(),
+            label: "squat 100".into(),
+            topic: Some("Gym".into()),
+            topic_state: Some("archived"),
+            place: None,
+            topic_id: Some(gym),
+        };
+        assert_eq!(*a.notices.lock().unwrap(), [notice]);
+        assert_eq!(place(&a, &item), (None, false));
+    }
+
+    fn conflict(d: &Device, item_id: &str) -> Option<(Option<String>, bool)> {
+        d.db.lock()
+            .unwrap()
+            .query_row("SELECT text, mine FROM conflicts WHERE item_id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .unwrap()
+    }
+
+    fn item_text(d: &Device, item_id: &str) -> Option<String> {
+        d.db.lock().unwrap().query_row("SELECT text FROM items WHERE id = ?1", [item_id], |r| r.get(0)).unwrap()
+    }
+
+    fn is_pending(d: &Device) -> bool {
+        feed::list_items(&d.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].pending
+    }
+
+    async fn two_devices_on_one_item(server: &mut TestServer) -> (Device, Device, String) {
+        server.start();
+        let (a, b) = (device(server, &server.secret), device(server, &server.secret));
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        let item = only_item(&a);
+        (a, b, item)
+    }
+
+    fn edit(d: &Device, item: &str, text: &str, base_rev: i64, at: i64) {
+        feed::edit_item(&d.db.lock().unwrap(), &d.dir, item, text, &[], &[], base_rev, at).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_older_overlapping_edit_is_kept_as_mine() {
+        let mut server = TestServer::new();
+        let (a, b, item) = two_devices_on_one_item(&mut server).await;
+        edit(&b, &item, "theirs", 0, T0 + 10 * SECOND);
+        sync(&b).await.unwrap();
+        edit(&a, &item, "mine", 0, T0 + 5 * SECOND);
+        sync(&a).await.unwrap();
+
+        assert_eq!(item_text(&a, &item).as_deref(), Some("theirs"));
+        assert_eq!(conflict(&a, &item), Some((Some("mine".into()), true)));
+        assert!(!is_pending(&a));
+    }
+
+    #[tokio::test]
+    async fn a_newer_overlapping_edit_keeps_theirs() {
+        let mut server = TestServer::new();
+        let (a, b, item) = two_devices_on_one_item(&mut server).await;
+        edit(&b, &item, "theirs", 0, T0 + 5 * SECOND);
+        sync(&b).await.unwrap();
+        edit(&a, &item, "mine", 0, T0 + 10 * SECOND);
+        sync(&a).await.unwrap();
+
+        assert_eq!(item_text(&a, &item).as_deref(), Some("mine"));
+        assert_eq!(conflict(&a, &item), Some((Some("theirs".into()), false)));
+        sync(&b).await.unwrap();
+        assert_eq!(item_text(&b, &item).as_deref(), Some("mine"));
+        assert_eq!(conflict(&b, &item), None);
+    }
+
+    #[tokio::test]
+    async fn a_slow_clock_edit_from_the_current_text_applies() {
+        let mut server = TestServer::new();
+        let (a, b, item) = two_devices_on_one_item(&mut server).await;
+        edit(&b, &item, "theirs", 0, T0 + 10 * SECOND);
+        sync(&b).await.unwrap();
+        sync(&a).await.unwrap();
+        let base = feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].edit_base;
+        assert_eq!(base, 1);
+        edit(&a, &item, "mine", base, T0 + 5 * SECOND);
+        sync(&a).await.unwrap();
+
+        assert_eq!(conflict(&a, &item), None);
+        sync(&b).await.unwrap();
+        assert_eq!(item_text(&b, &item).as_deref(), Some("mine"));
+    }
+
+    type PushReply = fn(&serde_json::Value) -> serde_json::Value;
+
+    fn fake_server(push_reply: PushReply, pull_status: u16) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let puts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = puts.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut raw = Vec::new();
+                let mut buf = [0; 4096];
+                let (head_len, body_len) = loop {
+                    let n = std::io::Read::read(&mut stream, &mut buf).unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    if let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&raw[..end]).to_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .map_or(0, |v| v.trim().parse().unwrap());
+                        break (end + 4, len);
+                    }
+                };
+                while raw.len() < head_len + body_len {
+                    let n = std::io::Read::read(&mut stream, &mut buf).unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                }
+                let request_line = String::from_utf8_lossy(&raw).lines().next().unwrap().to_string();
+                let (status, body) = if request_line.starts_with("POST /sync/push") {
+                    let sent: serde_json::Value = serde_json::from_slice(&raw[head_len..]).unwrap();
+                    (200, push_reply(&sent).to_string())
+                } else if request_line.starts_with("GET /sync/pull") {
+                    let empty = r#"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false}"#;
+                    (pull_status, empty.to_string())
+                } else {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (204, String::new())
+                };
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = std::io::Write::write_all(&mut stream, reply.as_bytes());
+            }
+        });
+        (url, puts)
+    }
+
+    fn answers(request: &serde_json::Value, replies: &[(&str, &str)]) -> serde_json::Value {
+        let ops = request["ops"].as_array().unwrap();
+        assert_eq!(ops.len(), replies.len());
+        let results: Vec<_> = ops
+            .iter()
+            .zip(replies)
+            .map(|(op, (status, reason))| serde_json::json!({"op_id": op["id"], "status": status, "reason": reason, "text": null}))
+            .collect();
+        serde_json::json!({"results": results})
+    }
+
+    fn sync_error(d: &Device, item_id: &str) -> Option<String> {
+        d.db.lock().unwrap().query_row("SELECT sync_error FROM items WHERE id = ?1", [item_id], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_refused_capture_is_marked_and_stops_uploading() {
+        let (url, puts) = fake_server(|req| answers(req, &[("rejected", "invalid")]), 200);
+        let a = device_at(&url, "secret");
+        capture_png(&a, "photo");
+        let item = only_item(&a);
+        assert!(is_pending(&a));
+
+        sync(&a).await.unwrap();
+        sync(&a).await.unwrap();
+
+        assert_eq!(sync_error(&a, &item).as_deref(), Some("invalid"));
+        assert!(!is_pending(&a));
+        assert_eq!(puts.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn ops_on_a_refused_capture_are_silent() {
+        let (url, _) = fake_server(|req| answers(req, &[("rejected", "invalid"), ("rejected", "not_found")]), 200);
+        let a = device_at(&url, "secret");
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        let item = only_item(&a);
+        edit(&a, &item, "shoes, size 9", 0, T0 + SECOND);
+
+        sync(&a).await.unwrap();
+
+        assert_eq!(sync_error(&a, &item).as_deref(), Some("invalid"));
+        assert!(a.notices.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn results_are_kept_when_the_pull_fails() {
+        let (url, _) = fake_server(|req| answers(req, &[("rejected", "superseded")]), 500);
+        let a = device_at(&url, "secret");
+        a.db.lock()
+            .unwrap()
+            .execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'shoes', ?1)", [T0])
+            .unwrap();
+        edit(&a, "i", "mine", 0, T0 + SECOND);
+
+        assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
+
+        assert_eq!(conflict(&a, "i"), Some((Some("mine".into()), true)));
+        assert_eq!(count(&a, "outbox"), 0);
     }
 
     #[tokio::test]
@@ -1279,6 +1663,7 @@ mod server_tests {
             "receipt, kept",
             std::slice::from_ref(&second),
             std::slice::from_ref(&first),
+            0,
             T0 + SECOND,
         )
         .unwrap();
@@ -1301,7 +1686,7 @@ mod server_tests {
         let item = only_item(&a);
 
         let before = now();
-        assert!(feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "", &[], &[], T0 + SECOND).unwrap().trashed);
+        assert!(feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "", &[], &[], 0, T0 + SECOND).unwrap().trashed);
         sync(&a).await.unwrap();
         let after = now();
         let trash = feed::list_items(&a.db.lock().unwrap(), &View::Trash, None, now()).unwrap();
@@ -1316,6 +1701,33 @@ mod server_tests {
     }
 
     #[tokio::test]
+    async fn an_edit_started_before_a_pull_reports_the_overlap() {
+        let mut server = TestServer::new();
+        server.start();
+        let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        sync(&a).await.unwrap();
+        sync(&b).await.unwrap();
+        let item = only_item(&a);
+        let base = feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].edit_base;
+        assert_eq!(base, 0);
+
+        feed::edit_item(&b.db.lock().unwrap(), &b.dir, &item, "shoes, size 9", &[], &[], 0, T0 + 10 * SECOND).unwrap();
+        sync(&b).await.unwrap();
+        sync(&a).await.unwrap();
+        feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "shoes, size 10", &[], &[], base, T0 + 20 * SECOND).unwrap();
+        sync(&a).await.unwrap();
+
+        let (text, mine): (Option<String>, bool) = a
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT text, mine FROM conflicts WHERE item_id = ?1", [&item], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((text.as_deref(), mine), (Some("shoes, size 9"), false));
+    }
+
+    #[tokio::test]
     async fn an_edit_made_after_a_trash_elsewhere_brings_the_item_back() {
         let mut server = TestServer::new();
         server.start();
@@ -1327,7 +1739,7 @@ mod server_tests {
 
         feed::set_trashed(&b.db.lock().unwrap(), &item, true, T0 + 10 * SECOND).unwrap();
         sync(&b).await.unwrap();
-        feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "shoes, size 10.5", &[], &[], T0 + 20 * SECOND).unwrap();
+        feed::edit_item(&a.db.lock().unwrap(), &a.dir, &item, "shoes, size 10.5", &[], &[], 0, T0 + 20 * SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         assert_eq!(place(&b, &item), (None, false));

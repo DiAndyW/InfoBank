@@ -16,6 +16,7 @@ type itemOut struct {
 	ID          uuid.UUID       `json:"id"`
 	TopicID     *uuid.UUID      `json:"topic_id" db:"topic_id"`
 	Text        *string         `json:"text"`
+	TextRev     int64           `json:"text_rev" db:"text_rev"`
 	CaptureTime time.Time       `json:"capture_time" db:"capture_time"`
 	DeletedAt   *time.Time      `json:"deleted_at" db:"deleted_at"`
 	PurgeAt     *time.Time      `json:"purge_at" db:"-"`
@@ -63,7 +64,7 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 
 	// CollectRows returns Query's error, so it isn't checked separately.
 	rows, _ := tx.Query(ctx, `
-		SELECT id, topic_id, text, capture_time, deleted_at, seq
+		SELECT id, topic_id, text, text_rev, capture_time, deleted_at, seq
 		FROM items WHERE seq > $1 ORDER BY seq LIMIT $2`, cursor, pullPageSize+1)
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByName[itemOut])
 	if err != nil {

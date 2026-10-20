@@ -7,12 +7,24 @@ export type NoticeData = { id: number; message: string; action?: { label: "Undo"
 
 export default function Notice({ message, action, onClose }: { message: string; action?: NoticeData["action"]; onClose: () => void }) {
   const [held, setHeld] = useState(false);
+  const [focused, setFocused] = useState(document.hasFocus());
 
   useEffect(() => {
-    if (held) return;
+    const on = () => setFocused(true);
+    const off = () => setFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    return () => {
+      window.removeEventListener("focus", on);
+      window.removeEventListener("blur", off);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (held || !focused) return;
     const timer = setTimeout(onClose, SHOW_MS);
     return () => clearTimeout(timer);
-  }, [held]);
+  }, [held, focused]);
 
   return (
     <div

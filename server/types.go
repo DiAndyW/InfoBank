@@ -33,6 +33,7 @@ type pushOp struct {
 	ItemID  uuid.UUID  `json:"item_id"`
 	TopicID *uuid.UUID `json:"topic_id"`
 	Text    *string    `json:"text"`
+	BaseRev *int64     `json:"base_rev"` // SetText: the text_rev the Device last saw
 
 	Name  string      `json:"name"`
 	Trash []uuid.UUID `json:"trash"` // DeleteTopic: the Items to trash; the rest go to the Inbox
@@ -46,6 +47,7 @@ type opResult struct {
 	OpID   uuid.UUID `json:"op_id"`
 	Status string    `json:"status"` // accepted, changed or rejected
 	Reason string    `json:"reason,omitempty"`
+	Text   *string   `json:"text"` // overwrote: the text this op replaced, null if it had none
 }
 
 func accepted() opResult              { return opResult{Status: "accepted"} }
@@ -70,6 +72,7 @@ type item struct {
 	id         uuid.UUID
 	topicID    *uuid.UUID
 	text       *string
+	textRev    int64
 	deletedAt  *time.Time
 	textStamp  stamp
 	topicStamp stamp

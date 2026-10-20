@@ -65,7 +65,7 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
         ("search MATCH ?10 AND", mark(0), mark(1))
     };
     let sql = format!(
-        "SELECT items.id, items.text, items.capture_time, items.topic_id, {pending}, items.purge_at, {text}, {names}
+        "SELECT items.id, items.text, items.capture_time, items.topic_id, {pending}, items.purge_at, {edit_base}, {text}, {names}, {feedback}
          FROM search JOIN items ON items.rowid = search.rowid
          WHERE {matched} items.deleted_at IS NULL
            AND CASE ?1 WHEN 'all' THEN 1 WHEN 'inbox' THEN items.topic_id IS NULL ELSE items.topic_id = ?2 END
@@ -76,11 +76,14 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
          ORDER BY items.capture_time DESC, items.id DESC
          LIMIT ?9",
         pending = feed::PENDING,
+        edit_base = feed::EDIT_BASE,
+        feedback = feed::FEEDBACK,
     );
     let run = || -> rusqlite::Result<Vec<SearchItem>> {
         let mut stmt = conn.prepare(&sql)?;
         let (mut items, marked): (Vec<FeedItem>, Vec<(String, String)>) = stmt
             .query_map(rusqlite::params_from_iter(&args), |r| {
+                let (sync_error, conflict) = feed::feedback(r, 9)?;
                 Ok((
                     FeedItem {
                         id: r.get(0)?,
@@ -89,9 +92,12 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
                         topic_id: r.get(3)?,
                         pending: r.get(4)?,
                         purge_at_us: r.get(5)?,
+                        edit_base: r.get(6)?,
+                        sync_error,
+                        conflict,
                         attachments: Vec::new(),
                     },
-                    (r.get(6)?, r.get(7)?),
+                    (r.get(7)?, r.get(8)?),
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -310,7 +316,7 @@ mod tests {
         let page = |json: serde_json::Value| -> crate::sync::Page { serde_json::from_value(json).unwrap() };
         let item = |text: &str| {
             serde_json::json!({"id": "i", "topic_id": null, "text": text, "capture_time": "2025-10-09T08:53:20Z",
-                "deleted_at": null, "purge_at": null,
+                "deleted_at": null, "purge_at": null, "text_rev": 0,
                 "attachments": [{"id": "f", "filename": "notes.txt", "mime_type": "text/plain", "size_bytes": 1, "uploaded": true, "has_thumbnail": false}]})
         };
         crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [item("hello")], "topics": [], "tombstones": [], "cursor": 1, "has_more": false}))).unwrap();

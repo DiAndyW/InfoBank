@@ -20,7 +20,7 @@ pub enum Op {
     UnarchiveTopic { topic_id: String },
     DeleteTopic { topic_id: String, trash: Vec<String> },
     MoveItem { item_id: String, topic_id: Option<String> },
-    SetText { item_id: String, text: Option<String> },
+    SetText { item_id: String, text: Option<String>, base_rev: i64 },
     AddAttachment { item_id: String, attachment: NewAttachment },
     RemoveAttachment { item_id: String, attachment_id: String },
     TrashItem { item_id: String },
@@ -89,7 +89,7 @@ fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
         Op::MoveItem { item_id, topic_id } => {
             conn.execute("UPDATE items SET topic_id = ?2 WHERE id = ?1", (item_id, topic_id))?;
         }
-        Op::SetText { item_id, text } => {
+        Op::SetText { item_id, text, .. } => {
             conn.execute("UPDATE items SET text = ?2, deleted_at = NULL, purge_at = NULL WHERE id = ?1", (item_id, text))?;
         }
         Op::AddAttachment { item_id, attachment: a } => {
@@ -202,7 +202,7 @@ mod tests {
         let (_d, conn) = fresh();
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
         for op in [
-            Op::SetText { item_id: "i".into(), text: None },
+            Op::SetText { item_id: "i".into(), text: None, base_rev: 3 },
             Op::AddAttachment { item_id: "i".into(), attachment: png("a") },
             Op::RemoveAttachment { item_id: "i".into(), attachment_id: "a".into() },
             Op::TrashItem { item_id: "i".into() },
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(
             bodies,
             [
-                serde_json::json!({"type": "SetText", "item_id": "i", "text": null}),
+                serde_json::json!({"type": "SetText", "item_id": "i", "text": null, "base_rev": 3}),
                 serde_json::json!({"type": "AddAttachment", "item_id": "i",
                                    "attachment": {"id": "a", "filename": "a.png", "mime_type": "image/png", "size_bytes": 3}}),
                 serde_json::json!({"type": "RemoveAttachment", "item_id": "i", "attachment_id": "a"}),
@@ -252,7 +252,7 @@ mod tests {
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect()
         };
 
-        queue(&conn, Op::SetText { item_id: "i".into(), text: Some("edited".into()) }, 10).unwrap();
+        queue(&conn, Op::SetText { item_id: "i".into(), text: Some("edited".into()), base_rev: 0 }, 10).unwrap();
         assert_eq!(item(), (Some("edited".into()), None, None), "an edit counts as a restore");
         queue(&conn, Op::TrashItem { item_id: "i".into() }, 11).unwrap();
         assert_eq!(item(), (Some("edited".into()), Some(11), None));

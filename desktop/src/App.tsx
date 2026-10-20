@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncStatus, type Topic } from "./api";
+import { getSettings, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -102,6 +102,37 @@ export default function App() {
       document.documentElement.classList.remove("nb-dragging");
     };
   }, [dragging, dropOn]);
+
+  useEffect(() => {
+    const unlisten = listen<SyncNotice[]>("sync-notices", (e) => {
+      const n = e.payload[e.payload.length - 1];
+      if (!n) return;
+      const gone = n.topic_state ?? "archived or deleted";
+      const sentence = {
+        move: `Couldn't move "${n.label}" to ${n.topic}: it was ${gone} on another Device.`,
+        inbox: `Saved "${n.label}" to the Inbox: ${n.topic} was ${gone} on another Device.`,
+        empty: `Couldn't restore "${n.label}": it has no text or files left.`,
+        gone: `Couldn't save your change to "${n.label}": it was deleted for good on another Device.`,
+      }[n.kind];
+      const more = e.payload.length > 1 ? ` And ${e.payload.length - 1} more.` : "";
+      const showable = n.kind === "move" || n.kind === "inbox";
+      show(
+        sentence + more,
+        showable
+          ? {
+              label: "Show",
+              onAction: () => {
+                select(n.place ?? "inbox");
+                setHighlight(n.item_id);
+              },
+            }
+          : undefined,
+      );
+    });
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen("items-changed", () =>

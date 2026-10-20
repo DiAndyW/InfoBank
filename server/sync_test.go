@@ -55,9 +55,10 @@ func (e *syncEnv) at(minutes int) string {
 type op map[string]any
 
 type pushResult struct {
-	OpID   string `json:"op_id"`
-	Status string `json:"status"`
-	Reason string `json:"reason"`
+	OpID   string  `json:"op_id"`
+	Status string  `json:"status"`
+	Reason string  `json:"reason"`
+	Text   *string `json:"text"`
 }
 
 type pulledAttachment struct {
@@ -73,6 +74,7 @@ type pulledItem struct {
 	ID          string             `json:"id"`
 	TopicID     *string            `json:"topic_id"`
 	Text        *string            `json:"text"`
+	TextRev     int64              `json:"text_rev"`
 	CaptureTime time.Time          `json:"capture_time"`
 	DeletedAt   *time.Time         `json:"deleted_at"`
 	PurgeAt     *time.Time         `json:"purge_at"`
@@ -492,7 +494,7 @@ func TestTrashAndAConcurrentEditAreOrderedByTimestamp(t *testing.T) {
 
 			trash := func() { e.push(desktopID, op{"type": "TrashItem", "at": e.at(c.trashAt), "item_id": itemID}) }
 			edit := func() {
-				e.push(phoneID, op{"type": "SetText", "at": e.at(c.editAt), "item_id": itemID, "text": "edited"})
+				e.push(phoneID, op{"type": "SetText", "base_rev": 0, "at": e.at(c.editAt), "item_id": itemID, "text": "edited"})
 			}
 			if c.editArrivesFirst {
 				edit()
@@ -575,7 +577,7 @@ func TestItemEmptiedByTwoDevicesGoesToTrashAndCannotBeRestored(t *testing.T) {
 	e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "caption", "attachments": []any{p}})
 
 	// Each Device leaves something behind locally; together they leave nothing.
-	e.push(desktopID, op{"type": "SetText", "at": e.at(10), "item_id": itemID, "text": nil})
+	e.push(desktopID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": itemID, "text": nil})
 	e.push(phoneID, op{"type": "RemoveAttachment", "at": e.at(11), "item_id": itemID, "attachment_id": p["id"]})
 
 	if it := e.item(itemID); it.DeletedAt == nil || !it.DeletedAt.Equal(e.clock.Now()) {
@@ -754,14 +756,14 @@ func TestInvalidOpsAreRejectedOneByOne(t *testing.T) {
 		"attachment id reused":         {op{"type": "AddAttachment", "at": e.at(1), "item_id": itemID, "attachment": att}, "exists"},
 		"same attachment twice":        {op{"type": "CaptureItem", "at": e.at(1), "item_id": uuid.NewString(), "attachments": []any{dup, dup}}, "invalid"},
 		"remove unknown attachment":    {op{"type": "RemoveAttachment", "at": e.at(1), "item_id": itemID, "attachment_id": uuid.NewString()}, "not_found"},
-		"edit unknown item":            {op{"type": "SetText", "at": e.at(1), "item_id": uuid.NewString(), "text": "x"}, "not_found"},
+		"edit unknown item":            {op{"type": "SetText", "base_rev": 0, "at": e.at(1), "item_id": uuid.NewString(), "text": "x"}, "not_found"},
 		"unknown op type":              {op{"type": "Explode", "at": e.at(1)}, "invalid"},
-		"timestamp that doesn't parse": {op{"type": "SetText", "at": "yesterday", "item_id": itemID, "text": "x"}, "invalid"},
-		"missing op id":                {op{"id": "", "type": "SetText", "at": e.at(1), "item_id": itemID, "text": "x"}, "invalid"},
+		"timestamp that doesn't parse": {op{"type": "SetText", "base_rev": 0, "at": "yesterday", "item_id": itemID, "text": "x"}, "invalid"},
+		"missing op id":                {op{"id": "", "type": "SetText", "base_rev": 0, "at": e.at(1), "item_id": itemID, "text": "x"}, "invalid"},
 	}
 	for name, c := range cases {
 		// A good op after the bad one must still apply: one bad op never blocks the queue.
-		res := e.push(phoneID, c.o, op{"type": "SetText", "at": e.at(2), "item_id": itemID, "text": name})
+		res := e.push(phoneID, c.o, op{"type": "SetText", "base_rev": 0, "at": e.at(2), "item_id": itemID, "text": name})
 		if res[0].Status != "rejected" || res[0].Reason != c.want || res[1].Status != "accepted" {
 			t.Errorf("%s: results %+v, want rejected %s then accepted", name, res, c.want)
 		}
@@ -800,8 +802,8 @@ func TestLaterTextEditWinsWhicheverArrivesFirst(t *testing.T) {
 	itemID := uuid.NewString()
 	e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "draft"})
 
-	e.push(desktopID, op{"type": "SetText", "at": e.at(10), "item_id": itemID, "text": "desktop at 10"})
-	late := e.push(phoneID, op{"type": "SetText", "at": e.at(5), "item_id": itemID, "text": "phone at 5"})
+	e.push(desktopID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": itemID, "text": "desktop at 10"})
+	late := e.push(phoneID, op{"type": "SetText", "base_rev": 0, "at": e.at(5), "item_id": itemID, "text": "phone at 5"})
 
 	if late[0].Status != "rejected" || late[0].Reason != "superseded" {
 		t.Errorf("older edit arriving later = %+v, want rejected superseded", late[0])
@@ -818,10 +820,10 @@ func TestSimultaneousEditsGoToTheLowerDeviceID(t *testing.T) {
 		op{"type": "CaptureItem", "at": e.at(0), "item_id": first, "text": "draft"},
 		op{"type": "CaptureItem", "at": e.at(0), "item_id": second, "text": "draft"})
 
-	e.push(desktopID, op{"type": "SetText", "at": e.at(10), "item_id": first, "text": "desktop"})
-	e.push(phoneID, op{"type": "SetText", "at": e.at(10), "item_id": first, "text": "phone"})
-	e.push(phoneID, op{"type": "SetText", "at": e.at(10), "item_id": second, "text": "phone"})
-	e.push(desktopID, op{"type": "SetText", "at": e.at(10), "item_id": second, "text": "desktop"})
+	e.push(desktopID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": first, "text": "desktop"})
+	e.push(phoneID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": first, "text": "phone"})
+	e.push(phoneID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": second, "text": "phone"})
+	e.push(desktopID, op{"type": "SetText", "base_rev": 0, "at": e.at(10), "item_id": second, "text": "desktop"})
 
 	for _, id := range []string{first, second} {
 		if got := textOf(e.item(id)); got != "phone" {
@@ -835,7 +837,7 @@ func TestADevicesOwnEditsApplyInOrderAtTheSameTimestamp(t *testing.T) {
 	itemID := uuid.NewString()
 	e.push(phoneID,
 		op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "a"},
-		op{"type": "SetText", "at": e.at(0), "item_id": itemID, "text": "ab"})
+		op{"type": "SetText", "base_rev": 0, "at": e.at(0), "item_id": itemID, "text": "ab"})
 	if got := textOf(e.item(itemID)); got != "ab" {
 		t.Fatalf("text = %q, want the later op from the same Device", got)
 	}
@@ -848,9 +850,9 @@ func TestFutureTimestampsAreCappedAtServerTime(t *testing.T) {
 
 	// The Server's now is at(day). The phone's clock is a day fast, so its edit counts as made at now.
 	day := 24 * 60
-	e.push(phoneID, op{"type": "SetText", "at": e.at(2 * day), "item_id": itemID, "text": "phone, clock a day fast"})
+	e.push(phoneID, op{"type": "SetText", "base_rev": 0, "at": e.at(2 * day), "item_id": itemID, "text": "phone, clock a day fast"})
 	e.clock.Advance(5 * time.Minute)
-	e.push(desktopID, op{"type": "SetText", "at": e.at(day + 2), "item_id": itemID, "text": "desktop, 2 minutes later"})
+	e.push(desktopID, op{"type": "SetText", "base_rev": 0, "at": e.at(day + 2), "item_id": itemID, "text": "desktop, 2 minutes later"})
 
 	if got := textOf(e.item(itemID)); got != "desktop, 2 minutes later" {
 		t.Fatalf("text = %q, want the desktop's genuinely later edit", got)
@@ -1008,5 +1010,145 @@ func TestAnAcceptedMoveSendsOnlyTheItem(t *testing.T) {
 	}
 	if got := changedIDs(e.pull(cursor)); !slices.Equal(got, []string{itemID}) {
 		t.Fatalf("pulled %v, want only the Item", got)
+	}
+}
+
+func setText(opID, itemID, text string, base any, at string) op {
+	return op{"id": opID, "type": "SetText", "at": at, "item_id": itemID, "text": text, "base_rev": base}
+}
+
+func (e *syncEnv) capture(itemID string) {
+	e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "draft"})
+}
+
+func TestAnEditFromTheCurrentRevisionApplies(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	if rev := e.item(itemID).TextRev; rev != 0 {
+		t.Fatalf("captured text_rev = %d, want 0", rev)
+	}
+	res := e.push(desktopID, setText(uuid.NewString(), itemID, "edited", 0, e.at(10)))
+	if res[0].Status != "accepted" {
+		t.Fatalf("result = %+v, want accepted", res[0])
+	}
+	if rev := e.item(itemID).TextRev; rev != 1 {
+		t.Fatalf("text_rev = %d, want 1", rev)
+	}
+}
+
+func TestAnOlderOverlappingEditIsSuperseded(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	e.push(phoneID, setText(uuid.NewString(), itemID, "phone", 0, e.at(10)))
+	res := e.push(desktopID, setText(uuid.NewString(), itemID, "desk", 0, e.at(5)))
+	if res[0].Status != "rejected" || res[0].Reason != "superseded" || res[0].Text != nil {
+		t.Fatalf("result = %+v, want rejected superseded without text", res[0])
+	}
+	if it := e.item(itemID); textOf(it) != "phone" || it.TextRev != 1 {
+		t.Fatalf("item = %q rev %d, want the phone's text at rev 1", textOf(it), it.TextRev)
+	}
+}
+
+func TestANewerOverlappingEditReturnsTheTextItReplaced(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		e := newSyncEnv(t)
+		itemID := uuid.NewString()
+		e.capture(itemID)
+		e.push(phoneID, setText(uuid.NewString(), itemID, "phone", 0, e.at(5)))
+		res := e.push(desktopID, setText(uuid.NewString(), itemID, "desk", 0, e.at(10)))
+		if res[0].Status != "changed" || res[0].Reason != "overwrote" || res[0].Text == nil || *res[0].Text != "phone" {
+			t.Fatalf("result = %+v, want changed overwrote with the phone's text", res[0])
+		}
+		if it := e.item(itemID); textOf(it) != "desk" || it.TextRev != 2 {
+			t.Fatalf("item = %q rev %d, want desk at rev 2", textOf(it), it.TextRev)
+		}
+	})
+	t.Run("no text", func(t *testing.T) {
+		e := newSyncEnv(t)
+		itemID := uuid.NewString()
+		e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "caption",
+			"attachments": []any{newAttachment("a.jpg")}})
+		e.push(phoneID, op{"type": "SetText", "at": e.at(5), "item_id": itemID, "text": nil, "base_rev": 0})
+		res := e.push(desktopID, setText(uuid.NewString(), itemID, "desk", 0, e.at(10)))
+		if res[0].Reason != "overwrote" || res[0].Text != nil {
+			t.Fatalf("result = %+v, want overwrote with null text", res[0])
+		}
+		if got := textOf(e.item(itemID)); got != "desk" {
+			t.Fatalf("text = %q, want desk", got)
+		}
+	})
+}
+
+func TestASlowClockEditFromTheCurrentRevisionApplies(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	e.push(phoneID, setText(uuid.NewString(), itemID, "phone", 0, e.at(10)))
+	res := e.push(desktopID, setText(uuid.NewString(), itemID, "desk", 1, e.at(5)))
+	if res[0].Status != "accepted" {
+		t.Fatalf("result = %+v, want accepted", res[0])
+	}
+	if got := textOf(e.item(itemID)); got != "desk" {
+		t.Fatalf("text = %q, want the desktop's", got)
+	}
+}
+
+func TestTwoQueuedEditsFromOneDeviceDontOverlapEachOther(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	res := e.push(desktopID,
+		setText(uuid.NewString(), itemID, "d1", 0, e.at(10)),
+		setText(uuid.NewString(), itemID, "d2", 0, e.at(11)))
+	if res[0].Status != "accepted" || res[1].Status != "accepted" {
+		t.Fatalf("results = %+v, want both accepted", res)
+	}
+	if got := textOf(e.item(itemID)); got != "d2" {
+		t.Fatalf("text = %q, want the last edit", got)
+	}
+}
+
+func TestAnOverlapIsReportedOnceForAQueuedPair(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	e.push(phoneID, setText(uuid.NewString(), itemID, "phone", 0, e.at(5)))
+	res := e.push(desktopID,
+		setText(uuid.NewString(), itemID, "d1", 0, e.at(10)),
+		setText(uuid.NewString(), itemID, "d2", 0, e.at(11)))
+	if res[0].Reason != "overwrote" || res[0].Text == nil || *res[0].Text != "phone" || res[1].Status != "accepted" {
+		t.Fatalf("results = %+v, want overwrote (phone) then accepted", res)
+	}
+	if got := textOf(e.item(itemID)); got != "d2" {
+		t.Fatalf("text = %q, want d2", got)
+	}
+}
+
+func TestAReplayedOverwriteReturnsTheSameText(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	e.push(phoneID, setText(uuid.NewString(), itemID, "phone", 0, e.at(5)))
+	ops := []op{
+		setText(uuid.NewString(), itemID, "d1", 0, e.at(10)),
+		setText(uuid.NewString(), itemID, "d2", 0, e.at(11)),
+	}
+	first := e.push(desktopID, ops...)
+	again := e.push(desktopID, ops...)
+	if first[0].Text == nil || again[0].Text == nil || *again[0].Text != *first[0].Text ||
+		again[0].Reason != first[0].Reason || again[1].Status != first[1].Status {
+		t.Fatalf("replay = %+v, want %+v", again, first)
+	}
+}
+
+func TestSetTextWithoutABaseRevIsInvalid(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.capture(itemID)
+	res := e.push(desktopID, setText(uuid.NewString(), itemID, "x", nil, e.at(10)))
+	if res[0].Status != "rejected" || res[0].Reason != "invalid" {
+		t.Fatalf("result = %+v, want rejected invalid", res[0])
 	}
 }

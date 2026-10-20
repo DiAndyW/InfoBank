@@ -5,10 +5,11 @@ import { Chips, useStaging } from "./staging";
 
 export type EditorHandle = { save: () => Promise<boolean>; focus: () => void };
 
-type Props = { item: FeedItem; onDone: (trashed: boolean) => void; onGone: (err: unknown) => void; ref: Ref<EditorHandle> };
+type Props = { item: FeedItem; initialText?: string | null; onDone: (trashed: boolean) => void; onGone: (err: unknown) => void; ref: Ref<EditorHandle> };
 
-export default function ItemEditor({ item, onDone, onGone, ref }: Props) {
-  const [draft, setDraft] = useState(item.text ?? "");
+export default function ItemEditor({ item, initialText, onDone, onGone, ref }: Props) {
+  const [draft, setDraft] = useState((initialText === undefined ? item.text : initialText) ?? "");
+  const [baseRev] = useState(() => item.edit_base);
   const [kept, setKept] = useState(item.attachments);
   const { staged, onPaste, remove, pick, dialog } = useStaging();
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +22,7 @@ export default function ItemEditor({ item, onDone, onGone, ref }: Props) {
     saving.current = true;
     try {
       const removed = item.attachments.filter((a) => !kept.some((k) => k.id === a.id)).map((a) => a.id);
-      const { trashed } = await editItem(item.id, draft, staged.map((s) => s.id), removed);
+      const { trashed } = await editItem(item.id, draft, staged.map((s) => s.id), removed, baseRev);
       onDone(trashed);
       return true;
     } catch (err) {

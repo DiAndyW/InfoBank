@@ -71,15 +71,21 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 		return rejected("not_found"), err
 	}
 	edit := false
+	var overwrote bool
+	var replaced *string
 	switch o.Type {
 	case "SetText":
-		if !validText(o.Text) {
+		if !validText(o.Text) || o.BaseRev == nil {
 			return rejected("invalid"), nil
 		}
-		if !s.beats(it.textStamp) {
-			return rejected("superseded"), nil
+		// No overlap if this Device saw the current text or wrote it (a queued second edit).
+		if *o.BaseRev != it.textRev && it.textStamp.by != b.device {
+			if !s.beats(it.textStamp) {
+				return rejected("superseded"), nil
+			}
+			overwrote, replaced = true, it.text
 		}
-		it.text, it.textStamp, edit = o.Text, s, true
+		it.text, it.textStamp, it.textRev, edit = o.Text, s, it.textRev+1, true
 	case "MoveItem":
 		if o.TopicID != nil {
 			open, err := b.topicOpen(*o.TopicID)
@@ -137,7 +143,12 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 		}
 		it.deletedAt = &b.now
 	}
-	return accepted(), b.saveItem(it)
+	result := accepted()
+	if overwrote {
+		result = changed("overwrote")
+		result.Text = replaced
+	}
+	return result, b.saveItem(it)
 }
 
 // loadItem returns nil if there is no Item with id.
@@ -145,10 +156,10 @@ func (b *batch) loadItem(id uuid.UUID) (*item, error) {
 	it := item{id: id}
 	err := b.tx.QueryRow(b.ctx, `
 		SELECT topic_id, text, deleted_at, text_updated_at, text_updated_by,
-			topic_updated_at, topic_updated_by, trash_updated_at, trash_updated_by
+			topic_updated_at, topic_updated_by, trash_updated_at, trash_updated_by, text_rev
 		FROM items WHERE id = $1`, id).Scan(
 		&it.topicID, &it.text, &it.deletedAt, &it.textStamp.at, &it.textStamp.by,
-		&it.topicStamp.at, &it.topicStamp.by, &it.trashStamp.at, &it.trashStamp.by)
+		&it.topicStamp.at, &it.topicStamp.by, &it.trashStamp.at, &it.trashStamp.by, &it.textRev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -159,9 +170,9 @@ func (b *batch) saveItem(it *item) error {
 	_, err := b.tx.Exec(b.ctx, `
 		UPDATE items SET topic_id = $2, text = $3, deleted_at = $4,
 			text_updated_at = $5, text_updated_by = $6, topic_updated_at = $7, topic_updated_by = $8,
-			trash_updated_at = $9, trash_updated_by = $10, seq = nextval('sync_seq')
+			trash_updated_at = $9, trash_updated_by = $10, text_rev = $11, seq = nextval('sync_seq')
 		WHERE id = $1`,
 		it.id, it.topicID, it.text, it.deletedAt, it.textStamp.at, it.textStamp.by,
-		it.topicStamp.at, it.topicStamp.by, it.trashStamp.at, it.trashStamp.by)
+		it.topicStamp.at, it.topicStamp.by, it.trashStamp.at, it.trashStamp.by, it.textRev)
 	return err
 }

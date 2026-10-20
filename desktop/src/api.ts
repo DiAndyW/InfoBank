@@ -27,9 +27,20 @@ export type FeedItem = {
   pending: boolean;
   attachments: FeedAttachment[];
   purge_at_us: number | null;
+  edit_base: number;
+  sync_error: string | null;
+  conflict: { text: string | null; mine: boolean } | null;
 };
 export type View = { kind: "all" } | { kind: "inbox" } | { kind: "trash" } | { kind: "topic"; id: string };
 export type Counts = { inbox: number; trash: number };
+export type SyncNotice = {
+  kind: "move" | "inbox" | "empty" | "gone";
+  item_id: string;
+  label: string;
+  topic: string | null;
+  topic_state: "archived" | "deleted" | null;
+  place: string | null;
+};
 export type SyncStatus = "synced" | "syncing" | "offline" | "unauthorized" | "keychain" | "not_configured";
 
 export type FeedAttachment = { id: string; filename: string; mime_type: string; size_bytes: number; has_thumbnail: boolean; runnable: boolean };
@@ -38,8 +49,11 @@ export type StagedFiles = { staged: Staged[]; errors: string[] };
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 export const moveItem = (itemId: string, topicId: string | null) => invoke<void>("move_item", { itemId, topicId });
-export const editItem = (itemId: string, text: string, addIds: string[], removeIds: string[]) =>
-  invoke<{ trashed: boolean }>("edit_item", { itemId, text, addIds, removeIds });
+export const editItem = (itemId: string, text: string, addIds: string[], removeIds: string[], baseRev: number) =>
+  invoke<{ trashed: boolean }>("edit_item", { itemId, text, addIds, removeIds, baseRev });
+export const discardItem = (itemId: string) => invoke<void>("discard_item", { itemId });
+export const resolveConflict = (itemId: string, keep: "theirs" | "mine") =>
+  invoke<{ trashed: boolean }>("resolve_conflict", { itemId, keep });
 export const trashItem = (itemId: string) => invoke<void>("trash_item", { itemId });
 export const restoreItem = (itemId: string) => invoke<void>("restore_item", { itemId });
 export const navCounts = () => invoke<Counts>("nav_counts");

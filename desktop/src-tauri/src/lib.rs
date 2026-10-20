@@ -29,6 +29,7 @@ pub struct AppState {
     settings_saved: tokio::sync::Notify,
     status: Mutex<&'static str>,
     skipped_uploads: Mutex<HashSet<String>>,
+    notices: Mutex<Vec<sync::SyncNotice>>,
     picking_files: AtomicBool,
     prefetching: AtomicBool,
     #[cfg(target_os = "macos")]
@@ -46,6 +47,7 @@ impl AppState {
             settings_saved: tokio::sync::Notify::new(),
             status: Mutex::new("synced"),
             skipped_uploads: Mutex::new(HashSet::new()),
+            notices: Mutex::new(Vec::new()),
             picking_files: AtomicBool::new(false),
             prefetching: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
@@ -171,6 +173,8 @@ pub fn run() {
             commands::capture,
             commands::move_item,
             commands::edit_item,
+            commands::discard_item,
+            commands::resolve_conflict,
             commands::trash_item,
             commands::restore_item,
             commands::nav_counts,

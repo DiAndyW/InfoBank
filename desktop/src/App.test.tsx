@@ -49,7 +49,8 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "search_items") return opts.search ? opts.search(args) : [];
       if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, trash: 0 };
       if (cmd === "edit_item") return opts.edited ?? { trashed: false };
-      if (["trash_item", "restore_item"].includes(cmd)) return null;
+      if (["trash_item", "restore_item", "discard_item"].includes(cmd)) return null;
+      if (cmd === "resolve_conflict") return { trashed: false };
       if (cmd === "save_settings") {
         if (opts.saveError) throw opts.saveError;
         return null;
@@ -110,6 +111,9 @@ const feedItem = (
   pending,
   attachments,
   purge_at_us: null,
+  edit_base: 0,
+  sync_error: null,
+  conflict: null,
 });
 
 const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => ({ id, name, archived: false, item_count: 0, ...extra });
@@ -1356,7 +1360,7 @@ test("Edit opens in place with the composer still there; Shift+Enter adds a line
   expect(box).toHaveFocus();
   expect(screen.getByLabelText("New Item")).toBeVisible();
   await userEvent.type(box, " x5{Shift>}{Enter}{/Shift}felt good{Enter}");
-  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100 x5\nfelt good", addIds: [], removeIds: [] } });
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100 x5\nfelt good", addIds: [], removeIds: [], baseRev: 0 } });
   await vi.waitFor(() => expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument());
 });
 
@@ -1386,7 +1390,7 @@ test("emptying the Item turns Save into Move to Trash, which shows the undo Noti
   expect(within(editorOf()).getByText("An empty Item goes to Trash.")).toBeInTheDocument();
   expect(within(editorOf()).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Move to Trash" }));
-  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "", addIds: [], removeIds: [] } });
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "", addIds: [], removeIds: [], baseRev: 0 } });
   expect(await screen.findByText("Item moved to Trash")).toBeInTheDocument();
 });
 
@@ -1404,7 +1408,7 @@ test("files can be added, pasted and removed while editing, into the editor and 
   expect(within(screen.getByLabelText("New Item").closest("form")!).queryByText("Pasted image.png")).not.toBeInTheDocument();
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Remove report.pdf" }));
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
-  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt", addIds: ["s1", "s2"], removeIds: ["a1"] } });
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt", addIds: ["s1", "s2"], removeIds: ["a1"], baseRev: 0 } });
 });
 
 test("a refetch while editing doesn't make Save remove the Item's files", async () => {
@@ -1413,7 +1417,7 @@ test("a refetch while editing doesn't make Save remove the Item's files", async 
   await openEdit("receipt");
   await act(() => emit("items-changed"));
   await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!{Enter}");
-  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt!", addIds: [], removeIds: [] } });
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt!", addIds: [], removeIds: [], baseRev: 0 } });
 });
 
 test("Enter that confirms an input method's text doesn't save or send", async () => {
@@ -1464,6 +1468,17 @@ test("an Item deleted elsewhere shows the Error dialog and the text stays in the
   expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("squat 100 kept");
 });
 
+test("an editor keeps the base it opened with when the Feed reloads under it", async () => {
+  let base = 3;
+  const calls = backend(configured, { items: () => [{ ...filed("1", "squat 100", null), edit_base: base }] });
+  render(<App />);
+  await openEdit("squat 100");
+  base = 4;
+  await act(() => emit("items-changed"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!{Enter}");
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [], baseRev: 3 } });
+});
+
 test("opening Edit on a second Item saves the first, unless that save fails", async () => {
   const failing: Record<string, string> = {};
   const calls = backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)], failing });
@@ -1471,7 +1486,7 @@ test("opening Edit on a second Item saves the first, unless that save fails", as
   await openEdit("squat 100");
   await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!");
   await userEvent.dblClick(screen.getByText("bench 70"));
-  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [] } });
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [], baseRev: 0 } });
   await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("bench 70"));
 
   failing.edit_item = "disk full";
@@ -1493,7 +1508,7 @@ test("switching views saves the open edit, and stays put if that save fails", as
   expect(screen.getByRole("button", { name: "All Items" })).toHaveAttribute("aria-current", "page");
   delete failing.edit_item;
   await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
-  expect(calls.filter((c) => c.cmd === "edit_item")).toEqual(Array(2).fill({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [] } }));
+  expect(calls.filter((c) => c.cmd === "edit_item")).toEqual(Array(2).fill({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [], baseRev: 0 } }));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page"));
   expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
 });
@@ -2105,4 +2120,180 @@ test("the first-launch page has no Open at login switch", async () => {
   await screen.findByRole("heading", { name: "Settings" });
   expect(screen.queryByRole("switch", { name: "Open at login" })).toBeNull();
   expect(calls.some((c) => c.cmd === "autostart_on")).toBe(false);
+});
+
+const refused = (id: string, text: string | null, reason = "invalid"): FeedItem => ({ ...feedItem(id, text as string, at(2026, 10, 14, 9, 41)), sync_error: reason });
+const conflicted = (id: string, row: string | null, other: string | null, mine: boolean): FeedItem => ({
+  ...feedItem(id, row as string, at(2026, 10, 14, 9, 41)),
+  conflict: { text: other, mine },
+});
+const menuOf = async (text: string) => {
+  await userEvent.click(within(rowOf(text)).getByRole("button", { name: "Item actions" }));
+  return screen.getByRole("menu", { name: "Item actions" });
+};
+
+test("a refused Capture shows Couldn't sync with the reason, and has no grip or double-click edit", async () => {
+  backend(configured, { items: () => [refused("1", "bad one"), refused("2", "dup one", "exists"), refused("3", "odd one", "too_big")] });
+  render(<App />);
+  await screen.findByText("bad one");
+  const mark = (t: string) => within(rowOf(t)).getByText("Couldn't sync").closest(".nb-mark")!;
+  expect(mark("bad one")).toHaveAttribute("title", "The Server refused this Item as invalid. It's only on this Device.");
+  expect(mark("dup one")).toHaveAttribute("title", "The Server already has an Item with this id. It's only on this Device.");
+  expect(mark("odd one")).toHaveAttribute("title", "The Server refused this Item (too_big). It's only on this Device.");
+  expect(within(rowOf("bad one")).queryByTitle("Drag to a Topic")).toBeNull();
+  fireEvent.doubleClick(rowOf("bad one"));
+  expect(screen.queryByRole("textbox", { name: "Edit Item" })).toBeNull();
+});
+
+test("a refused Capture's menu is Copy text and Discard… only", async () => {
+  backend(configured, { items: () => [refused("1", "bad one")] });
+  render(<App />);
+  await screen.findByText("bad one");
+  const menu = await menuOf("bad one");
+  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Copy text", "Discard…"]);
+});
+
+test("Discard… asks first; Cancel does nothing, Discard calls discard_item", async () => {
+  const calls = backend(configured, { items: () => [refused("1", "bad one")] });
+  render(<App />);
+  await screen.findByText("bad one");
+  await userEvent.click(within(await menuOf("bad one")).getByRole("menuitem", { name: "Discard…" }));
+  const dialog = screen.getByRole("alertdialog", { name: "Discard this Item?" });
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(calls.some((c) => c.cmd === "discard_item")).toBe(false);
+  await userEvent.click(within(await menuOf("bad one")).getByRole("menuitem", { name: "Discard…" }));
+  fireEvent.click(within(screen.getByRole("alertdialog", { name: "Discard this Item?" })).getByRole("button", { name: "Discard" }));
+  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "discard_item").map((c) => c.args)).toEqual([{ itemId: "1" }]));
+});
+
+test("a conflicted Item shows a Conflict button that opens both versions, footers placed by who is on the Server", async () => {
+  backend(configured, { items: () => [conflicted("1", "server text", "my text", true), conflicted("2", "my row", "server other", false)] });
+  render(<App />);
+  await screen.findByText("server text");
+  fireEvent.click(within(rowOf("server text")).getByRole("button", { name: "Conflict" }));
+  const dialog = screen.getByRole("dialog", { name: "This Item was edited on two Devices" });
+  expect(dialog).toHaveTextContent("Both edits started from the same text. Choose which one to keep. The other is discarded.");
+  const theirs = within(dialog).getByRole("group", { name: "Theirs" });
+  const mine = within(dialog).getByRole("group", { name: "Mine" });
+  expect(theirs).toHaveTextContent("another Device");
+  expect(theirs).toHaveTextContent("server text");
+  expect(theirs).toHaveTextContent("Showing on all Devices");
+  expect(mine).toHaveTextContent("this Device");
+  expect(mine).toHaveTextContent("my text");
+  expect(mine).toHaveTextContent("Only on this Device");
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  fireEvent.click(within(rowOf("my row")).getByRole("button", { name: "Conflict" }));
+  const second = screen.getByRole("dialog");
+  expect(within(second).getByRole("group", { name: "Mine" })).toHaveTextContent("Showing on all Devices");
+  expect(within(second).getByRole("group", { name: "Theirs" })).toHaveTextContent("Only on this Device");
+});
+
+test("Use mine and Keep theirs call resolve_conflict; Esc calls nothing", async () => {
+  const calls = backend(configured, { items: () => [conflicted("1", "server text", "my text", true)] });
+  render(<App />);
+  await screen.findByText("server text");
+  const open = () => fireEvent.click(within(rowOf("server text")).getByRole("button", { name: "Conflict" }));
+  const resolves = () => calls.filter((c) => c.cmd === "resolve_conflict").map((c) => c.args);
+  open();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(resolves()).toEqual([]);
+  open();
+  fireEvent.click(screen.getByRole("button", { name: "Use mine" }));
+  await vi.waitFor(() => expect(resolves()).toEqual([{ itemId: "1", keep: "mine" }]));
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  open();
+  fireEvent.click(screen.getByRole("button", { name: "Keep theirs" }));
+  await vi.waitFor(() => expect(resolves()).toHaveLength(2));
+  expect(resolves()[1]).toEqual({ itemId: "1", keep: "theirs" });
+});
+
+test("Edit… in the Conflict dialog opens the editor filled with mine", async () => {
+  backend(configured, { items: () => [conflicted("1", "my row text", "server other", false)] });
+  render(<App />);
+  await screen.findByText("my row text");
+  fireEvent.click(within(rowOf("my row text")).getByRole("button", { name: "Conflict" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit…" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("my row text");
+});
+
+test("Edit in the menu and double-click on a conflicted row open the Conflict dialog", async () => {
+  backend(configured, { items: () => [conflicted("1", "server text", "my text", true)] });
+  render(<App />);
+  await screen.findByText("server text");
+  fireEvent.doubleClick(rowOf("server text"));
+  expect(screen.getByRole("dialog", { name: "This Item was edited on two Devices" })).toBeInTheDocument();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  await userEvent.click(within(await menuOf("server text")).getByRole("menuitem", { name: "Edit" }));
+  expect(screen.getByRole("dialog", { name: "This Item was edited on two Devices" })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Edit Item" })).toBeNull();
+});
+
+test("a side with no text shows (no text)", async () => {
+  backend(configured, { items: () => [conflicted("1", "server text", null, true)] });
+  render(<App />);
+  await screen.findByText("server text");
+  fireEvent.click(within(rowOf("server text")).getByRole("button", { name: "Conflict" }));
+  expect(within(screen.getByRole("group", { name: "Mine" })).getByText("(no text)")).toBeInTheDocument();
+});
+
+const syncNotice = (kind: string, label: string, extra: Record<string, unknown> = {}) => ({ kind, item_id: "x", label, topic: null, topic_state: null, place: null, ...extra });
+
+test.each([
+  [syncNotice("move", "squat 100", { topic: "Gym", topic_state: "archived" }), 'Couldn\'t move "squat 100" to Gym: it was archived on another Device.'],
+  [syncNotice("move", "squat 100", { topic: "Gym", topic_state: "deleted" }), 'Couldn\'t move "squat 100" to Gym: it was deleted on another Device.'],
+  [syncNotice("move", "squat 100", { topic: "Gym", topic_state: null }), 'Couldn\'t move "squat 100" to Gym: it was archived or deleted on another Device.'],
+  [syncNotice("inbox", "squat 100", { topic: "Gym", topic_state: "deleted" }), 'Saved "squat 100" to the Inbox: Gym was deleted on another Device.'],
+  [syncNotice("empty", "squat 100"), 'Couldn\'t restore "squat 100": it has no text or files left.'],
+  [syncNotice("gone", "squat 100"), 'Couldn\'t save your change to "squat 100": it was deleted for good on another Device.'],
+])("a sync-notice %#, shows its sentence", async (n, sentence) => {
+  backend(configured);
+  render(<App />);
+  await screen.findByRole("button", { name: /^Inbox/ });
+  await act(() => emit("sync-notices", [n]));
+  expect(await screen.findByText(sentence)).toBeInTheDocument();
+});
+
+test("several sync-notices in one event show the last and count the rest", async () => {
+  backend(configured);
+  render(<App />);
+  await screen.findByRole("button", { name: /^Inbox/ });
+  await act(() => emit("sync-notices", [syncNotice("empty", "a"), syncNotice("empty", "b"), syncNotice("gone", "c")]));
+  expect(await screen.findByText('Couldn\'t save your change to "c": it was deleted for good on another Device. And 2 more.')).toBeInTheDocument();
+});
+
+test("Show on a sync-notice move opens the Item's Topic with it highlighted; empty and gone have no Show", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], items: ({ view }) => (view.kind === "topic" ? [filed("x", "squat 100", "g")] : []) });
+  render(<App />);
+  await screen.findByRole("button", { name: "Gym" });
+  await act(() => emit("sync-notices", [syncNotice("gone", "a")]));
+  await screen.findByText(/deleted for good/);
+  expect(screen.queryByRole("button", { name: "Show" })).not.toBeInTheDocument();
+  await act(() => emit("sync-notices", [syncNotice("move", "squat 100", { topic: "Gym", topic_state: "archived", place: "g" })]));
+  await userEvent.click(await screen.findByRole("button", { name: "Show" }));
+  expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page");
+  await vi.waitFor(() => expect(rowOf("squat 100")).toHaveClass("is-highlight"));
+});
+
+test("a Notice doesn't start its 8 seconds while the window is unfocused", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  try {
+    backend(configured);
+    render(<App />);
+    await screen.findByRole("button", { name: /^Inbox/ });
+    await act(() => emit("sync-notices", [syncNotice("empty", "a")]));
+    expect(await screen.findByText(/no text or files left/)).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTime(9000));
+    expect(screen.getByText(/no text or files left/)).toBeInTheDocument();
+    focus.mockReturnValue(true);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => vi.advanceTimersByTime(8000));
+    expect(screen.queryByText(/no text or files left/)).not.toBeInTheDocument();
+  } finally {
+    focus.mockRestore();
+    vi.useRealTimers();
+  }
 });
