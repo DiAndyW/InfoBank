@@ -2,3 +2,6 @@ thoughts.md
 .scratch/
 .DS_Store
 .superpowers
+ios/NoteBankKit/.build/
+ios/**/xcuserdata/
+*.xcuserstate
