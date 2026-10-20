@@ -7,6 +7,8 @@ export type Topic = { id: string; name: string; archived: boolean; item_count: n
 export type Keep = { kind: "all" } | { kind: "none" } | { kind: "only"; ids: string[] };
 
 export const getSettings = () => invoke<Settings>("get_settings");
+export const autostartOn = () => invoke<boolean>("autostart_on");
+export const setAutostart = (on: boolean) => invoke<boolean>("set_autostart", { on });
 // secret null keeps the stored one.
 export const saveSettings = (serverUrl: string, secret: string | null) =>
   invoke<void>("save_settings", { serverUrl, secret });

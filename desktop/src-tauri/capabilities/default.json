@@ -34,6 +34,8 @@
     "allow-sync-status",
     "allow-set-quick-capture-shortcut",
     "allow-set-quick-capture-on",
+    "allow-autostart-on",
+    "allow-set-autostart",
     "allow-dismiss-quick-capture",
     "allow-startup-error",
     "allow-show-data-folder",

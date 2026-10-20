@@ -10,6 +10,7 @@ mod shortcut;
 mod store;
 mod sync;
 mod topics;
+mod tray;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -74,6 +75,18 @@ fn open_store(dir: &Path) -> Result<rusqlite::Connection, String> {
     Ok(db)
 }
 
+fn show_main_at_launch(args: &[String], failed: bool) -> bool {
+    failed || !args.iter().any(|a| a == "--hidden")
+}
+
+pub(crate) fn show_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+}
+
 fn start(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     let db = open_store(dir)?;
     let hotkey = shortcut::get(&db)?;
@@ -90,13 +103,19 @@ fn start(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
             eprintln!("Couldn't register the quick-capture shortcut {}: {e}", hotkey.shortcut);
         }
     }
+    tray::build(app, &hotkey).map_err(|e| format!("Couldn't create the tray icon: {e}"))?;
     tauri::async_runtime::spawn(sync::run(app.clone()));
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS never starts a second copy; it sends Reopen instead.
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)));
+    builder
+        .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -120,16 +139,8 @@ pub fn run() {
                 tauri::WindowEvent::Focused(true) => state.wake.notify_one(),
                 tauri::WindowEvent::Focused(false) if window.label() == quick::LABEL => quick::focus_lost(window.app_handle()),
                 tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "main" => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let _ = api;
-                        window.app_handle().exit(0);
-                    }
+                    api.prevent_close();
+                    let _ = window.hide();
                 }
                 tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                     stage_dropped(window.app_handle(), window.label().to_string(), state.dir.clone(), paths.clone())
@@ -144,8 +155,12 @@ pub fn run() {
                     .err()
                     .map(|message| StartupError { message, data_dir: Some(dir.display().to_string()) }),
             };
+            let failed = failure.is_some();
             if let Some(failure) = failure {
                 app.manage(failure);
+            }
+            if show_main_at_launch(&std::env::args().collect::<Vec<_>>(), failed) {
+                show_main(app.handle());
             }
             Ok(())
         })
@@ -175,6 +190,8 @@ pub fn run() {
             commands::sync_status,
             commands::set_quick_capture_shortcut,
             commands::set_quick_capture_on,
+            commands::autostart_on,
+            commands::set_autostart,
             commands::dismiss_quick_capture,
             commands::startup_error,
             commands::show_data_folder,
@@ -187,10 +204,7 @@ pub fn run() {
             let _ = (&app, &event);
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.show();
-                    let _ = main.set_focus();
-                }
+                show_main(app);
             }
         });
 }
@@ -237,6 +251,14 @@ mod tests {
         .to_vec();
         expected.sort();
         assert_eq!(quick, expected);
+    }
+
+    #[test]
+    fn the_window_stays_hidden_only_for_a_login_launch_that_started() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(show_main_at_launch(&args(&["notebank"]), false));
+        assert!(!show_main_at_launch(&args(&["notebank", "--hidden"]), false));
+        assert!(show_main_at_launch(&args(&["notebank", "--hidden"]), true), "a failure was invisible");
     }
 
     #[test]

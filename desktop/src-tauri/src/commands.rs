@@ -1,4 +1,5 @@
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
@@ -213,6 +214,7 @@ pub async fn set_quick_capture_shortcut(app: AppHandle, state: State<'_, AppStat
     if old.on && old.shortcut != new.shortcut {
         let _ = shortcuts.unregister(crate::shortcut::parse(&old.shortcut)?);
     }
+    crate::tray::update(&app, &new);
     Ok(new)
 }
 
@@ -223,7 +225,21 @@ pub async fn set_quick_capture_on(app: AppHandle, state: State<'_, AppState>, on
     if !on {
         let _ = shortcuts.unregister(crate::shortcut::parse(&hotkey.shortcut)?);
     }
+    crate::tray::update(&app, &hotkey);
     Ok(hotkey)
+}
+
+#[tauri::command]
+pub fn autostart_on(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
+}
+
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, on: bool) -> Result<bool, String> {
+    let launcher = app.autolaunch();
+    let changed = if on { launcher.enable() } else { launcher.disable() };
+    changed.map_err(|e| format!("Couldn't change Open at login: {e}"))?;
+    launcher.is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
 }
 
 // Not async: it runs on the main thread, where AppKit expects app activation.

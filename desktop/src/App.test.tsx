@@ -24,12 +24,14 @@ type Options = {
   // A command waits for its gate, so a test can act while the call is in flight.
   gates?: Record<string, Promise<void>>;
   shortcutError?: string;
+  autostart?: boolean;
   startup?: { message: string; data_dir: string | null };
 };
 
 function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opts: Options = {}) {
   const settings: Settings = { quick_capture: { shortcut: "shift+super+Space", on: true }, ...given };
   let hotkey = settings.quick_capture;
+  let autostart = opts.autostart ?? false;
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
   mockConvertFileSrc("macos");
@@ -55,6 +57,11 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "capture") {
         if (opts.captureError) throw opts.captureError;
         return null;
+      }
+      if (cmd === "autostart_on") return autostart;
+      if (cmd === "set_autostart") {
+        autostart = (args as { on: boolean }).on;
+        return autostart;
       }
       if (cmd === "set_quick_capture_shortcut" || cmd === "set_quick_capture_on") {
         if (opts.shortcutError) throw opts.shortcutError;
@@ -2067,4 +2074,35 @@ test("the shortcut row is on the first-launch page too", async () => {
   render(<App />);
   await screen.findByRole("heading", { name: "Settings" });
   expect(recorder()).toBeInTheDocument();
+});
+
+const loginSwitch = () => screen.getByRole("switch", { name: "Open at login" });
+
+test("Open at login shows the OS's state and changes it", async () => {
+  const calls = backend(configured, { autostart: false });
+  render(<App />);
+  await openSettings();
+  await vi.waitFor(() => expect(loginSwitch()).toBeEnabled());
+  expect(loginSwitch()).not.toBeChecked();
+  await userEvent.click(loginSwitch());
+  await vi.waitFor(() => expect(loginSwitch()).toBeChecked());
+  expect(calls.filter((c) => c.cmd === "set_autostart").map((c) => c.args)).toEqual([{ on: true }]);
+});
+
+test("Open at login that the OS refuses says why and shows the real state", async () => {
+  backend(configured, { autostart: false, failing: { set_autostart: "Couldn't change Open at login: denied" } });
+  render(<App />);
+  await openSettings();
+  await vi.waitFor(() => expect(loginSwitch()).toBeEnabled());
+  await userEvent.click(loginSwitch());
+  expect(await screen.findByText("Couldn't change Open at login: denied")).toBeInTheDocument();
+  expect(loginSwitch()).not.toBeChecked();
+});
+
+test("the first-launch page has no Open at login switch", async () => {
+  const calls = backend({ server_url: null, has_secret: false });
+  render(<App />);
+  await screen.findByRole("heading", { name: "Settings" });
+  expect(screen.queryByRole("switch", { name: "Open at login" })).toBeNull();
+  expect(calls.some((c) => c.cmd === "autostart_on")).toBe(false);
 });

@@ -1,5 +1,5 @@
-import { useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { saveSettings, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Settings as SettingsData } from "./api";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Settings as SettingsData } from "./api";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
 import { Icon } from "./icons";
@@ -41,6 +41,22 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
   const [hotkey, setHotkey] = useState(initial.quick_capture);
   const [recording, setRecording] = useState(false);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [openAtLogin, setOpenAtLogin] = useState<boolean | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (onCancel) autostartOn().then(setOpenAtLogin, (err) => setLoginError(String(err)));
+  }, []);
+
+  async function changeOpenAtLogin(on: boolean) {
+    try {
+      setOpenAtLogin(await setAutostart(on));
+      setLoginError(null);
+    } catch (err) {
+      setLoginError(String(err));
+      autostartOn().then(setOpenAtLogin, () => {});
+    }
+  }
   const incomplete = !onCancel && (url.trim() === "" || (secret === "" && !initial.has_secret));
 
   async function submit(e: FormEvent) {
@@ -143,6 +159,27 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
           </span>
         )}
       </div>
+      {onCancel && (
+        <div className="nb-field">
+          <span className="nb-field-label">Open at login</span>
+          <label className="nb-switch">
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="Open at login"
+              checked={openAtLogin ?? false}
+              disabled={openAtLogin === null}
+              onChange={(e) => changeOpenAtLogin(e.target.checked)}
+            />
+            {openAtLogin ? "On" : "Off"}
+          </label>
+          {loginError && (
+            <span role="alert" className="nb-field-error">
+              {loginError}
+            </span>
+          )}
+        </div>
+      )}
       {error && (
         <div role="alert" className="nb-send-error">
           <Icon name="alert" />
