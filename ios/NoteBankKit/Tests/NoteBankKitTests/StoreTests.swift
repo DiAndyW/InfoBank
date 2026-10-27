@@ -36,6 +36,10 @@ struct StoreTests {
         #expect(left == 0)
     }
 
+    @Test func theMissingAppGroupErrorSaysWhy() {
+        #expect(StoreError.noAppGroup.localizedDescription == "This app isn't set up to use its App Group container.")
+    }
+
     @Test func thereIsOnlyOneDeviceRow() throws {
         let (store, _) = try tempStore()
         #expect(throws: DatabaseError.self) {

@@ -1,8 +1,10 @@
 import Foundation
 import GRDB
 
-public enum StoreError: Error, Equatable {
+public enum StoreError: Error, Equatable, LocalizedError {
     case noAppGroup
+
+    public var errorDescription: String? { "This app isn't set up to use its App Group container." }
 }
 
 public final class Store: Sendable {
