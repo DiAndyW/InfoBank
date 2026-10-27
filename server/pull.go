@@ -15,6 +15,7 @@ import (
 type itemOut struct {
 	ID          uuid.UUID       `json:"id"`
 	TopicID     *uuid.UUID      `json:"topic_id" db:"topic_id"`
+	Tunnel      bool            `json:"tunnel" db:"in_tunnel"`
 	Text        *string         `json:"text"`
 	TextRev     int64           `json:"text_rev" db:"text_rev"`
 	CaptureTime time.Time       `json:"capture_time" db:"capture_time"`
@@ -64,7 +65,7 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 
 	// CollectRows returns Query's error, so it isn't checked separately.
 	rows, _ := tx.Query(ctx, `
-		SELECT id, topic_id, text, text_rev, capture_time, deleted_at, seq
+		SELECT id, topic_id, in_tunnel, text, text_rev, capture_time, deleted_at, seq
 		FROM items WHERE seq > $1 ORDER BY seq LIMIT $2`, cursor, pullPageSize+1)
 	items, err := pgx.CollectRows(rows, pgx.RowToStructByName[itemOut])
 	if err != nil {
@@ -149,7 +150,12 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 	for _, ia := range attachments {
 		byID[ia.ItemID].Attachments = append(byID[ia.ItemID].Attachments, ia.attachmentOut)
 	}
-	return map[string]any{"items": items, "topics": topics, "tombstones": purged, "cursor": cursor, "has_more": hasMore}, nil
+	var trashAfterCopy *bool
+	if err := tx.QueryRow(ctx, `SELECT trash_after_copy FROM settings`).Scan(&trashAfterCopy); err != nil {
+		return nil, err
+	}
+	settings := map[string]*bool{"trash_after_copy": trashAfterCopy}
+	return map[string]any{"items": items, "topics": topics, "tombstones": purged, "cursor": cursor, "has_more": hasMore, "settings": settings}, nil
 }
 
 // utc puts an optional time in UTC; the database driver returns times in the machine's local zone.

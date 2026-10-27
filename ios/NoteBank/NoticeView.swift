@@ -2,7 +2,8 @@ import SwiftUI
 
 struct NoticeView: View {
     let message: String
-    let onShow: () -> Void
+    let actionTitle: String
+    let onAction: () -> Void
     let onDismiss: () -> Void
 
     @Environment(\.palette) private var palette
@@ -13,8 +14,8 @@ struct NoticeView: View {
             Text(message)
                 .font(.plex(.sans, 14, relativeTo: .callout))
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onShow) {
-                Text("Show")
+            Button(action: onAction) {
+                Text(actionTitle)
                     .font(.plex(.sansSemibold, 14, relativeTo: .callout))
                     .underline()
                     .padding(.horizontal, 8)

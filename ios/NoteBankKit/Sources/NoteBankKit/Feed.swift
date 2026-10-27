@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 public enum Place: Hashable, Codable, Sendable {
-    case all, inbox, topic(String)
+    case all, inbox, tunnel, topic(String)
 }
 
 public struct FeedCursor: Hashable, Sendable {
@@ -38,6 +38,7 @@ public struct TopicPlace: Identifiable, Hashable, Sendable {
 public struct Places: Equatable, Sendable {
     public let allCount: Int
     public let inboxCount: Int
+    public let tunnelCount: Int
     public let topics: [TopicPlace]
 }
 
@@ -55,7 +56,8 @@ extension Store {
         var arguments: [any DatabaseValueConvertible] = []
         switch place {
         case .all: break
-        case .inbox: conditions.append("items.topic_id IS NULL")
+        case .inbox: conditions.append("items.topic_id IS NULL AND items.in_tunnel = 0")
+        case .tunnel: conditions.append("items.in_tunnel = 1")
         case .topic(let id):
             conditions.append("items.topic_id = ?")
             arguments.append(id)
@@ -106,7 +108,8 @@ extension Store {
             ).map { TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"]) }
             return Places(
                 allCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL")!,
-                inboxCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL AND topic_id IS NULL")!,
+                inboxCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL AND topic_id IS NULL AND in_tunnel = 0")!,
+                tunnelCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL AND in_tunnel = 1")!,
                 topics: topics.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
         }
     }

@@ -53,6 +53,10 @@ struct SettingsView: View {
     @Binding var theme: Theme
     @State private var model: SettingsModel
     @State private var draftTheme: Theme
+    @State private var trashAfterCopy: Bool
+    @State private var tunnelError: String?
+    private let store: Store
+    private let wake: () -> Void
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
 
@@ -60,6 +64,9 @@ struct SettingsView: View {
         _theme = theme
         _draftTheme = State(initialValue: theme.wrappedValue)
         _model = State(wrappedValue: services.settingsModel())
+        store = services.store
+        wake = services.wake
+        _trashAfterCopy = State(initialValue: (try? services.store.trashAfterCopy()) ?? false)
     }
 
     private func header(_ title: String) -> some View {
@@ -80,6 +87,34 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     header("Server").padding(.top, 12)
                     ServerFields(model: model)
+                    header("Tunnel")
+                    Toggle(
+                        "Trash Tunnel notes after copying",
+                        isOn: Binding(
+                            get: { trashAfterCopy },
+                            set: { on in
+                                do {
+                                    try store.setTrashAfterCopy(on, nowUs: Time.nowUs())
+                                    trashAfterCopy = on
+                                    tunnelError = nil
+                                    wake()
+                                } catch {
+                                    tunnelError = error.localizedDescription
+                                }
+                            })
+                    )
+                    .font(.plex(.sans, 17))
+                    .foregroundStyle(palette.ink)
+                    .tint(palette.accent)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 48)
+                    .card()
+                    if let tunnelError {
+                        Label(tunnelError, systemImage: "exclamationmark.triangle")
+                            .font(.plex(.sansMedium, 13, relativeTo: .footnote))
+                            .foregroundStyle(palette.danger)
+                            .padding(.horizontal, 16)
+                    }
                     header("Theme")
                     VStack(spacing: 0) {
                         ForEach(Theme.allCases, id: \.self) { option in

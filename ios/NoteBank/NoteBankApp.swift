@@ -25,6 +25,8 @@ struct Services {
         engine = SyncEngine(store: store, secrets: secrets)
     }
 
+    func wake() { Task { [engine] in await engine.wake() } }
+
     func settingsModel() -> SettingsModel {
         SettingsModel(store: store, secrets: secrets) { [engine] in Task { await engine.settingsSaved() } }
     }
@@ -52,6 +54,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [Place] = []
     @State private var places: PlacesModel
+    @State private var home: ComposerModel
     @State private var setup: SettingsModel
     @State private var status = SyncStatus.notConfigured
     @State private var showingSettings = false
@@ -63,6 +66,7 @@ struct RootView: View {
         self.services = services
         _places = State(wrappedValue: PlacesModel(store: services.store))
         _setup = State(wrappedValue: services.settingsModel())
+        _home = State(wrappedValue: ComposerModel(store: services.store, destination: .inbox, placeholder: "Capture something…", onCaptured: services.wake))
     }
 
     private func show(_ itemID: String) {
@@ -102,7 +106,7 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(places: places.places, status: status, notices: services.notices, onShow: show) { showingSettings = true }
+                    PlacesView(places: places.places, composer: home, status: status, notices: services.notices, onShow: show) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Place.self) { place in
                             FeedView(
@@ -133,6 +137,7 @@ struct RootView: View {
             var restored: [Place] = switch savedPlace {
             case "all": [.all]
             case "inbox": [.inbox]
+            case "tunnel": [.tunnel]
             case let saved where saved.hasPrefix("topic:"): [.topic(String(saved.dropFirst("topic:".count)))]
             default: []
             }
@@ -143,6 +148,7 @@ struct RootView: View {
             savedPlace = switch path.last {
             case .all?: "all"
             case .inbox?: "inbox"
+            case .tunnel?: "tunnel"
             case .topic(let id)?: "topic:" + id
             case nil: ""
             }

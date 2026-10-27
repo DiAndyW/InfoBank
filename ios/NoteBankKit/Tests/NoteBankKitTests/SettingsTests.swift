@@ -108,7 +108,7 @@ struct SettingsTests {
         let (store, _) = try tempStore()
         let secrets = SecretStore.memory()
         try store.saveSettings(url: "https://a.example.com", newSecret: "s3cret", secrets: secrets)
-        let pending = try store.capture(text: "unsynced", topicID: "old", nowUs: 2)
+        let pending = try store.capture(text: "unsynced", to: .topic("old"), nowUs: 2)
         try store.pool.write { db in
             try db.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('pulled', 'x', 1)")
             try db.execute(sql: "INSERT INTO topics (id, name) VALUES ('old', 'Old')")

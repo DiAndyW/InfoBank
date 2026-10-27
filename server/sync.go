@@ -124,6 +124,8 @@ func (b *batch) apply(o pushOp) (opResult, error) {
 		return b.captureItem(o, s)
 	case "CreateTopic":
 		return b.createTopic(o, s)
+	case "SetTrashAfterCopy":
+		return b.setTrashAfterCopy(o, s)
 	case "RenameTopic", "ArchiveTopic", "UnarchiveTopic", "DeleteTopic":
 		return b.changeTopic(o, s)
 	}

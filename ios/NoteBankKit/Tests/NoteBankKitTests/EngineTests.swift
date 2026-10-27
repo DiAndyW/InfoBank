@@ -43,7 +43,7 @@ private struct Device {
 }
 
 struct EngineTests {
-    private static let emptyPage = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false}"#
+    private static let emptyPage = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":null}}"#
 
     @Test func outcomeTable() {
         #expect(outcome(.success(true), failures: 0) == (.synced, .after(.seconds(10))))
@@ -72,7 +72,7 @@ struct EngineTests {
 
         await engine.start()
         #expect(try await eventually { statuses.last == .synced })
-        _ = try a.store.capture(text: "from a", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "from a", to: .inbox, nowUs: t0)
         await engine.wake()
 
         var queued: [SyncNotice] = []
@@ -116,7 +116,7 @@ struct EngineTests {
 
         await engine.start()
         #expect(try await eventually { statuses.last == .synced })
-        _ = try a.store.capture(text: "typed just before leaving", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "typed just before leaving", to: .inbox, nowUs: t0)
         await engine.enterBackground()
 
         var queued: [SyncNotice] = []
@@ -127,7 +127,7 @@ struct EngineTests {
     @Test func theBackgroundDoesNotRetryARejectedSecret() async throws {
         let fake = try await FakeServer { _ in .json("{}", status: 401) }
         let a = try Device(url: fake.url, secret: "secret")
-        _ = try a.store.capture(text: "stuck behind the 401", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "stuck behind the 401", to: .inbox, nowUs: t0)
         let engine = a.engine()
         let statuses = Statuses(engine.status)
         func requests() -> Int { fake.requests(to: "/sync/push") + fake.requests(to: "/sync/pull") }
@@ -149,7 +149,7 @@ struct EngineTests {
     @Test func theBackgroundDoesNotRetryAnUnreadableKeychain() async throws {
         let server = try await FakeServer { _ in .json(Self.emptyPage) }
         let a = try Device(url: server.url, secret: "secret")
-        _ = try a.store.capture(text: "waiting for the keychain", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "waiting for the keychain", to: .inbox, nowUs: t0)
         let reads = Mutex(0)
         let locked = SecretStore(
             read: {
@@ -177,7 +177,7 @@ struct EngineTests {
             return .json(#"{"results":[\#(results.joined(separator: ","))]}"#)
         }
         let a = try Device(url: fake.url, secret: "secret")
-        _ = try a.store.capture(text: "first", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "first", to: .inbox, nowUs: t0)
         let engine = a.engine(poll: .milliseconds(200))
         let statuses = Statuses(engine.status)
 
@@ -193,7 +193,7 @@ struct EngineTests {
         await engine.enterForeground()
 
         let pushes = fake.requests(to: "/sync/push")
-        _ = try a.store.capture(text: "second", topicID: nil, nowUs: t0 + 1)
+        _ = try a.store.capture(text: "second", to: .inbox, nowUs: t0 + 1)
         await engine.wake()
         #expect(try await eventually { fake.requests(to: "/sync/push") > pushes })
     }
@@ -226,7 +226,7 @@ struct EngineTests {
 
         await engine.start()
         #expect(try await eventually { statuses.last == .synced })
-        _ = try a.store.capture(text: "pending", topicID: nil, nowUs: t0)
+        _ = try a.store.capture(text: "pending", to: .inbox, nowUs: t0)
         await engine.wake()
 
         #expect(try await eventually { statuses.all == [.synced, .syncing, .synced] })

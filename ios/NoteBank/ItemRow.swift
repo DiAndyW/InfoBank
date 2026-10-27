@@ -9,6 +9,9 @@ struct ItemRow: View {
     let item: FeedItem
     let showsTopic: Bool
     let highlighted: Bool
+    let copyable: Bool
+    let copied: Bool
+    let onCopy: () -> Void
     let onDiscard: () -> Void
 
     @Environment(\.palette) private var palette
@@ -94,7 +97,11 @@ struct ItemRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 4) {
-                if item.pending {
+                if copied {
+                    Label("Copied", systemImage: "checkmark")
+                        .font(.plex(.sansSemibold, 12, relativeTo: .caption))
+                        .foregroundStyle(palette.okMark)
+                } else if item.pending {
                     Image(systemName: "circle.dashed")
                         .font(.system(size: 14))
                         .foregroundStyle(palette.inkMuted)
@@ -109,6 +116,8 @@ struct ItemRow: View {
             .frame(minHeight: 25)
         }
         .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { if copyable && item.text != nil { onCopy() } }
         .background(highlighted ? palette.accentSoft : .clear)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
         .contextMenu {
@@ -128,5 +137,7 @@ struct ItemRow: View {
             Text("\"\(item.label)\" is only on this iPhone. Discarding deletes it here, and there's no Trash or Undo for this.")
         }
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(copyable && item.text != nil ? .isButton : [])
+        .accessibilityAction(named: "Copy") { if copyable && item.text != nil { onCopy() } }
     }
 }

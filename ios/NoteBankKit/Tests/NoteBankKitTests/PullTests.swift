@@ -23,14 +23,14 @@ struct PullTests {
     private func item(_ id: String, _ text: String, textRev: Int = 0, attachments: [String] = []) -> String {
         """
         {"id":"\(id)","topic_id":null,"text":"\(text)","capture_time":"2025-10-09T08:53:20.123456Z",
-         "deleted_at":null,"purge_at":null,"text_rev":\(textRev),"attachments":[\(attachments.map(attachment).joined(separator: ","))]}
+         "deleted_at":null,"purge_at":null,"text_rev":\(textRev),"tunnel":false,"attachments":[\(attachments.map(attachment).joined(separator: ","))]}
         """
     }
 
-    private func pageJSON(items: [String] = [], topics: [String] = [], tombstones: [String] = [], cursor: Int) -> String {
+    private func pageJSON(items: [String] = [], topics: [String] = [], tombstones: [String] = [], trashAfterCopy: String = "null", cursor: Int) -> String {
         """
         {"items":[\(items.joined(separator: ","))],"topics":[\(topics.joined(separator: ","))],
-         "tombstones":[\(tombstones.map { "\"\($0)\"" }.joined(separator: ","))],"cursor":\(cursor),"has_more":false}
+         "tombstones":[\(tombstones.map { "\"\($0)\"" }.joined(separator: ","))],"cursor":\(cursor),"has_more":false,"settings":{"trash_after_copy":\(trashAfterCopy)}}
         """
     }
 
@@ -50,9 +50,49 @@ struct PullTests {
         }
     }
 
+    @Test func aPullDoesNotOverwriteAQueuedSetTrashAfterCopy() throws {
+        let store = try configuredStore()
+        try store.setTrashAfterCopy(true, nowUs: 1_760_000_000_000_000)
+        _ = try store.applyPull(try page(pageJSON(trashAfterCopy: "false", cursor: 1)), serverURL: Self.serverURL)
+        #expect(try store.trashAfterCopy() == true)
+        try store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
+        #expect(try store.trashAfterCopy() == true)
+        _ = try store.applyPull(try page(pageJSON(trashAfterCopy: "false", cursor: 2)), serverURL: Self.serverURL)
+        #expect(try store.trashAfterCopy() == false)
+        _ = try store.applyPull(try page(pageJSON(cursor: 3)), serverURL: Self.serverURL)
+        #expect(try store.trashAfterCopy() == nil)
+    }
+
+    @Test func aPullKeepsTheTrashStateOfAnItemWithAQueuedTrashOrRestore() throws {
+        let store = try configuredStore()
+        let trashed = item("t", "trashed").replacingOccurrences(of: #""deleted_at":null,"purge_at":null"#, with: #""deleted_at":"2025-10-09T08:53:20Z","purge_at":"2025-11-08T08:53:20Z""#)
+        _ = try store.applyPull(try page(pageJSON(items: [item("a", "live"), trashed], cursor: 1)), serverURL: Self.serverURL)
+        try store.trash(itemID: "a", nowUs: 1_760_000_000_000_000)
+        try store.restore(itemID: "t", nowUs: 1_760_000_000_000_000)
+        _ = try store.applyPull(try page(pageJSON(items: [item("a", "live"), trashed], cursor: 2)), serverURL: Self.serverURL)
+        let state = { (id: String) in try store.pool.read { try Bool.fetchOne($0, sql: "SELECT deleted_at IS NOT NULL FROM items WHERE id = ?", arguments: [id])! } }
+        #expect(try state("a") == true)
+        #expect(try state("t") == false)
+
+        try store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
+        _ = try store.applyPull(try page(pageJSON(items: [item("a", "live"), trashed], cursor: 3)), serverURL: Self.serverURL)
+        #expect(try state("a") == false)
+        #expect(try state("t") == true)
+    }
+
+    @Test func pullSetsAndClearsTheTunnelFlag() throws {
+        let store = try configuredStore()
+        let tunnelItem = item("i", "hi").replacingOccurrences(of: #""tunnel":false"#, with: #""tunnel":true"#)
+        _ = try store.applyPull(try page(pageJSON(items: [tunnelItem], cursor: 1)), serverURL: Self.serverURL)
+        let flag = { try store.pool.read { try Int.fetchOne($0, sql: "SELECT in_tunnel FROM items WHERE id = 'i'")! } }
+        #expect(try flag() == 1)
+        _ = try store.applyPull(try page(pageJSON(items: [item("i", "hi")], cursor: 2)), serverURL: Self.serverURL)
+        #expect(try flag() == 0)
+    }
+
     @Test func aPageIsStoredWithItsCursorAndTextRev() throws {
         let store = try configuredStore()
-        let trashed = #"{"id":"j","topic_id":"t","text":null,"capture_time":"2025-10-09T08:53:21+00:00","deleted_at":"2025-10-10T00:00:00Z","purge_at":"2025-11-09T00:00:00.5Z","text_rev":2,"attachments":[]}"#
+        let trashed = #"{"id":"j","topic_id":"t","text":null,"capture_time":"2025-10-09T08:53:21+00:00","deleted_at":"2025-10-10T00:00:00Z","purge_at":"2025-11-09T00:00:00.5Z","text_rev":2,"tunnel":false,"attachments":[]}"#
         let topic = #"{"id":"t","name":"Mosaic","archived_at":"2025-10-09T08:53:20.000001Z","deleted_at":null}"#
         let p = try page(pageJSON(items: [item("i", "hello", textRev: 7, attachments: ["a"]), trashed], topics: [topic], cursor: 7))
 

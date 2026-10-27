@@ -32,7 +32,9 @@ type pushOp struct {
 	At      time.Time  `json:"at"`
 	ItemID  uuid.UUID  `json:"item_id"`
 	TopicID *uuid.UUID `json:"topic_id"`
+	Tunnel  bool       `json:"tunnel"`
 	Text    *string    `json:"text"`
+	Value   *bool      `json:"value"`    // SetTrashAfterCopy
 	BaseRev *int64     `json:"base_rev"` // SetText: the text_rev the Device last saw
 
 	Name  string      `json:"name"`
@@ -71,6 +73,7 @@ func (s stamp) beats(cur stamp) bool {
 type item struct {
 	id         uuid.UUID
 	topicID    *uuid.UUID
+	inTunnel   bool
 	text       *string
 	textRev    int64
 	deletedAt  *time.Time

@@ -3,7 +3,7 @@ import Observation
 
 @MainActor @Observable
 public final class PlacesModel {
-    public private(set) var places = Places(allCount: 0, inboxCount: 0, topics: [])
+    public private(set) var places = Places(allCount: 0, inboxCount: 0, tunnelCount: 0, topics: [])
 
     private let store: Store
     @ObservationIgnored private var observation: AnyDatabaseCancellable?

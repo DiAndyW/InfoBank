@@ -6,23 +6,27 @@ public final class ComposerModel {
     public var text = ""
     public private(set) var error: String?
     public let placeholder: String
+    public var destination: Destination
 
     private let store: Store
-    private let topicID: String?
     private let onCaptured: @MainActor () -> Void
 
     public var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    public init(store: Store, place: Place, topicName: String?, onCaptured: @escaping @MainActor () -> Void) {
+    public init(store: Store, destination: Destination, placeholder: String, onCaptured: @escaping @MainActor () -> Void) {
         self.store = store
         self.onCaptured = onCaptured
-        if case .topic(let id) = place { topicID = id } else { topicID = nil }
-        placeholder = topicName.map { "Capture to \($0)" } ?? "Capture to the Inbox"
+        self.destination = destination
+        self.placeholder = placeholder
+    }
+
+    public func dropMissingTopic(open: [TopicPlace]) {
+        if case .topic(let id) = destination, !open.contains(where: { $0.id == id }) { destination = .inbox }
     }
 
     public func send() -> Bool {
         do {
-            _ = try store.capture(text: text, topicID: topicID, nowUs: Time.nowUs())
+            _ = try store.capture(text: text, to: destination, nowUs: Time.nowUs())
         } catch {
             self.error = error.localizedDescription
             return false

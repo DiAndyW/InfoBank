@@ -12,7 +12,7 @@ func validText(text *string) bool {
 }
 
 func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
-	if o.ItemID == uuid.Nil || !validText(o.Text) || (o.Text == nil && len(o.Attachments) == 0) {
+	if o.ItemID == uuid.Nil || !validText(o.Text) || (o.Text == nil && len(o.Attachments) == 0) || (o.Tunnel && o.TopicID != nil) {
 		return rejected("invalid"), nil
 	}
 	seen := map[uuid.UUID]bool{}
@@ -40,13 +40,13 @@ func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
 
 	// A purged id stays used, so a replay older than applied_ops can't bring the Item back.
 	res, err := b.tx.Exec(b.ctx, `
-		INSERT INTO items (id, topic_id, text, capture_time,
+		INSERT INTO items (id, topic_id, in_tunnel, text, capture_time,
 			text_updated_at, text_updated_by, topic_updated_at, topic_updated_by,
 			trash_updated_at, trash_updated_by, seq)
-		SELECT $1, $2, $3, $4, $4, $5, $4, $5, $4, $5, nextval('sync_seq')
+		SELECT $1, $2, $6, $3, $4, $4, $5, $4, $5, $4, $5, nextval('sync_seq')
 		WHERE NOT EXISTS (SELECT 1 FROM tombstones WHERE item_id = $1)
 		ON CONFLICT (id) DO NOTHING`,
-		o.ItemID, topicID, o.Text, s.at, s.by)
+		o.ItemID, topicID, o.Text, s.at, s.by, o.Tunnel)
 	if err != nil {
 		return opResult{}, err
 	}
@@ -87,6 +87,9 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 		}
 		it.text, it.textStamp, it.textRev, edit = o.Text, s, it.textRev+1, true
 	case "MoveItem":
+		if o.Tunnel && o.TopicID != nil {
+			return rejected("invalid"), nil
+		}
 		if o.TopicID != nil {
 			open, err := b.topicOpen(*o.TopicID)
 			if err != nil || !open {
@@ -96,7 +99,7 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 		if !s.beats(it.topicStamp) {
 			return rejected("superseded"), nil
 		}
-		it.topicID, it.topicStamp, edit = o.TopicID, s, true
+		it.topicID, it.inTunnel, it.topicStamp, edit = o.TopicID, o.Tunnel, s, true
 	case "AddAttachment":
 		if o.Attachment == nil || !o.Attachment.valid() {
 			return rejected("invalid"), nil
@@ -155,10 +158,10 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 func (b *batch) loadItem(id uuid.UUID) (*item, error) {
 	it := item{id: id}
 	err := b.tx.QueryRow(b.ctx, `
-		SELECT topic_id, text, deleted_at, text_updated_at, text_updated_by,
+		SELECT topic_id, in_tunnel, text, deleted_at, text_updated_at, text_updated_by,
 			topic_updated_at, topic_updated_by, trash_updated_at, trash_updated_by, text_rev
 		FROM items WHERE id = $1`, id).Scan(
-		&it.topicID, &it.text, &it.deletedAt, &it.textStamp.at, &it.textStamp.by,
+		&it.topicID, &it.inTunnel, &it.text, &it.deletedAt, &it.textStamp.at, &it.textStamp.by,
 		&it.topicStamp.at, &it.topicStamp.by, &it.trashStamp.at, &it.trashStamp.by, &it.textRev)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -168,11 +171,11 @@ func (b *batch) loadItem(id uuid.UUID) (*item, error) {
 
 func (b *batch) saveItem(it *item) error {
 	_, err := b.tx.Exec(b.ctx, `
-		UPDATE items SET topic_id = $2, text = $3, deleted_at = $4,
+		UPDATE items SET topic_id = $2, in_tunnel = $12, text = $3, deleted_at = $4,
 			text_updated_at = $5, text_updated_by = $6, topic_updated_at = $7, topic_updated_by = $8,
 			trash_updated_at = $9, trash_updated_by = $10, text_rev = $11, seq = nextval('sync_seq')
 		WHERE id = $1`,
 		it.id, it.topicID, it.text, it.deletedAt, it.textStamp.at, it.textStamp.by,
-		it.topicStamp.at, it.topicStamp.by, it.trashStamp.at, it.trashStamp.by, it.textRev)
+		it.topicStamp.at, it.topicStamp.by, it.trashStamp.at, it.trashStamp.by, it.textRev, it.inTunnel)
 	return err
 }

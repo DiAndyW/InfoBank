@@ -49,7 +49,7 @@ struct ModelTests {
         try seed(store, count: 150)
         let feed = FeedModel(store: store, place: .all)
 
-        let captured = try store.capture(text: "fresh", topicID: nil, nowUs: 5_000)
+        let captured = try store.capture(text: "fresh", to: .inbox, nowUs: 5_000)
         #expect(await eventually { feed.items.last?.id == captured })
         #expect(feed.items.count == 101)
         #expect(feed.items.last?.pending == true)
@@ -88,7 +88,7 @@ struct ModelTests {
 
     @Test func discardingARefusedItemRemovesItAndAnythingElseSetsTheError() async throws {
         let (store, _) = try tempStore()
-        let id = try store.capture(text: "refused", topicID: nil, nowUs: 1)
+        let id = try store.capture(text: "refused", to: .inbox, nowUs: 1)
         let feed = FeedModel(store: store, place: .all)
         feed.discard(id)
         #expect(feed.loadError == "Only an Item the Server refused can be discarded")
@@ -102,14 +102,14 @@ struct ModelTests {
         let (store, _) = try tempStore()
         let places = PlacesModel(store: store)
         #expect(places.places.allCount == 0)
-        _ = try store.capture(text: "one", topicID: nil, nowUs: 1)
+        _ = try store.capture(text: "one", to: .inbox, nowUs: 1)
         #expect(await eventually { places.places.inboxCount == 1 })
     }
 
     @Test func refreshReadsTheStoreAtOnce() throws {
         let (store, _) = try tempStore()
         let places = PlacesModel(store: store)
-        _ = try store.capture(text: "one", topicID: nil, nowUs: 1)
+        _ = try store.capture(text: "one", to: .inbox, nowUs: 1)
         places.refresh()
         #expect(places.places.inboxCount == 1)
     }
@@ -117,7 +117,7 @@ struct ModelTests {
     @Test func composerSendDisabledWhenBlankAndTextKeptOnError() throws {
         let (store, _) = try tempStore()
         let captured = Mutex(0)
-        let composer = ComposerModel(store: store, place: .inbox, topicName: nil, onCaptured: { captured.withLock { $0 += 1 } })
+        let composer = ComposerModel(store: store, destination: .inbox, placeholder: "Capture to the Inbox", onCaptured: { captured.withLock { $0 += 1 } })
         #expect(!composer.canSend)
         composer.text = "  \n "
         #expect(!composer.canSend)
@@ -138,21 +138,38 @@ struct ModelTests {
 
     @Test func composerPlaceholderNamesThePlace() throws {
         let (store, _) = try tempStore()
-        #expect(ComposerModel(store: store, place: .all, topicName: nil, onCaptured: {}).placeholder == "Capture to the Inbox")
-        #expect(ComposerModel(store: store, place: .inbox, topicName: nil, onCaptured: {}).placeholder == "Capture to the Inbox")
-        #expect(ComposerModel(store: store, place: .topic("t1"), topicName: "Mosaic", onCaptured: {}).placeholder == "Capture to Mosaic")
+        #expect(ComposerModel(store: store, destination: .tunnel, placeholder: "Send to your other devices…", onCaptured: {}).placeholder == "Send to your other devices…")
+    }
+
+    @Test func aClosedTopicFallsBackToTheInbox() throws {
+        let (store, _) = try tempStore()
+        let composer = ComposerModel(store: store, destination: .topic("t1"), placeholder: "", onCaptured: {})
+        composer.dropMissingTopic(open: [TopicPlace(id: "t1", name: "Mosaic", count: 0)])
+        #expect(composer.destination == .topic("t1"))
+        composer.dropMissingTopic(open: [TopicPlace(id: "t2", name: "Other", count: 0)])
+        #expect(composer.destination == .inbox)
+        composer.destination = .tunnel
+        composer.dropMissingTopic(open: [])
+        #expect(composer.destination == .tunnel)
     }
 
     @Test func aTopicComposerCapturesIntoThatTopic() throws {
         let (store, _) = try tempStore()
         try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name) VALUES ('t1', 'Mosaic')") }
-        let topic = ComposerModel(store: store, place: .topic("t1"), topicName: "Mosaic", onCaptured: {})
+        let topic = ComposerModel(store: store, destination: .topic("t1"), placeholder: "", onCaptured: {})
         topic.text = "into the topic"
         #expect(topic.send())
-        let all = ComposerModel(store: store, place: .all, topicName: nil, onCaptured: {})
-        all.text = "into the inbox"
-        #expect(all.send())
-        #expect(try store.items(in: .topic("t1"), before: nil, limit: 10).map(\.text) == ["into the topic"])
+        let inbox = ComposerModel(store: store, destination: .inbox, placeholder: "", onCaptured: {})
+        inbox.text = "into the inbox"
+        #expect(inbox.send())
+        let tunnel = ComposerModel(store: store, destination: .tunnel, placeholder: "", onCaptured: {})
+        tunnel.text = "into the tunnel"
+        #expect(tunnel.send())
+        tunnel.destination = .topic("t1")
+        tunnel.text = "retargeted"
+        #expect(tunnel.send())
+        #expect(try store.items(in: .topic("t1"), before: nil, limit: 10).map(\.text) == ["retargeted", "into the topic"])
+        #expect(try store.items(in: .tunnel, before: nil, limit: 10).map(\.text) == ["into the tunnel"])
         #expect(try store.items(in: .inbox, before: nil, limit: 10).map(\.text) == ["into the inbox"])
     }
 

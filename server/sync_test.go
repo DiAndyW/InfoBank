@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Device ids are fixed so tie-breaks are predictable: phone < desktop.
@@ -73,6 +75,7 @@ type pulledAttachment struct {
 type pulledItem struct {
 	ID          string             `json:"id"`
 	TopicID     *string            `json:"topic_id"`
+	Tunnel      bool               `json:"tunnel"`
 	Text        *string            `json:"text"`
 	TextRev     int64              `json:"text_rev"`
 	CaptureTime time.Time          `json:"capture_time"`
@@ -94,6 +97,9 @@ type pullPage struct {
 	Tombstones []string      `json:"tombstones"` // ids of purged Items
 	Cursor     int64         `json:"cursor"`
 	HasMore    bool          `json:"has_more"`
+	Settings   struct {
+		TrashAfterCopy *bool `json:"trash_after_copy"`
+	} `json:"settings"`
 }
 
 func (e *syncEnv) do(method, path string, body []byte) *httptest.ResponseRecorder {
@@ -703,6 +709,70 @@ func TestPullPagesThroughEveryChangeOnce(t *testing.T) {
 	}
 }
 
+func TestTrashAfterCopyStartsUnasked(t *testing.T) {
+	e := newSyncEnv(t)
+	rec := e.do("GET", "/sync/pull?cursor=0", nil)
+	if !strings.Contains(rec.Body.String(), `"settings":{"trash_after_copy":null}`) {
+		t.Fatalf("pull = %s; want settings.trash_after_copy null", rec.Body)
+	}
+}
+
+func TestLaterTrashAfterCopyWins(t *testing.T) {
+	for _, order := range []string{"newer first", "older first"} {
+		t.Run(order, func(t *testing.T) {
+			e := newSyncEnv(t)
+			newer := op{"type": "SetTrashAfterCopy", "at": e.at(2), "value": true}
+			older := op{"type": "SetTrashAfterCopy", "at": e.at(1), "value": false}
+			first, second := []any{desktopID, newer}, []any{phoneID, older}
+			if order == "older first" {
+				first, second = second, first
+			}
+			e.push(first[0].(string), first[1].(op))
+			res := e.push(second[0].(string), second[1].(op))
+			if got := e.pull(0).Settings.TrashAfterCopy; got == nil || !*got {
+				t.Fatalf("trash_after_copy = %v; want true", got)
+			}
+			if order == "newer first" && (res[0].Status != "rejected" || res[0].Reason != "superseded") {
+				t.Fatalf("older op: %+v; want rejected superseded", res[0])
+			}
+			if order == "older first" && res[0].Status != "accepted" {
+				t.Fatalf("newer op: %+v; want accepted", res[0])
+			}
+		})
+	}
+}
+
+func TestTrashAfterCopyNeedsAValue(t *testing.T) {
+	e := newSyncEnv(t)
+	res := e.push(phoneID, op{"type": "SetTrashAfterCopy", "at": e.at(1)})
+	if res[0].Status != "rejected" || res[0].Reason != "invalid" {
+		t.Fatalf("no value: %+v; want rejected invalid", res[0])
+	}
+	if got := e.pull(0).Settings.TrashAfterCopy; got != nil {
+		t.Fatalf("trash_after_copy = %v; want still null", *got)
+	}
+}
+
+func TestEveryPullPageCarriesSettings(t *testing.T) {
+	e := newSyncEnv(t)
+	var ops []op
+	for i := range 501 {
+		ops = append(ops, op{"type": "CaptureItem", "at": e.at(i), "item_id": uuid.NewString(), "text": "x"})
+	}
+	e.push(phoneID, ops[:500]...)
+	e.push(phoneID, ops[500:]...)
+	e.push(phoneID, op{"type": "SetTrashAfterCopy", "at": e.at(1), "value": true})
+	first := e.pull(0)
+	if !first.HasMore {
+		t.Fatal("want a multi-page pull")
+	}
+	for _, page := range []pullPage{first, e.pull(first.Cursor)} {
+		if got := page.Settings.TrashAfterCopy; got == nil || !*got {
+			t.Fatalf("page settings = %v; want true on every page", got)
+		}
+	}
+}
+
 func TestPushLimits(t *testing.T) {
 	e := newSyncEnv(t)
 
@@ -1150,5 +1220,149 @@ func TestSetTextWithoutABaseRevIsInvalid(t *testing.T) {
 	res := e.push(desktopID, setText(uuid.NewString(), itemID, "x", nil, e.at(10)))
 	if res[0].Status != "rejected" || res[0].Reason != "invalid" {
 		t.Fatalf("result = %+v, want rejected invalid", res[0])
+	}
+}
+
+func placeOf(it pulledItem) string {
+	if it.Tunnel {
+		return "Tunnel"
+	}
+	return topicOf(it)
+}
+
+func TestCaptureIntoTheTunnel(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	res := e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "wifi pw", "tunnel": true})
+	it := e.item(itemID)
+	if res[0].Status != "accepted" || !it.Tunnel || it.TopicID != nil {
+		t.Fatalf("capture into Tunnel: result %+v, tunnel %v, topic %v; want accepted, in Tunnel, no Topic", res[0], it.Tunnel, it.TopicID)
+	}
+}
+
+func TestTunnelWithATopicIsInvalid(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, itemID, other := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"})
+
+	res := e.push(phoneID,
+		op{"type": "CaptureItem", "at": e.at(2), "item_id": other, "topic_id": gym, "text": "y", "tunnel": true},
+		op{"type": "MoveItem", "at": e.at(3), "item_id": itemID, "topic_id": gym, "tunnel": true})
+
+	for i, r := range res {
+		if r.Status != "rejected" || r.Reason != "invalid" {
+			t.Errorf("op %d = %+v, want rejected invalid", i, r)
+		}
+	}
+	if got := placeOf(e.item(itemID)); got != "Inbox" {
+		t.Errorf("moved Item is in %s, want Inbox", got)
+	}
+	for _, it := range e.pull(0).Items {
+		if it.ID == other {
+			t.Errorf("rejected Capture was written")
+		}
+	}
+}
+
+func TestMovingThroughTheTunnel(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, itemID := uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"})
+
+	for i, step := range []struct {
+		move op
+		want string
+	}{
+		{op{"topic_id": nil, "tunnel": true}, "Tunnel"},
+		{op{"topic_id": gym}, gym},
+		{op{"topic_id": nil, "tunnel": true}, "Tunnel"},
+		{op{"topic_id": nil}, "Inbox"},
+	} {
+		step.move["type"], step.move["item_id"], step.move["at"] = "MoveItem", itemID, e.at(10+i)
+		res := e.push(phoneID, step.move)
+		if res[0].Status != "accepted" || placeOf(e.item(itemID)) != step.want {
+			t.Fatalf("step %d: result %+v, Item in %s; want accepted, in %s", i, res[0], placeOf(e.item(itemID)), step.want)
+		}
+	}
+}
+
+func TestLaterPlaceWinsBetweenTunnelAndTopic(t *testing.T) {
+	e := newSyncEnv(t)
+	gym := uuid.NewString()
+	e.push(desktopID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"})
+
+	toTunnel := func(itemID string) op {
+		return op{"type": "MoveItem", "at": e.at(10), "item_id": itemID, "topic_id": nil, "tunnel": true}
+	}
+	toGym := func(itemID string) op {
+		return op{"type": "MoveItem", "at": e.at(20), "item_id": itemID, "topic_id": gym}
+	}
+	for name, order := range map[string]func(string){
+		"later arrives last":  func(id string) { e.push(phoneID, toTunnel(id)); e.push(desktopID, toGym(id)) },
+		"later arrives first": func(id string) { e.push(desktopID, toGym(id)); e.push(phoneID, toTunnel(id)) },
+	} {
+		itemID := uuid.NewString()
+		e.push(desktopID, op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": name})
+		order(itemID)
+		if got := placeOf(e.item(itemID)); got != gym {
+			t.Errorf("%s: Item in %s, want Gym", name, got)
+		}
+	}
+
+	itemID := uuid.NewString()
+	e.push(desktopID, op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "tunnel later"})
+	e.push(phoneID, op{"type": "MoveItem", "at": e.at(10), "item_id": itemID, "topic_id": gym})
+	res := e.push(desktopID, op{"type": "MoveItem", "at": e.at(20), "item_id": itemID, "topic_id": nil, "tunnel": true})
+	if res[0].Status != "accepted" || placeOf(e.item(itemID)) != "Tunnel" {
+		t.Errorf("later Tunnel move: result %+v, Item in %s; want accepted, in Tunnel", res[0], placeOf(e.item(itemID)))
+	}
+}
+
+func TestTunnelItemRestoresToTheTunnel(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID := uuid.NewString()
+	e.push(phoneID,
+		op{"type": "CaptureItem", "at": e.at(0), "item_id": itemID, "text": "x", "tunnel": true},
+		op{"type": "TrashItem", "at": e.at(1), "item_id": itemID})
+	if it := e.item(itemID); it.DeletedAt == nil || !it.Tunnel {
+		t.Fatalf("trashed Item: in Trash %v, tunnel %v; want both", it.DeletedAt != nil, it.Tunnel)
+	}
+
+	e.push(phoneID, op{"type": "RestoreItem", "at": e.at(2), "item_id": itemID})
+	if it := e.item(itemID); it.DeletedAt != nil || !it.Tunnel {
+		t.Fatalf("restored Item: in Trash %v, tunnel %v; want live, in Tunnel", it.DeletedAt != nil, it.Tunnel)
+	}
+}
+
+func TestDeleteTopicNeverTouchesTunnelItems(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, itemID := uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x", "tunnel": true})
+
+	e.push(desktopID, op{"type": "DeleteTopic", "at": e.at(10), "topic_id": gym, "trash": []string{itemID}})
+
+	if it := e.item(itemID); !it.Tunnel || it.DeletedAt != nil {
+		t.Fatalf("Tunnel Item after DeleteTopic: tunnel %v, in Trash %v; want in Tunnel, live", it.Tunnel, it.DeletedAt != nil)
+	}
+}
+
+func TestTunnelCheckConstraint(t *testing.T) {
+	e := newSyncEnv(t)
+	gym, itemID := uuid.NewString(), uuid.NewString()
+	e.push(desktopID,
+		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
+		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"})
+
+	_, err := e.h.api.db.Exec(context.Background(),
+		`UPDATE items SET in_tunnel = true, topic_id = $2 WHERE id = $1`, itemID, gym)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("UPDATE putting an Item in the Tunnel and a Topic = %v, want a CHECK violation", err)
 	}
 }

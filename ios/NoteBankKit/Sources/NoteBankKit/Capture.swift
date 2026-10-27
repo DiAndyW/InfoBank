@@ -14,31 +14,37 @@ public enum CaptureError: Error, Equatable, LocalizedError {
     }
 }
 
+public enum Destination: Hashable, Sendable {
+    case inbox, tunnel, topic(String)
+}
+
 extension Store {
     static let maxItemTextBytes = 1 << 20
 
-    public func capture(text: String, topicID: String?, nowUs: Int64) throws -> String {
+    public func capture(text: String, to destination: Destination, nowUs: Int64) throws -> String {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= Store.maxItemTextBytes else { throw CaptureError.tooLong }
         guard !text.utf8.contains(0) else { throw CaptureError.unsavableCharacter }
         guard !text.isEmpty else { throw CaptureError.blank }
 
         let itemID = UUID().uuidString.lowercased()
-        let op = try JSONSerialization.data(
-            withJSONObject: [
-                "id": UUID().uuidString.lowercased(),
-                "type": "CaptureItem",
-                "at": Time.rfc3339(nowUs),
-                "item_id": itemID,
-                "topic_id": topicID as Any? ?? NSNull(),
-                "text": text,
-                "attachments": [Any](),
-            ],
-            options: [.withoutEscapingSlashes])
+        var topicID: String?
+        if case .topic(let id) = destination { topicID = id }
+        var fields: [String: Any] = [
+            "id": UUID().uuidString.lowercased(),
+            "type": "CaptureItem",
+            "at": Time.rfc3339(nowUs),
+            "item_id": itemID,
+            "topic_id": topicID as Any? ?? NSNull(),
+            "text": text,
+            "attachments": [Any](),
+        ]
+        if destination == .tunnel { fields["tunnel"] = true }
+        let op = try JSONSerialization.data(withJSONObject: fields, options: [.withoutEscapingSlashes])
         try pool.write { db in
             try db.execute(
-                sql: "INSERT INTO items (id, topic_id, text, capture_time) VALUES (?, ?, ?, ?)",
-                arguments: [itemID, topicID, text, nowUs])
+                sql: "INSERT INTO items (id, topic_id, text, capture_time, in_tunnel) VALUES (?, ?, ?, ?, ?)",
+                arguments: [itemID, topicID, text, nowUs, destination == .tunnel])
             try db.execute(sql: "INSERT INTO outbox (op) VALUES (?)", arguments: [String(decoding: op, as: UTF8.self)])
         }
         return itemID

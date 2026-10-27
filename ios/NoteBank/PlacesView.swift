@@ -3,6 +3,7 @@ import SwiftUI
 
 struct PlacesView: View {
     let places: Places
+    let composer: ComposerModel
     let status: SyncStatus
     let notices: NoticeCenter
     let onShow: (String) -> Void
@@ -44,10 +45,13 @@ struct PlacesView: View {
                 .accessibilityAddTraits(.isHeader)
             ScrollView {
                 VStack(spacing: 0) {
+                    HomeComposerView(model: composer, topics: places.topics).padding(.bottom, 20)
                     VStack(spacing: 0) {
                         row(.all, "All Items", places.allCount)
                         Divider().overlay(palette.line)
                         row(.inbox, "Inbox", places.inboxCount)
+                        Divider().overlay(palette.line)
+                        row(.tunnel, "Tunnel", places.tunnelCount)
                     }
                     .card()
                     if !places.topics.isEmpty {
@@ -72,12 +76,13 @@ struct PlacesView: View {
                 }
                 .padding(.horizontal, 16)
             }
+            .scrollDismissesKeyboard(.interactively)
         }
         .safeAreaInset(edge: .bottom) {
             let line = SyncStatusLine(status: status, size: 13).frame(minHeight: 44)
             VStack(spacing: 0) {
                 if let notice = notices.current {
-                    NoticeView(message: notice.message, onShow: { onShow(notice.itemID) }, onDismiss: notices.dismiss)
+                    NoticeView(message: notice.message, actionTitle: "Show", onAction: { onShow(notice.itemID) }, onDismiss: notices.dismiss)
                         .padding(.horizontal, 12)
                 }
                 if status.needsSettings {

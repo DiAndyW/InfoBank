@@ -13,6 +13,8 @@ extension Store {
     }
 }
 
+public enum CopyOutcome: Equatable { case copied, trashed, ask }
+
 @MainActor @Observable
 public final class FeedModel {
     private static let pageSize = 100
@@ -59,6 +61,42 @@ public final class FeedModel {
     public func discard(_ id: String) {
         do {
             try store.discard(itemID: id)
+            reload()
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    public func copied(_ item: FeedItem) -> CopyOutcome {
+        do {
+            switch try store.trashAfterCopy() {
+            case true?:
+                try store.trash(itemID: item.id, nowUs: Time.nowUs())
+                reload()
+                return .trashed
+            case false?: return .copied
+            case nil: return .ask
+            }
+        } catch {
+            loadError = error.localizedDescription
+            return .copied
+        }
+    }
+
+    public func answerTrashAfterCopy(_ on: Bool, item: FeedItem) {
+        do {
+            let nowUs = Time.nowUs()
+            try store.setTrashAfterCopy(on, nowUs: nowUs)
+            if on { try store.trash(itemID: item.id, nowUs: nowUs) }
+            reload()
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+
+    public func undoTrash(itemID: String) {
+        do {
+            try store.restore(itemID: itemID, nowUs: Time.nowUs())
             reload()
         } catch {
             loadError = error.localizedDescription

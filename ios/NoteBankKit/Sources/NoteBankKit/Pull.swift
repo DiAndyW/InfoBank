@@ -36,10 +36,11 @@ struct PullPage: Decodable {
         let deletedAt: Instant?
         let purgeAt: Instant?
         let textRev: Int64
+        let tunnel: Bool
         let attachments: [Attachment]
 
         enum CodingKeys: String, CodingKey {
-            case id, text, attachments
+            case id, text, tunnel, attachments
             case topicID = "topic_id", captureTime = "capture_time", deletedAt = "deleted_at", purgeAt = "purge_at", textRev = "text_rev"
         }
     }
@@ -56,14 +57,25 @@ struct PullPage: Decodable {
         }
     }
 
+    struct Settings: Decodable {
+        let trashAfterCopy: Bool?
+
+        enum CodingKeys: String, CodingKey { case trashAfterCopy = "trash_after_copy" }
+
+        init(from decoder: Decoder) throws {
+            trashAfterCopy = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .trashAfterCopy)
+        }
+    }
+
     let items: [Item]
+    let settings: Settings
     let topics: [Topic]
     let tombstones: [String]
     let cursor: Int64
     let hasMore: Bool
 
     enum CodingKeys: String, CodingKey {
-        case items, topics, tombstones, cursor
+        case items, settings, topics, tombstones, cursor
         case hasMore = "has_more"
     }
 }
@@ -85,14 +97,19 @@ extension Store {
             for item in page.items {
                 try db.execute(
                     sql: """
-                        INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at, text_rev)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at, text_rev, in_tunnel)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT (id) DO UPDATE SET
                             topic_id = excluded.topic_id, text = excluded.text, capture_time = excluded.capture_time,
-                            deleted_at = excluded.deleted_at, purge_at = excluded.purge_at,
-                            text_rev = excluded.text_rev, sync_error = NULL
+                            deleted_at = CASE WHEN EXISTS (
+                                    SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id AND json_extract(op, '$.type') IN ('TrashItem', 'RestoreItem'))
+                                THEN items.deleted_at ELSE excluded.deleted_at END,
+                            purge_at = CASE WHEN EXISTS (
+                                    SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id AND json_extract(op, '$.type') IN ('TrashItem', 'RestoreItem'))
+                                THEN items.purge_at ELSE excluded.purge_at END,
+                            text_rev = excluded.text_rev, in_tunnel = excluded.in_tunnel, sync_error = NULL
                         """,
-                    arguments: [item.id, item.topicID, item.text, item.captureTime.us, item.deletedAt?.us, item.purgeAt?.us, item.textRev])
+                    arguments: [item.id, item.topicID, item.text, item.captureTime.us, item.deletedAt?.us, item.purgeAt?.us, item.textRev, item.tunnel])
                 // Pull sends the Item's whole live set, so anything missing from it was removed.
                 try db.execute(
                     sql: "DELETE FROM attachments WHERE item_id = ? AND id NOT IN (SELECT value FROM json_each(?))",
@@ -112,6 +129,12 @@ extension Store {
             for id in page.tombstones {
                 try db.execute(sql: "DELETE FROM items WHERE id = ?", arguments: [id])
             }
+            try db.execute(
+                sql: """
+                    UPDATE settings SET trash_after_copy = ?
+                    WHERE NOT EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.type') = 'SetTrashAfterCopy')
+                    """,
+                arguments: [page.settings.trashAfterCopy])
             try db.execute(sql: "UPDATE device SET pull_cursor = ?", arguments: [page.cursor])
             return !(page.items.isEmpty && page.topics.isEmpty && page.tombstones.isEmpty)
         }

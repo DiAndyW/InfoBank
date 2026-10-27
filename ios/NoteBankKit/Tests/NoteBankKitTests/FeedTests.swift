@@ -36,6 +36,25 @@ struct FeedTests {
         #expect(ids(try store.items(in: .topic("t1"), before: nil, limit: 100)) == ["b"])
     }
 
+    @Test func theTunnelFeedHoldsOnlyTunnelItemsAndTheInboxExcludesThem() throws {
+        let (store, _) = try tempStore()
+        try seed(store, topics: [("t1", "Mosaic")], items: [("a", 1, nil), ("b", 2, "t1"), ("c", 3, nil), ("d", 4, nil)])
+        try store.pool.write { try $0.execute(sql: "UPDATE items SET in_tunnel = 1 WHERE id IN ('c', 'd'); UPDATE items SET deleted_at = 9 WHERE id = 'd'") }
+        #expect(ids(try store.items(in: .tunnel, before: nil, limit: 100)) == ["c"])
+        #expect(ids(try store.items(in: .inbox, before: nil, limit: 100)) == ["a"])
+        #expect(ids(try store.items(in: .all, before: nil, limit: 100)) == ["c", "b", "a"])
+    }
+
+    @Test func placesCountsTheTunnelApartFromTheInbox() throws {
+        let (store, _) = try tempStore()
+        try seed(store, items: [("a", 1, nil), ("b", 2, nil), ("c", 3, nil)])
+        try store.pool.write { try $0.execute(sql: "UPDATE items SET in_tunnel = 1 WHERE id IN ('b', 'c'); UPDATE items SET deleted_at = 9 WHERE id = 'c'") }
+        let places = try store.places()
+        #expect(places.tunnelCount == 1)
+        #expect(places.inboxCount == 1)
+        #expect(places.allCount == 2)
+    }
+
     @Test func newestFirstAndTrashHidden() throws {
         let (store, _) = try tempStore()
         try seed(store, items: [("a", 2, nil), ("b", 3, nil), ("c", 1, nil), ("d", 4, nil)])
@@ -74,7 +93,7 @@ struct FeedTests {
     @Test func pendingFollowsTheOutboxAndSyncErrorClearsIt() throws {
         let (store, _) = try tempStore()
         try seed(store, items: [("pulled", 1, nil)])
-        let captured = try store.capture(text: "mine", topicID: nil, nowUs: 2)
+        let captured = try store.capture(text: "mine", to: .inbox, nowUs: 2)
         let pending = { try store.items(in: .all, before: nil, limit: 100).map { [$0.id: $0.pending] }.reduce(into: [:]) { $0.merge($1) { a, _ in a } } }
         #expect(try pending() == ["pulled": false, captured: true])
 

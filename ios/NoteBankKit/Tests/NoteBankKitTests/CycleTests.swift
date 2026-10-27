@@ -34,8 +34,8 @@ private final class Device {
         } catch { return error }
     }
 
-    func capture(_ text: String, at nowUs: Int64, topicID: String? = nil) throws -> String {
-        try store.capture(text: text, topicID: topicID, nowUs: nowUs)
+    func capture(_ text: String, at nowUs: Int64, to destination: Destination = .inbox) throws -> String {
+        try store.capture(text: text, to: destination, nowUs: nowUs)
     }
 
     func feed() throws -> [FeedItem] { try store.items(in: .all, before: nil, limit: 1000) }
@@ -73,6 +73,47 @@ struct ServerCycleTests {
         #expect(try a.count("outbox") == 0)
         #expect(try a.feed().allSatisfy { !$0.pending })
         #expect(try b.feed().map(\.text) == ["b last", "captured offline", "b first"])
+    }
+
+    @Test func aTunnelCaptureReachesAnotherDeviceInTheTunnel() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(server)
+        let b = try Device(server)
+        _ = try a.capture("to the tunnel", at: t0, to: .tunnel)
+        _ = try a.capture("to the inbox", at: t0 + second)
+        try await a.sync()
+        try await b.sync()
+
+        #expect(try b.store.items(in: .tunnel, before: nil, limit: 10).map(\.text) == ["to the tunnel"])
+        #expect(try b.store.items(in: .inbox, before: nil, limit: 10).map(\.text) == ["to the inbox"])
+        #expect(try a.count("outbox") == 0)
+    }
+
+    @Test func theTrashAfterCopySettingAndATrashReachAnotherDevice() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(server)
+        let b = try Device(server)
+        let id = try a.capture("copy me", at: t0, to: .tunnel)
+        try await a.sync()
+        try await b.sync()
+        #expect(try b.store.trashAfterCopy() == nil)
+
+        try a.store.setTrashAfterCopy(true, nowUs: t0 + second)
+        try a.store.trash(itemID: id, nowUs: t0 + second)
+        try await a.sync()
+        try await b.sync()
+
+        #expect(try a.count("outbox") == 0)
+        #expect(a.queued.isEmpty)
+        #expect(try b.store.trashAfterCopy() == true)
+        #expect(try b.store.items(in: .tunnel, before: nil, limit: 10).isEmpty)
+
+        try b.store.restore(itemID: id, nowUs: t0 + 2 * second)
+        try await b.sync()
+        try await a.sync()
+        #expect(try a.store.items(in: .tunnel, before: nil, limit: 10).map(\.id) == [id])
     }
 
     @Test func aRepeatedPushChangesNothing() async throws {
@@ -165,7 +206,7 @@ struct ServerCycleTests {
             ["id": newID(), "type": "ArchiveTopic", "at": Time.rfc3339(t0 + 10 * second), "topic_id": gym]
         ])
 
-        let id = try a.capture("squat 100", at: t0 + 20 * second, topicID: gym)
+        let id = try a.capture("squat 100", at: t0 + 20 * second, to: .topic(gym))
         try await a.sync()
 
         #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicState: .archived)])
@@ -177,7 +218,7 @@ struct ServerCycleTests {
         try await server.start()
         let a = try Device(url: "http://127.0.0.1:9", secret: server.secret)
         let missing = newID()
-        let id = try a.capture("travels along", at: t0, topicID: missing)
+        let id = try a.capture("travels along", at: t0, to: .topic(missing))
 
         try a.store.saveSettings(url: server.url, newSecret: server.secret, secrets: a.secrets)
         try await a.sync()
@@ -195,7 +236,7 @@ private final class PullSwitch: Sendable {
 }
 
 struct FakeServerCycleTests {
-    private static let emptyPage = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false}"#
+    private static let emptyPage = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":null}}"#
 
     private static func answerEveryOp(_ request: FakeServer.Request, status: String, reason: String) -> FakeServer.Response {
         let ops = (try? JSONSerialization.jsonObject(with: request.body) as? [String: Any])?["ops"] as? [[String: Any]] ?? []
@@ -266,7 +307,7 @@ struct FakeServerCycleTests {
         let pulls = Mutex(0)
         let fake = try await FakeServer { _ in
             let n = pulls.withLock { $0 += 1; return $0 }
-            return .json(#"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":\#(n <= 20)}"#)
+            return .json(#"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":\#(n <= 20),"settings":{"trash_after_copy":null}}"#)
         }
         let a = try Device(url: fake.url, secret: "secret")
 
@@ -303,11 +344,11 @@ struct FakeServerCycleTests {
             if request.path == "/sync/push" { return Self.answerEveryOp(request, status: "changed", reason: "sent_to_inbox") }
             return pullFails.on.withLock { $0 }
                 ? .json("{}", status: 500)
-                : .json(#"{"items":[],"topics":[\#(archived)],"tombstones":[],"cursor":1,"has_more":false}"#)
+                : .json(#"{"items":[],"topics":[\#(archived)],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":null}}"#)
         }
         try a.store.saveSettings(url: fake.url, newSecret: "secret", secrets: a.secrets)
         try await a.store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name) VALUES (?, 'Gym')", arguments: [gym]) }
-        let id = try a.capture("squat 100", at: t0, topicID: gym)
+        let id = try a.capture("squat 100", at: t0, to: .topic(gym))
 
         pullFails.on.withLock { $0 = true }
         let failure = await a.syncFailure()
@@ -353,12 +394,12 @@ struct FakeServerCycleTests {
 
     @Test func aCycleStartedBeforeAURLChangeWritesNothing() async throws {
         let a = try Device(url: "http://127.0.0.1:9", secret: "secret")
-        let pulled = #"{"id":"\#(newID())","topic_id":null,"text":"from the old Server","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"attachments":[]}"#
+        let pulled = #"{"id":"\#(newID())","topic_id":null,"text":"from the old Server","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"tunnel":false,"attachments":[]}"#
         let store = a.store
         let secrets = a.secrets
         let fake = try await FakeServer { request in
             try? store.saveSettings(url: "http://127.0.0.1:10", newSecret: "other", secrets: secrets)
-            return .json(#"{"items":[\#(pulled)],"topics":[],"tombstones":[],"cursor":5,"has_more":\#(request.query == "cursor=0")}"#)
+            return .json(#"{"items":[\#(pulled)],"topics":[],"tombstones":[],"cursor":5,"has_more":\#(request.query == "cursor=0"),"settings":{"trash_after_copy":null}}"#)
         }
         try a.store.saveSettings(url: fake.url, newSecret: "secret", secrets: a.secrets)
 

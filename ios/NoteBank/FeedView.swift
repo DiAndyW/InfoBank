@@ -13,6 +13,7 @@ struct FeedView: View {
     let notices: NoticeCenter
     let onShow: (String) -> Void
     let foregrounds: Int
+    let wake: () -> Void
     @Binding var target: ShowTarget?
 
     @Environment(\.palette) private var palette
@@ -21,6 +22,9 @@ struct FeedView: View {
     @State private var highlighted: String?
     @State private var scrollsToNewest = false
     @State private var title: String
+    @State private var copiedID: String?
+    @State private var copies = 0
+    @State private var asking: FeedItem?
 
     init(
         place: Place, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
@@ -32,17 +36,27 @@ struct FeedView: View {
         self.notices = services.notices
         self.onShow = onShow
         self.foregrounds = foregrounds
+        wake = services.wake
         _target = target
         let title = switch place {
         case .all: "All Items"
         case .inbox: "Inbox"
+        case .tunnel: "Tunnel"
         case .topic: topicName ?? ""
         }
         _title = State(wrappedValue: title)
         _model = State(wrappedValue: FeedModel(store: services.store, place: place))
-        _composer = State(wrappedValue: ComposerModel(store: services.store, place: place, topicName: topicName) { [engine = services.engine] in
-            Task { await engine.wake() }
-        })
+        let destination: Destination = switch place {
+        case .all, .inbox: .inbox
+        case .tunnel: .tunnel
+        case .topic(let id): .topic(id)
+        }
+        let placeholder = switch place {
+        case .tunnel: "Send to your other devices…"
+        case .topic: "Capture to \(topicName ?? "")"
+        default: "Capture to the Inbox"
+        }
+        _composer = State(wrappedValue: ComposerModel(store: services.store, destination: destination, placeholder: placeholder, onCaptured: services.wake))
     }
 
     private var days: [(start: Date, items: [FeedItem])] {
@@ -56,6 +70,30 @@ struct FeedView: View {
             }
         }
         return days
+    }
+
+    private func copy(_ item: FeedItem) {
+        guard let text = item.text else { return }
+        UIPasteboard.general.string = text
+        copies += 1
+        let outcome = model.copied(item)
+        if outcome == .trashed {
+            notices.postTrashed(itemID: item.id)
+        } else {
+            copiedID = item.id
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedID == item.id { copiedID = nil }
+            }
+        }
+        if outcome == .ask { asking = item }
+        wake()
+    }
+
+    private func answer(_ on: Bool, _ item: FeedItem) {
+        model.answerTrashAfterCopy(on, item: item)
+        if on { notices.postTrashed(itemID: item.id) }
+        wake()
     }
 
     var body: some View {
@@ -82,9 +120,10 @@ struct FeedView: View {
                         .padding(.bottom, 6)
                         .accessibilityHidden(true)
                         ForEach(day.items) { item in
-                            ItemRow(item: item, showsTopic: place == .all, highlighted: highlighted == item.id) {
-                                model.discard(item.id)
-                            }
+                            ItemRow(
+                                item: item, showsTopic: place == .all, highlighted: highlighted == item.id,
+                                copyable: place == .tunnel, copied: copiedID == item.id,
+                                onCopy: { copy(item) }, onDiscard: { model.discard(item.id) })
                         }
                     }
                 }
@@ -112,7 +151,18 @@ struct FeedView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
                 if let notice = notices.current {
-                    NoticeView(message: notice.message, onShow: { onShow(notice.itemID) }, onDismiss: notices.dismiss)
+                    NoticeView(
+                        message: notice.message, actionTitle: notice.action == .undoTrash ? "Undo" : "Show",
+                        onAction: {
+                            if notice.action == .undoTrash {
+                                model.undoTrash(itemID: notice.itemID)
+                                notices.dismiss()
+                                wake()
+                            } else {
+                                onShow(notice.itemID)
+                            }
+                        },
+                        onDismiss: notices.dismiss)
                 }
                 ComposerView(model: composer) {
                     scrollsToNewest = true
@@ -123,6 +173,18 @@ struct FeedView: View {
             .padding(.vertical, 8)
             .background(palette.surface)
             .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: copies)
+        .alert(
+            "Move Tunnel notes to Trash after you copy them?",
+            isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
+            presenting: asking
+        ) { item in
+            Button("Turn on") { answer(true, item) }
+            Button("Not now", role: .cancel) { answer(false, item) }
+        }
+        .onDisappear {
+            if notices.current?.action == .undoTrash { notices.dismiss() }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(palette.surface, for: .navigationBar)
