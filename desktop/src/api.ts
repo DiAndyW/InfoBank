@@ -24,6 +24,7 @@ export type FeedItem = {
   text: string | null;
   capture_time_us: number;
   topic_id: string | null;
+  in_tunnel: boolean;
   pending: boolean;
   attachments: FeedAttachment[];
   purge_at_us: number | null;
@@ -31,8 +32,10 @@ export type FeedItem = {
   sync_error: string | null;
   conflict: { text: string | null; mine: boolean } | null;
 };
-export type View = { kind: "all" } | { kind: "inbox" } | { kind: "trash" } | { kind: "topic"; id: string };
-export type Counts = { inbox: number; trash: number };
+export type Target = { kind: "inbox" } | { kind: "tunnel" } | { kind: "topic"; id: string };
+export const itemTarget = (item: FeedItem): Target => item.in_tunnel ? { kind: "tunnel" } : item.topic_id ? { kind: "topic", id: item.topic_id } : { kind: "inbox" };
+export type View = { kind: "all" } | { kind: "inbox" } | { kind: "tunnel" } | { kind: "trash" } | { kind: "topic"; id: string };
+export type Counts = { inbox: number; tunnel: number; trash: number };
 export type SyncNotice = {
   kind: "move" | "inbox" | "empty" | "gone";
   item_id: string;
@@ -48,7 +51,7 @@ export type Staged = { id: string; filename: string; size_bytes: number; mime_ty
 export type StagedFiles = { staged: Staged[]; errors: string[] };
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
-export const moveItem = (itemId: string, topicId: string | null) => invoke<void>("move_item", { itemId, topicId });
+export const moveItem = (itemId: string, target: Target) => invoke<void>("move_item", { itemId, target });
 export const editItem = (itemId: string, text: string, addIds: string[], removeIds: string[], baseRev: number) =>
   invoke<{ trashed: boolean }>("edit_item", { itemId, text, addIds, removeIds, baseRev });
 export const discardItem = (itemId: string) => invoke<void>("discard_item", { itemId });
@@ -57,8 +60,11 @@ export const resolveConflict = (itemId: string, keep: "theirs" | "mine") =>
 export const trashItem = (itemId: string) => invoke<void>("trash_item", { itemId });
 export const restoreItem = (itemId: string) => invoke<void>("restore_item", { itemId });
 export const navCounts = () => invoke<Counts>("nav_counts");
-export const capture = (text: string, attachmentIds: string[], topicId: string | null) =>
-  invoke<void>("capture", { text, attachmentIds, topicId });
+export const capture = (text: string, attachmentIds: string[], target: Target) =>
+  invoke<void>("capture", { text, attachmentIds, target });
+export const doubleClickIntervalMs = () => invoke<number>("double_click_interval_ms");
+export const trashAfterCopy = () => invoke<boolean | null>("trash_after_copy");
+export const setTrashAfterCopy = (on: boolean) => invoke<void>("set_trash_after_copy", { on });
 export const pickFiles = () => invoke<StagedFiles>("pick_files");
 // Headers are ASCII, so the name is percent-encoded; Rust decodes it.
 export const stageBytes = (filename: string, bytes: Uint8Array) =>
@@ -70,7 +76,7 @@ export const revealAttachment = (id: string) => invoke<void>("reveal_attachment"
 export type Before = { capture_time_us: number; id: string };
 // Nested keys aren't renamed by Tauri, so `before` and `query` keep Rust's snake_case.
 export const listItems = (view: View, before: Before | null) => invoke<FeedItem[]>("list_items", { view, before });
-export type Place = { kind: "all" } | { kind: "inbox" } | { kind: "topic"; id: string };
+export type Place = { kind: "all" } | Target;
 export type SearchQuery = { text: string; place: Place; from_us: number | null; to_us: number | null; has_files: boolean };
 // Matches arrive wrapped in U+E000 … U+E001; marked_filenames follows attachments' order.
 export type SearchItem = FeedItem & { marked_text: string | null; marked_filenames: string[] };

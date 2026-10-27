@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { capture, unstage, type StagedFiles } from "./api";
+import { capture, unstage, type Target, type StagedFiles } from "./api";
 import { Icon } from "./icons";
 import { Chips, useStaging } from "./staging";
 
@@ -9,7 +9,7 @@ export type ComposerHandle = { discard: () => void; focus: () => void };
 
 type Props = {
   acceptsDrops: boolean;
-  topicId: string | null;
+  target: Target;
   placeholder: string;
   onCaptured: () => void;
   // Given in the quick-capture window: Escape cancels and the text box takes no suggestions.
@@ -18,7 +18,7 @@ type Props = {
   ref?: Ref<ComposerHandle>;
 };
 
-export default function Composer({ acceptsDrops, topicId, placeholder, onCaptured, onCancel, picker, ref }: Props) {
+export default function Composer({ acceptsDrops, target, placeholder, onCaptured, onCancel, picker, ref }: Props) {
   const accepts = useRef(acceptsDrops);
   accepts.current = acceptsDrops;
   const [draft, setDraft] = useState("");
@@ -61,7 +61,7 @@ export default function Composer({ acceptsDrops, topicId, placeholder, onCapture
     saving.current = true;
     try {
       const ids = staged.map((s) => s.id);
-      await capture(draft, ids, topicId);
+      await capture(draft, ids, target);
       if (discardAfterSave.current) {
         discardStaged(ids);
         clear();
@@ -110,7 +110,7 @@ export default function Composer({ acceptsDrops, topicId, placeholder, onCapture
       )}
       {dialog}
       <form
-        className="nb-composer"
+        className={target.kind === "tunnel" ? "nb-composer is-tunnel" : "nb-composer"}
         onSubmit={submit}
         onKeyDown={(e) => {
           if (onCancel && e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
@@ -139,8 +139,10 @@ export default function Composer({ acceptsDrops, topicId, placeholder, onCapture
               onPaste={onPaste}
               {...(onCancel && { autoCorrect: "off", spellCheck: false, writingsuggestions: "false" })}
             />
+          </div>
+          <div className="nb-composer-footer">
+            <div className="nb-composer-destination">{picker}</div>
             <div className="nb-composer-actions">
-              {picker}
               <button type="button" className="nb-iconbtn" aria-label="Attach files" title="Attach files" onClick={() => pick().then(() => textarea.current?.focus())}>
                 <Icon name="paperclip" />
               </button>

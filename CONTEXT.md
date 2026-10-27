@@ -25,15 +25,19 @@ A named bucket an Item can be filed under (e.g. "Mosaic", "CS 111"). An Item has
 _Avoid_: Channel, tag, folder, category
 
 **Inbox**:
-The set of Items that have no Topic. Not a Topic itself.
+The set of Items that are neither in the Tunnel nor filed under a Topic. Not a Topic itself.
 _Avoid_: Uncategorised, default topic
+
+**Tunnel**:
+One built-in place for quick transfer between Devices. Tapping or clicking an Item copies its text; the synced Trash-after-copy setting can then move it to Trash, with Undo. It is separate from the Inbox and Topics.
+_Avoid_: Channel, temporary Topic
 
 **Archived Topic**:
 A Topic that is hidden and closed to new Items until unarchived; its existing Items are kept and remain searchable.
 _Avoid_: Closed topic, hidden topic
 
 **Feed**:
-The chronological, Discord-style view of Items, either all of them, one Topic's, or the Inbox, ordered by Capture Time.
+The chronological, Discord-style view of Items, either all of them, one Topic's, the Inbox, or the Tunnel, ordered by Capture Time.
 _Avoid_: Timeline, stream
 
 **Trash**:
@@ -49,6 +53,10 @@ _Avoid_: Upload, post, send
 **Capture Time**:
 The moment an Item was Captured, as recorded by the Device, not when the Server received it.
 _Avoid_: Created at, sent at, timestamp
+
+**Account settings**:
+Preferences synced through the Server in one row. The later Device-clock change wins. Trash after copy is unasked until answered, then on or off.
+_Avoid_: Device settings, local preferences
 
 **Server**:
 The single remote instance that holds the authoritative copy of every Item and Attachment.

@@ -10,6 +10,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_search.sql"),
     include_str!("../migrations/0006_quick_capture.sql"),
     include_str!("../migrations/0007_sync_feedback.sql"),
+    include_str!("../migrations/0008_tunnel_settings.sql"),
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -120,5 +121,25 @@ mod tests {
         let conn = open(&path).unwrap();
         let row: (String, String) = conn.query_row("SELECT text, names FROM search", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(row, ("old note".into(), "old.pdf".into()));
+    }
+
+    #[test]
+    fn tunnel_cannot_share_a_topic_or_hold_a_non_boolean_flag() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'note', 1)", []).unwrap();
+        conn.execute("UPDATE items SET in_tunnel = 1 WHERE id = 'i'", []).unwrap();
+        for sql in ["UPDATE items SET topic_id = 't'", "UPDATE items SET in_tunnel = 2", "UPDATE items SET in_tunnel = NULL"] {
+            assert_eq!(conn.execute(sql, []).unwrap_err().sqlite_error_code(), Some(rusqlite::ErrorCode::ConstraintViolation));
+        }
+    }
+
+    #[test]
+    fn trash_after_copy_starts_unasked_and_only_accepts_one_boolean_row() {
+        let (_d, conn) = fresh();
+        let value: Option<bool> = conn.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(value, None);
+        for sql in ["INSERT INTO settings (id) VALUES (2)", "UPDATE settings SET trash_after_copy = 2"] {
+            assert_eq!(conn.execute(sql, []).unwrap_err().sqlite_error_code(), Some(rusqlite::ErrorCode::ConstraintViolation));
+        }
     }
 }

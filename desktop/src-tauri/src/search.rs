@@ -8,6 +8,7 @@ use crate::feed::{self, Before, FeedItem};
 pub enum Place {
     All,
     Inbox,
+    Tunnel,
     Topic { id: String },
 }
 
@@ -42,6 +43,7 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
     let (kind, topic) = match &query.place {
         Place::All => ("all", None),
         Place::Inbox => ("inbox", None),
+        Place::Tunnel => ("tunnel", None),
         Place::Topic { id } => ("topic", Some(id.clone())),
     };
     let mut args: Vec<Value> = vec![
@@ -65,10 +67,11 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
         ("search MATCH ?10 AND", mark(0), mark(1))
     };
     let sql = format!(
-        "SELECT items.id, items.text, items.capture_time, items.topic_id, {pending}, items.purge_at, {edit_base}, {text}, {names}, {feedback}
+        "SELECT items.id, items.text, items.capture_time, items.topic_id, {pending}, items.purge_at, {edit_base}, {text}, {names}, {feedback}, items.in_tunnel
          FROM search JOIN items ON items.rowid = search.rowid
          WHERE {matched} items.deleted_at IS NULL
-           AND CASE ?1 WHEN 'all' THEN 1 WHEN 'inbox' THEN items.topic_id IS NULL ELSE items.topic_id = ?2 END
+           AND CASE ?1 WHEN 'all' THEN 1 WHEN 'inbox' THEN items.topic_id IS NULL AND items.in_tunnel = 0
+                       WHEN 'tunnel' THEN items.in_tunnel = 1 ELSE items.topic_id = ?2 END
            AND (?3 IS NULL OR items.capture_time >= ?3) AND (?4 IS NULL OR items.capture_time < ?4)
            AND (NOT ?5 OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id))
            AND NOT EXISTS (SELECT 1 FROM json_each(?6) WHERE instr(lower(search.text || char(10) || search.names), lower(value)) = 0)
@@ -90,6 +93,7 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
                         text: r.get(1)?,
                         capture_time_us: r.get(2)?,
                         topic_id: r.get(3)?,
+                        in_tunnel: r.get(12)?,
                         pending: r.get(4)?,
                         purge_at_us: r.get(5)?,
                         edit_base: r.get(6)?,
@@ -319,10 +323,25 @@ mod tests {
                 "deleted_at": null, "purge_at": null, "text_rev": 0,
                 "attachments": [{"id": "f", "filename": "notes.txt", "mime_type": "text/plain", "size_bytes": 1, "uploaded": true, "has_thumbnail": false}]})
         };
-        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [item("hello")], "topics": [], "tombstones": [], "cursor": 1, "has_more": false}))).unwrap();
-        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [item("hello again")], "topics": [], "tombstones": [], "cursor": 2, "has_more": false}))).unwrap();
+        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [item("hello")], "topics": [], "tombstones": [], "cursor": 1, "has_more": false, "settings":{"trash_after_copy":null}}))).unwrap();
+        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [item("hello again")], "topics": [], "tombstones": [], "cursor": 2, "has_more": false, "settings":{"trash_after_copy":null}}))).unwrap();
         assert_eq!(indexed(&conn), vec![row("i", "hello again", "notes.txt")]);
-        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [], "topics": [], "tombstones": ["i"], "cursor": 3, "has_more": false}))).unwrap();
+        crate::sync::apply_pull(&conn, &page(serde_json::json!({"items": [], "topics": [], "tombstones": ["i"], "cursor": 3, "has_more": false, "settings":{"trash_after_copy":null}}))).unwrap();
         assert_eq!(indexed(&conn), vec![]);
+    }
+
+    #[test]
+    fn tunnel_search_is_separate_from_inbox_and_included_in_all() {
+        let (_d, conn) = fresh();
+        let tunnel: Place = serde_json::from_value(serde_json::json!({"kind":"tunnel"})).unwrap();
+        conn.execute_batch("INSERT INTO items (id, text, capture_time, topic_id, in_tunnel, deleted_at) VALUES
+            ('inbox', 'note', 1, NULL, 0, NULL), ('tunnel', 'note', 2, NULL, 1, NULL),
+            ('topic', 'note', 3, 't', 0, NULL), ('trash', 'note', 4, NULL, 1, 5);").unwrap();
+        let mut q = query("note");
+        assert_eq!(ids(&search(&conn, &q, None).unwrap()), ["topic", "tunnel", "inbox"]);
+        q.place = tunnel;
+        assert_eq!(ids(&search(&conn, &q, None).unwrap()), ["tunnel"]);
+        q.place = Place::Inbox;
+        assert_eq!(ids(&search(&conn, &q, None).unwrap()), ["inbox"]);
     }
 }

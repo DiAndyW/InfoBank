@@ -117,7 +117,8 @@ final class TestServer {
     deinit {
         if let process {
             kill(process.processIdentifier, SIGKILL)
-            process.waitUntilExit()
+            // Foundation's run-loop wait can hang after an externally signalled exit.
+            while waitpid(process.processIdentifier, nil, 0) == -1 && errno == EINTR {}
         }
         _ = try? run("psql", [adminURL, "-qc", "DROP DATABASE IF EXISTS \(databaseName) WITH (FORCE)"])
         try? FileManager.default.removeItem(at: attachments)

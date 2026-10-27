@@ -23,7 +23,7 @@ type Props = {
   onSearch: (text: string) => void;
   onSearchFocus: () => void;
   onSearchEscape: () => void;
-  // While an Item is dragged: where it is now ("inbox" or a Topic id), and the row it would drop on.
+  // While an Item is dragged: where it is now ("inbox", "tunnel", or a Topic id), and the row it would drop on.
   drag: { from: string; over: string | null } | null;
   onDragOver: (key: string | null) => void;
   searchRef: RefObject<HTMLInputElement | null>;
@@ -113,10 +113,10 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
 
   const entry = (key: string, label: string, icon: IconName, count?: number) => (
     <button
-      className={["nb-nav", selected === key && "is-selected", dropClass(key, key === "inbox")].filter(Boolean).join(" ")}
+      className={["nb-nav", selected === key && "is-selected", dropClass(key, key === "inbox" || key === "tunnel")].filter(Boolean).join(" ")}
       aria-current={selected === key ? "page" : undefined}
       onClick={() => onSelect(key)}
-      {...dropHandlers(key, key === "inbox")}
+      {...dropHandlers(key, key === "inbox" || key === "tunnel")}
     >
       <Icon name={icon} />
       <span className="nb-nav-label">{label}</span>
@@ -197,8 +197,10 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
           </button>
         )}
       </div>
+      {entry("home", "Home", "home")}
       {entry("all", "All Items", "all")}
       {entry("inbox", "Inbox", "inbox", counts.inbox)}
+      {entry("tunnel", "Tunnel", "send", counts.tunnel)}
       {entry("trash", "Trash", "trash", counts.trash)}
       <div className="nb-section">
         <span>Topics</span>

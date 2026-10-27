@@ -8,6 +8,9 @@ import { MAX_ATTACHMENT_BYTES, type Counts, type FeedAttachment, type FeedItem, 
 
 type Options = {
   topics?: Topic[];
+  trashAfterCopy?: boolean | null;
+  doubleClickIntervalMs?: number;
+  pulledTrashAfterCopy?: () => boolean | null;
   saveError?: string;
   captureError?: string;
   items?: (args: any) => FeedItem[] | Promise<FeedItem[]>;
@@ -29,9 +32,11 @@ type Options = {
 };
 
 function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opts: Options = {}) {
+  localStorage.setItem("place", "all");
   const settings: Settings = { quick_capture: { shortcut: "shift+super+Space", on: true }, ...given };
   let hotkey = settings.quick_capture;
   let autostart = opts.autostart ?? false;
+  let trashAfterCopy = opts.trashAfterCopy ?? null;
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
   mockConvertFileSrc("macos");
@@ -43,11 +48,14 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "startup_error") return opts.startup ?? null;
       if (["show_data_folder", "quit"].includes(cmd)) return null;
       if (cmd === "get_settings") return settings;
+      if (cmd === "double_click_interval_ms") return opts.doubleClickIntervalMs ?? 500;
+      if (cmd === "trash_after_copy") return opts.pulledTrashAfterCopy ? opts.pulledTrashAfterCopy() : trashAfterCopy;
+      if (cmd === "set_trash_after_copy") { trashAfterCopy = (args as { on: boolean }).on; return null; }
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
       if (cmd === "list_items") return opts.items ? opts.items(args) : [];
       if (cmd === "search_items") return opts.search ? opts.search(args) : [];
-      if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, trash: 0 };
+      if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, tunnel: 0, trash: 0 };
       if (cmd === "edit_item") return opts.edited ?? { trashed: false };
       if (["trash_item", "restore_item", "discard_item"].includes(cmd)) return null;
       if (cmd === "resolve_conflict") return { trashed: false };
@@ -108,6 +116,7 @@ const feedItem = (
   text,
   capture_time_us,
   topic_id: null,
+  in_tunnel: false,
   pending,
   attachments,
   purge_at_us: null,
@@ -196,7 +205,7 @@ test("a load failure is shown and can be retried", async () => {
       if (cmd === "list_topics") return [];
       if (cmd === "sync_status") return "synced";
       if (cmd === "list_items") return [];
-      if (cmd === "nav_counts") return { inbox: 0, trash: 0 };
+      if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
     },
     { shouldMockEvents: true },
   );
@@ -219,13 +228,14 @@ test("the sidebar lists Topics", async () => {
 
 test("Enter captures and Shift+Enter adds a line", async () => {
   const calls = backend(configured);
+  localStorage.setItem("place", "inbox");
   render(<App />);
   const box = await screen.findByLabelText("New Item");
   await userEvent.type(box, "a{Shift>}{Enter}{/Shift}b");
   expect(box).toHaveValue("a\nb");
   expect(calls.some((c) => c.cmd === "capture")).toBe(false);
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [], topicId: null } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [], target: { kind: "inbox" } } });
   expect(box).toHaveValue("");
 });
 
@@ -245,6 +255,7 @@ test("a file pasted while a Capture is saving stays for the next Item", async ()
 
 test("the main composer keeps autocorrect and Escape leaves its draft alone", async () => {
   const calls = backend(configured);
+  localStorage.setItem("place", "inbox");
   render(<App />);
   const box = await screen.findByLabelText("New Item");
   expect(box).not.toHaveAttribute("autocorrect");
@@ -255,6 +266,7 @@ test("the main composer keeps autocorrect and Escape leaves its draft alone", as
 
 test("Send is disabled for blank text", async () => {
   backend(configured);
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.type(await screen.findByLabelText("New Item"), "   ");
   expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -262,6 +274,7 @@ test("Send is disabled for blank text", async () => {
 
 test("a failed capture keeps the text", async () => {
   backend(configured, { captureError: "That's too long to save (1 MB max)" });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   const box = await screen.findByLabelText("New Item");
   await userEvent.type(box, "keep me{Enter}");
@@ -390,7 +403,8 @@ test("the theme is Warm paper until another is chosen", async () => {
   backend(configured);
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-  expect(screen.getByLabelText("Theme")).toHaveValue("paper");
+  await userEvent.click(screen.getByRole("button", { name: "Theme" }));
+  expect(screen.getByRole("menuitemradio", { name: "Warm paper" })).toHaveAttribute("aria-checked", "true");
   expect(document.documentElement.dataset.theme).toBe("paper");
 });
 
@@ -398,7 +412,8 @@ test("a theme chosen in Settings applies at once and is remembered", async () =>
   backend(configured);
   const { unmount } = render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-  await userEvent.selectOptions(screen.getByLabelText("Theme"), "Notepad");
+  await userEvent.click(screen.getByRole("button", { name: "Theme" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Notepad" }));
   expect(document.documentElement.dataset.theme).toBe("notepad");
 
   unmount();
@@ -412,7 +427,8 @@ test("dark is a theme of its own, not the system's setting", async () => {
   backend(configured);
   const { unmount } = render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
-  await userEvent.selectOptions(screen.getByLabelText("Theme"), "Blackboard");
+  await userEvent.click(screen.getByRole("button", { name: "Theme" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Blackboard" }));
   expect(document.documentElement.dataset.theme).toBe("blackboard");
 
   unmount();
@@ -428,6 +444,7 @@ const installer: FeedAttachment = { id: "a3", filename: "setup.command", mime_ty
 
 test("picked files become chips, and one can be removed", async () => {
   const calls = backend(configured, { picked: { staged: [scan], errors: ["big.bin is over 100 MB"] } });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
   expect(await screen.findByText("scan.png")).toBeInTheDocument();
@@ -441,16 +458,18 @@ test("picked files become chips, and one can be removed", async () => {
 
 test("an Attachment alone can be sent", async () => {
   const calls = backend(configured, { picked: { staged: [scan], errors: [] } });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
   await screen.findByText("scan.png");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"], topicId: null } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"], target: { kind: "inbox" } } });
   await vi.waitFor(() => expect(screen.queryByText("scan.png")).not.toBeInTheDocument());
 });
 
 test("a pasted image is staged from its bytes, and an oversized one is refused", async () => {
   const calls = backend(configured, { staged: [scan] });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   const box = await screen.findByLabelText("New Item");
   const image = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
@@ -465,6 +484,7 @@ test("a pasted image is staged from its bytes, and an oversized one is refused",
 
 test("files staged from a drop become chips, and failures are named", async () => {
   backend(configured);
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await screen.findByLabelText("New Item");
   await act(() =>
@@ -713,11 +733,12 @@ test("Move to… lists the Inbox and open Topics, with the current place ticked"
   const targets = within(screen.getByRole("menu", { name: "Move to…" })).getAllByRole("menuitemradio");
   expect(targets.map((t) => [t.textContent?.replace(" ✓", ""), t.getAttribute("aria-checked")])).toEqual([
     ["Inbox", "true"],
+    ["Tunnel", "false"],
     ["Gym", "false"],
     ["Work", "false"],
   ]);
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
-  expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", topicId: "g" } });
+  expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", target: { kind: "topic", id: "g" } } });
 });
 
 test("moving an Item to where it is does nothing", async () => {
@@ -743,10 +764,10 @@ test("dragging an Item by its grip onto a Topic moves it, and Undo moves it back
   render(<App />);
   await screen.findByText("squat 100");
   drag("squat 100", screen.getByRole("button", { name: "Gym" }));
-  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", topicId: "g" }]));
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "topic", id: "g" } }]));
   await screen.findByText("Moved to Gym");
   await userEvent.click(screen.getByRole("button", { name: "Undo" }));
-  expect(moves(calls)).toEqual([{ itemId: "1", topicId: "g" }, { itemId: "1", topicId: null }]);
+  expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "topic", id: "g" } }, { itemId: "1", target: { kind: "inbox" } }]);
 });
 
 test("Move to… also says where the Item went", async () => {
@@ -771,7 +792,7 @@ test("only the Inbox and other open Topics take a dropped Item", async () => {
   }
   expect(moves(calls)).toEqual([]);
   drag("squat 100", screen.getByRole("button", { name: /^Inbox/ }));
-  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", topicId: null }]));
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "inbox" } }]));
   expect(await screen.findByText("Moved to the Inbox")).toBeInTheDocument();
 });
 
@@ -838,7 +859,7 @@ test("capturing in a Topic files the Item there", async () => {
   expect(await screen.findByPlaceholderText("Write to Inbox…")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Gym" }));
   await userEvent.type(await screen.findByPlaceholderText("Write to Gym…"), "squat 100{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat 100", attachmentIds: [], topicId: "g" } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat 100", attachmentIds: [], target: { kind: "topic", id: "g" } } });
 });
 
 test("an archived Topic shows a bar instead of the composer", async () => {
@@ -918,6 +939,7 @@ test("a failed delete keeps the dialog open and says why", async () => {
 
 test("the draft survives a visit to an archived Topic", async () => {
   backend(configured, { topics: [topic("o", "Old", { archived: true })] });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
   await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
@@ -1146,7 +1168,7 @@ test("arrow keys move through a menu and open and close its submenu", async () =
   expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}{ArrowRight}");
   expect(screen.getByRole("menuitemradio", { name: "Inbox" })).toHaveFocus();
-  await userEvent.keyboard("{ArrowDown}");
+  await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   expect(screen.getByRole("menuitemradio", { name: "Gym" })).toHaveFocus();
   await userEvent.keyboard("{ArrowLeft}");
   expect(screen.queryByRole("menuitemradio", { name: "Gym" })).not.toBeInTheDocument();
@@ -1171,6 +1193,7 @@ test("an Item with only files has no Copy text", async () => {
 
 test("Settings opens as a panel over the window, keeping the draft, and Escape closes it", async () => {
   backend(configured);
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
   await userEvent.click(screen.getByRole("button", { name: "Settings" }));
@@ -1282,7 +1305,7 @@ test("a second Move to Trash replaces the Notice, and Undo restores the second I
   expect(calls.filter((c) => c.cmd === "restore_item")).toEqual([{ cmd: "restore_item", args: { itemId: "2" } }]);
 });
 
-test("a new Notice gets its own 8 seconds", async () => {
+test("a new Undo Notice gets its own 6 seconds", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -1300,6 +1323,7 @@ test("a new Notice gets its own 8 seconds", async () => {
 
 test("⌘Z runs Undo while the Notice shows, but not while typing or after it's gone", async () => {
   const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await trashOf("squat 100");
   await screen.findByText("Item moved to Trash");
@@ -1353,6 +1377,7 @@ const openEdit = async (text: string) => {
 
 test("Edit opens in place with the composer still there; Shift+Enter adds a line and Enter saves", async () => {
   const calls = backend(configured, { items: () => [filed("1", "squat 100", null)] });
+  localStorage.setItem("place", "inbox");
   render(<App />);
   await openEdit("squat 100");
   const box = screen.getByRole("textbox", { name: "Edit Item" });
@@ -1602,14 +1627,14 @@ test("a drop in Trash attaches nothing and shows no drop target", async () => {
 });
 
 test("Inbox and Trash show counts, refetched when items change, and Trash stays selected", async () => {
-  let counts = { inbox: 17, trash: 3 };
+  let counts = { inbox: 17, tunnel: 0, trash: 3 };
   backend(configured, { counts: () => counts });
   render(<App />);
   expect(within(await screen.findByRole("button", { name: /^Inbox/ })).getByText("17")).toBeInTheDocument();
   const trash = screen.getByRole("button", { name: /^Trash/ });
   expect(within(trash).getByText("3")).toBeInTheDocument();
   await userEvent.click(trash);
-  counts = { inbox: 16, trash: 4 };
+  counts = { inbox: 16, tunnel: 0, trash: 4 };
   await act(() => emit("items-changed"));
   await vi.waitFor(() => expect(within(screen.getByRole("button", { name: /^Trash/ })).getByText("4")).toBeInTheDocument());
   expect(screen.getByRole("button", { name: /^Trash/ })).toHaveAttribute("aria-current", "page");
@@ -1779,7 +1804,7 @@ test("the place filter lists Inbox, open Topics, then archived ones, and narrows
   expect(place).toHaveTextContent("Anywhere");
   await userEvent.click(place);
   const menu = screen.getByRole("menu", { name: "Place" });
-  expect(within(menu).getAllByRole("menuitemradio").map((o) => o.textContent)).toEqual(["Anywhere", "Inbox", "Taxes", "Old"]);
+  expect(within(menu).getAllByRole("menuitemradio").map((o) => o.textContent)).toEqual(["Anywhere", "Inbox", "Tunnel", "Taxes", "Old"]);
   expect(within(menu).getByText("Archived")).toBeInTheDocument();
   await userEvent.click(within(menu).getByRole("menuitemradio", { name: "Old" }));
   await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "topic", id: "o" }));
@@ -2277,7 +2302,7 @@ test("Show on a sync-notice move opens the Item's Topic with it highlighted; emp
   await vi.waitFor(() => expect(rowOf("squat 100")).toHaveClass("is-highlight"));
 });
 
-test("a Notice doesn't start its 8 seconds while the window is unfocused", async () => {
+test("a Notice doesn't start its 4 seconds while the window is unfocused", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
   try {
@@ -2296,4 +2321,360 @@ test("a Notice doesn't start its 8 seconds while the window is unfocused", async
     focus.mockRestore();
     vi.useRealTimers();
   }
+});
+
+
+const tunnelItem = (text: string | null = "transfer this"): FeedItem => ({ ...filed("tunnel-note", text ?? "", null), text, in_tunnel: true });
+async function openTunnel() {
+  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  return screen.findByText("transfer this");
+}
+
+test("Tunnel sits under Inbox and shows its live count", async () => {
+  backend(configured, { counts: () => ({ inbox: 2, tunnel: 3, trash: 1 }) });
+  render(<App />);
+  const tunnel = await screen.findByRole("button", { name: /^Tunnel\s*3$/ });
+  expect(screen.getByRole("button", { name: /^Inbox\s*2$/ }).nextElementSibling).toBe(tunnel);
+});
+
+test("a Tunnel row copies once and shows Copied when trash after copy is off", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: false });
+  render(<App />);
+  await user.click(await openTunnel());
+  expect(await screen.findByText("Copied")).toBeInTheDocument();
+  expect(await navigator.clipboard.readText()).toBe("transfer this");
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+for (const undo of ["button", "keyboard"]) {
+  test(`copying a Tunnel note to Trash supports ${undo} Undo`, async () => {
+    const user = userEvent.setup();
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+    render(<App />);
+    await user.click(await openTunnel());
+    expect(await screen.findByText("Copied · moved to Trash")).toBeInTheDocument();
+    expect(calls.filter((c) => c.cmd === "trash_item")).toEqual([{ cmd: "trash_item", args: { itemId: "tunnel-note" } }]);
+    if (undo === "button") await user.click(screen.getByRole("button", { name: "Undo" }));
+    else fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+    await vi.waitFor(() => expect(calls).toContainEqual({ cmd: "restore_item", args: { itemId: "tunnel-note" } }));
+  });
+}
+
+for (const answer of ["Turn on", "Not now"]) {
+  test(`first Tunnel copy offers the synced setting: ${answer}`, async () => {
+    const user = userEvent.setup();
+    const calls = backend(configured, { items: () => [tunnelItem()] });
+    render(<App />);
+    await user.click(await openTunnel());
+    const popup = await screen.findByRole("alertdialog", { name: "Move Tunnel notes to Trash after you copy them?" });
+    expect(await navigator.clipboard.readText()).toBe("transfer this");
+    await user.click(within(popup).getByRole("button", { name: answer }));
+    expect(calls).toContainEqual({ cmd: "set_trash_after_copy", args: { on: answer === "Turn on" } });
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(answer === "Turn on");
+    if (answer === "Turn on") expect(await screen.findByText("Copied · moved to Trash")).toBeInTheDocument();
+    else {
+      await user.click(screen.getByText("transfer this"));
+      await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(2));
+      await screen.findByText("Copied");
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    }
+  });
+}
+
+test("double-clicking a Tunnel note edits it with at most one copy and no trash", async () => {
+  const user = userEvent.setup();
+  const write = vi.spyOn(navigator.clipboard, "writeText");
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await user.dblClick(await openTunnel());
+  expect(await screen.findByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(write.mock.calls.length).toBeLessThanOrEqual(1);
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+test("links, attachments, and row buttons in the Tunnel never copy or trash", async () => {
+  const user = userEvent.setup();
+  const write = vi.spyOn(navigator.clipboard, "writeText");
+  const note = tunnelItem("https://example.com");
+  note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
+  const calls = backend(configured, { items: () => [note], trashAfterCopy: true });
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  await user.click(screen.getByRole("link", { name: "https://example.com" }));
+  await user.click(screen.getByRole("button", { name: /note.pdf/ }));
+  await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(write).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.cmd === "plugin:opener|open_url")).toBe(true);
+  expect(calls.some((c) => c.cmd === "open_attachment")).toBe(true);
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+test("a failed clipboard write never changes the setting or trashes", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce("Clipboard unavailable");
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await user.click(await openTunnel());
+  expect(await screen.findByText("Couldn't copy the text")).toBeInTheDocument();
+  expect(calls.some((c) => ["trash_item", "set_trash_after_copy"].includes(c.cmd))).toBe(false);
+});
+
+test("a Tunnel note with no text is not copyable", async () => {
+  const user = userEvent.setup();
+  const write = vi.spyOn(navigator.clipboard, "writeText");
+  const calls = backend(configured, { items: () => [tunnelItem(null)], trashAfterCopy: true });
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  await user.click(screen.getByRole("article"));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(write).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+test("Move to Tunnel and Undo preserve the original place", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "move this", "g")], topics: [topic("g", "Gym")] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Tunnel" }));
+  expect(await screen.findByText("Moved to the Tunnel")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "tunnel" } }, { itemId: "1", target: { kind: "topic", id: "g" } }]);
+});
+
+test("dragging from Tunnel to Inbox and Undo returns to Tunnel", async () => {
+  const calls = backend(configured, { items: () => [tunnelItem()] });
+  render(<App />);
+  await openTunnel();
+  drag("transfer this", screen.getByRole("button", { name: /^Inbox/ }));
+  await screen.findByText("Moved to the Inbox");
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(moves(calls)).toEqual([{ itemId: "tunnel-note", target: { kind: "inbox" } }, { itemId: "tunnel-note", target: { kind: "tunnel" } }]);
+});
+
+test("dropping an Inbox note onto Tunnel moves it there", async () => {
+  const calls = backend(configured, { items: () => [filed("1", "move this", null)] });
+  render(<App />);
+  await screen.findByText("move this");
+  drag("move this", screen.getByRole("button", { name: /^Tunnel/ }));
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "tunnel" } }]));
+});
+
+test("Tunnel settings round-trip", async () => {
+  const calls = backend(configured, { trashAfterCopy: true });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const toggle = await screen.findByRole("switch", { name: "Trash Tunnel notes after copying" });
+  await vi.waitFor(() => expect(toggle).toBeChecked());
+  await userEvent.click(toggle);
+  expect(calls).toContainEqual({ cmd: "set_trash_after_copy", args: { on: false } });
+  expect(toggle).not.toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(await screen.findByRole("switch", { name: "Trash Tunnel notes after copying" })).not.toBeChecked();
+});
+
+
+test("Tunnel search filters and opens a result in its own place", async () => {
+  const calls = backend(configured, { items: () => [tunnelItem()], search: () => [found(tunnelItem())] });
+  render(<App />);
+  const search = await screen.findByRole("textbox", { name: /Search/ });
+  await userEvent.type(search, "transfer");
+  const results = await screen.findByTestId("results");
+  await within(results).findByText("transfer this");
+  await userEvent.click(screen.getByRole("button", { name: "Place" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Tunnel" }));
+  await vi.waitFor(() => expect(calls.some((c) => c.cmd === "search_items" && c.args.query.place.kind === "tunnel")).toBe(true));
+  await userEvent.click(within(results).getByRole("button", { name: /transfer this/ }));
+  expect(screen.getByRole("button", { name: /^Tunnel/ })).toHaveAttribute("aria-current", "page");
+});
+
+
+test("two quickly clicked Tunnel notes both move to Trash", async () => {
+  const user = userEvent.setup();
+  const second = { ...tunnelItem("second transfer"), id: "second" };
+  const calls = backend(configured, { items: () => [tunnelItem(), second], trashAfterCopy: true });
+  render(<App />);
+  await user.click(await openTunnel());
+  await user.click(screen.getByText("second transfer"));
+  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_item").map((c) => c.args.itemId)).toEqual(["tunnel-note", "second"]));
+});
+
+test("leaving Tunnel cancels a pending copy-to-Trash decision", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await user.click(await openTunnel());
+  await user.click(screen.getByRole("button", { name: /^Inbox/ }));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+
+test("a synced setting change updates the switch while Settings stays open", async () => {
+  let remote = true;
+  backend(configured, { pulledTrashAfterCopy: () => remote });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  const toggle = await screen.findByRole("switch", { name: "Trash Tunnel notes after copying" });
+  await vi.waitFor(() => expect(toggle).toBeChecked());
+  remote = false;
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(toggle).not.toBeChecked());
+});
+
+test("copying the same Tunnel note again restarts its Copied confirmation", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: false });
+  render(<App />);
+  await user.click(await openTunnel());
+  await screen.findByText("Copied");
+  await act(() => new Promise((resolve) => setTimeout(resolve, 750)));
+  await user.click(screen.getByText("transfer this"));
+  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(2));
+  await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  expect(screen.getByText("Copied")).toBeInTheDocument();
+});
+
+
+test("a slow system double-click edits a Tunnel note without trashing it", async () => {
+  userEvent.setup();
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, doubleClickIntervalMs: 900 });
+  render(<App />);
+  const text = await openTunnel();
+  fireEvent.click(text, { detail: 1 });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 650)));
+  fireEvent.click(text, { detail: 2 });
+  fireEvent.doubleClick(text, { detail: 2 });
+  expect(await screen.findByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
+  await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+test("a failed system timing read keeps a copied Tunnel note out of Trash", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, failing: { double_click_interval_ms: "Timing unavailable" } });
+  render(<App />);
+  await user.click(await openTunnel());
+  expect(await screen.findByText("Timing unavailable")).toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  expect(await navigator.clipboard.readText()).toBe("transfer this");
+});
+
+
+test("a new desktop opens Home with the sidebar and captures to a chosen Topic or Tunnel", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  localStorage.removeItem("place");
+  render(<App />);
+  await screen.findByRole("heading", { name: "NoteBank" });
+  expect(screen.getByRole("navigation")).toBeVisible();
+  expect(calls.some((c) => c.cmd === "list_items")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Topic" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "New Item" }), "squat{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat", attachmentIds: [], target: { kind: "topic", id: "g" } } });
+  await userEvent.click(screen.getByRole("switch", { name: "Tunnel" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "New Item" }), "transfer{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "transfer", attachmentIds: [], target: { kind: "tunnel" } } });
+});
+
+test("Home and Topic feeds share the unsent draft but Topic capture stays fixed", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  localStorage.removeItem("place");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "keep draft");
+  await userEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "Gym" }));
+  expect(box).toHaveValue("keep draft");
+  expect(screen.queryByRole("switch", { name: "Tunnel" })).not.toBeInTheDocument();
+  await userEvent.type(box, "{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "keep draft", attachmentIds: [], target: { kind: "topic", id: "g" } } });
+  await userEvent.click(screen.getByRole("button", { name: "Home" }));
+  expect(screen.getByRole("switch", { name: "Tunnel" })).toBeInTheDocument();
+});
+
+test("Home drops a now-archived destination without discarding the draft", async () => {
+  const topics = [topic("g", "Gym")];
+  const calls = backend(configured, { topics });
+  localStorage.removeItem("place");
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Topic" }));
+  await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
+  const box = screen.getByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "keep");
+  topics[0].archived = true;
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Inbox");
+  expect(box).toHaveValue("keep");
+  await userEvent.type(box, "{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "keep", attachmentIds: [], target: { kind: "inbox" } } });
+});
+
+test("Tunnel removal uses the native transition after the saved deletion arrives", async () => {
+  const updates: (() => void)[] = [];
+  Object.defineProperty(document, "startViewTransition", { configurable: true, value: (update: () => void) => {
+    updates.push(update);
+    return { ready: Promise.resolve() };
+  } });
+  let removed = false;
+  try {
+    backend(configured, { items: () => removed ? [] : [tunnelItem()] });
+    render(<App />);
+    await openTunnel();
+    removed = true;
+    await act(() => emit("items-changed"));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(screen.getByText("transfer this")).toBeInTheDocument();
+    act(() => updates[0]());
+    expect(screen.queryByText("transfer this")).not.toBeInTheDocument();
+  } finally { delete (document as Partial<Document>).startViewTransition; }
+});
+
+test("a saved Topic destination waits for Topics to load before validating it", async () => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  localStorage.setItem("place", "g");
+  render(<App />);
+  await screen.findByRole("button", { name: "Gym" });
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page"));
+  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveAttribute("placeholder", "Write to Gym…");
+});
+
+test("Home's Tunnel switch follows the other desktop window without losing its draft", async () => {
+  backend(configured);
+  localStorage.removeItem("place");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "keep draft");
+  localStorage.setItem("tunnelSwitch", "true");
+  act(() => window.dispatchEvent(new StorageEvent("storage", { key: "tunnelSwitch", newValue: "true" })));
+  expect(screen.getByRole("switch", { name: "Tunnel" })).toBeChecked();
+  expect(box).toHaveValue("keep draft");
+});
+
+test("Home offers capture without duplicating sidebar places", async () => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  localStorage.setItem("place", "home");
+  render(<App />);
+  await screen.findByRole("textbox", { name: "New Item" });
+  expect(screen.queryByRole("button", { name: "Open Inbox" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Open Gym" })).not.toBeInTheDocument();
+  expect(within(screen.getByRole("navigation")).getByRole("button", { name: "Gym" })).toBeVisible();
+});
+
+test("All Items is view-only and keeps the draft for the next capture destination", async () => {
+  backend(configured);
+  localStorage.setItem("place", "inbox");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "keep this draft");
+  await userEvent.click(screen.getByRole("button", { name: "All Items" }));
+  expect(screen.queryByRole("textbox", { name: "New Item" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Capture something below.")).not.toBeInTheDocument();
+  expect(screen.getByText("Capture something in Home or choose a place in the sidebar.")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveValue("keep this draft");
 });

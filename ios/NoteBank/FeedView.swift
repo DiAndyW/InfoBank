@@ -7,6 +7,7 @@ struct ShowTarget: Equatable {
 }
 
 struct FeedView: View {
+    private let store: Store
     let place: Place
     let status: SyncStatus
     let openSettings: () -> Void
@@ -16,6 +17,7 @@ struct FeedView: View {
     let wake: () -> Void
     @Binding var target: ShowTarget?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.palette) private var palette
     @State private var model: FeedModel
     @State private var composer: ComposerModel
@@ -24,12 +26,16 @@ struct FeedView: View {
     @State private var title: String
     @State private var copiedID: String?
     @State private var copies = 0
+    @State private var commands: FeedItem?
+    @State private var copyAfterSheet: FeedItem?
+    @State private var actionError: String?
     @State private var asking: FeedItem?
 
     init(
         place: Place, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
         onShow: @escaping (String) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
     ) {
+        self.store = services.store
         self.place = place
         self.status = status
         self.openSettings = openSettings
@@ -78,21 +84,18 @@ struct FeedView: View {
         copies += 1
         let outcome = model.copied(item)
         if outcome == .trashed {
+            copiedID = nil
             notices.postTrashed(itemID: item.id)
         } else {
             copiedID = item.id
-            Task {
-                try? await Task.sleep(for: .seconds(1.5))
-                if copiedID == item.id { copiedID = nil }
-            }
         }
         if outcome == .ask { asking = item }
         wake()
     }
 
     private func answer(_ on: Bool, _ item: FeedItem) {
-        model.answerTrashAfterCopy(on, item: item)
-        if on { notices.postTrashed(itemID: item.id) }
+        let saved = model.answerTrashAfterCopy(on, item: item)
+        if saved && on { notices.postTrashed(itemID: item.id) }
         wake()
     }
 
@@ -123,13 +126,15 @@ struct FeedView: View {
                             ItemRow(
                                 item: item, showsTopic: place == .all, highlighted: highlighted == item.id,
                                 copyable: place == .tunnel, copied: copiedID == item.id,
-                                onCopy: { copy(item) }, onDiscard: { model.discard(item.id) })
+                                onCopy: { copy(item) }, onCommands: { commands = item })
+                                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
                         }
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
             .defaultScrollAnchor(.bottom)
             .background(palette.surface)
             .onChange(of: model.items.last?.id) { _, newest in
@@ -152,17 +157,21 @@ struct FeedView: View {
             VStack(spacing: 8) {
                 if let notice = notices.current {
                     NoticeView(
-                        message: notice.message, actionTitle: notice.action == .undoTrash ? "Undo" : "Show",
+                        message: notice.message, actionTitle: notice.actionTitle,
                         onAction: {
-                            if notice.action == .undoTrash {
-                                model.undoTrash(itemID: notice.itemID)
+                            do {
+                                switch notice.action {
+                                case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
+                                case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
+                                case .show: onShow(notice.itemID); return
+                                }
+                                model.reload()
                                 notices.dismiss()
                                 wake()
-                            } else {
-                                onShow(notice.itemID)
-                            }
+                            } catch { actionError = error.localizedDescription }
                         },
                         onDismiss: notices.dismiss)
+                        .id(notice.id)
                 }
                 ComposerView(model: composer) {
                     scrollsToNewest = true
@@ -174,6 +183,31 @@ struct FeedView: View {
             .background(palette.surface)
             .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
         }
+        .sheet(item: $commands, onDismiss: {
+            if let item = copyAfterSheet {
+                copyAfterSheet = nil
+                if place == .tunnel { copy(item) }
+                else if let text = item.text { UIPasteboard.general.string = text }
+            }
+        }) { item in
+            ItemActionsView(item: item, store: store, onCopy: {
+                copyAfterSheet = item
+                commands = nil
+            }, onChanged: { trashed, moved in
+                model.reload()
+                if trashed { notices.postTrashed(itemID: item.id, copied: false) }
+                if moved { notices.postMoved(itemID: item.id, from: item.destination) }
+                wake()
+            })
+        }
+        .alert("Couldn't finish the action", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK") { actionError = nil }
+        } message: { Text(actionError ?? "") }
+        .task(id: copies) {
+            guard copiedID != nil else { return }
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            copiedID = nil
+        }
         .sensoryFeedback(.impact(weight: .light), trigger: copies)
         .alert(
             "Move Tunnel notes to Trash after you copy them?",
@@ -184,7 +218,7 @@ struct FeedView: View {
             Button("Not now", role: .cancel) { answer(false, item) }
         }
         .onDisappear {
-            if notices.current?.action == .undoTrash { notices.dismiss() }
+            if let notice = notices.current, notice.action != .show { notices.dismiss() }
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(palette.surface, for: .navigationBar)

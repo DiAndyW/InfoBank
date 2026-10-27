@@ -16,6 +16,7 @@ pub struct FeedItem {
     pub text: Option<String>,
     pub capture_time_us: i64,
     pub topic_id: Option<String>,
+    pub in_tunnel: bool,
     pub pending: bool,
     pub purge_at_us: Option<i64>,
     pub edit_base: i64,
@@ -42,6 +43,7 @@ pub(crate) fn feedback(r: &rusqlite::Row, first: usize) -> rusqlite::Result<(Opt
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Counts {
     pub inbox: i64,
+    pub tunnel: i64,
     pub trash: i64,
 }
 
@@ -60,7 +62,16 @@ pub struct FeedAttachment {
 pub enum View {
     All,
     Inbox,
+    Tunnel,
     Trash,
+    Topic { id: String },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Target {
+    Inbox,
+    Tunnel,
     Topic { id: String },
 }
 
@@ -112,23 +123,28 @@ pub fn capture(
     dir: &Path,
     text: &str,
     attachment_ids: &[String],
-    topic_id: Option<&str>,
+    target: &Target,
     now_us: i64,
 ) -> Result<(), String> {
     let text = checked_text(text)?;
     if text.is_none() && attachment_ids.is_empty() {
         return Err("Write something first".into());
     }
-    if let Some(id) = topic_id {
-        crate::topics::require_open(conn, id)?;
-    }
+    let (topic_id, tunnel) = match target {
+        Target::Inbox => (None, false),
+        Target::Tunnel => (None, true),
+        Target::Topic { id } => {
+            crate::topics::require_open(conn, id)?;
+            (Some(id.as_str()), false)
+        }
+    };
     let attachments = staged_attachments(dir, attachment_ids)?;
     let item_id = uuid::Uuid::new_v4().to_string();
 
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO items (id, topic_id, text, capture_time) VALUES (?1, ?2, ?3, ?4)",
-        (&item_id, topic_id, &text, now_us),
+        "INSERT INTO items (id, topic_id, text, capture_time, in_tunnel) VALUES (?1, ?2, ?3, ?4, ?5)",
+        (&item_id, topic_id, &text, now_us, tunnel),
     )
     .map_err(|e| e.to_string())?;
     for a in &attachments {
@@ -140,7 +156,7 @@ pub fn capture(
         .map_err(|e| e.to_string())?;
         pin(&tx, a, now_us)?;
     }
-    ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), text, attachments }, now_us)?;
+    ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), tunnel, text, attachments }, now_us)?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -270,20 +286,25 @@ pub fn set_trashed(conn: &Connection, item_id: &str, trashed: bool, now_us: i64)
     tx.commit().map_err(|e| e.to_string())
 }
 
-pub fn move_item(conn: &Connection, item_id: &str, topic_id: Option<&str>, now_us: i64) -> Result<(), String> {
-    let current: Option<String> = conn
-        .query_row("SELECT topic_id FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| r.get(0))
+pub fn move_item(conn: &Connection, item_id: &str, target: &Target, now_us: i64) -> Result<(), String> {
+    let current: (Option<String>, bool) = conn
+        .query_row("SELECT topic_id, in_tunnel FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or(GONE)?;
-    if current.as_deref() == topic_id {
+    let (topic_id, tunnel) = match target {
+        Target::Inbox => (None, false),
+        Target::Tunnel => (None, true),
+        Target::Topic { id } => (Some(id.as_str()), false),
+    };
+    if (current.0.as_deref(), current.1) == (topic_id, tunnel) {
         return Ok(());
     }
     if let Some(id) = topic_id {
         crate::topics::require_open(conn, id)?;
     }
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    ops::queue(&tx, ops::Op::MoveItem { item_id: item_id.into(), topic_id: topic_id.map(String::from) }, now_us)?;
+    ops::queue(&tx, ops::Op::MoveItem { item_id: item_id.into(), topic_id: topic_id.map(String::from), tunnel }, now_us)?;
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -308,15 +329,17 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
     let (kind, topic) = match view {
         View::All => ("all", None),
         View::Inbox => ("inbox", None),
+        View::Tunnel => ("tunnel", None),
         View::Trash => ("trash", None),
         View::Topic { id } => ("topic", Some(id.as_str())),
     };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, text, capture_time, topic_id, {PENDING}, purge_at, {EDIT_BASE}, {FEEDBACK}
+        "SELECT id, text, capture_time, topic_id, {PENDING}, purge_at, {EDIT_BASE}, {FEEDBACK}, in_tunnel
          FROM items
          WHERE CASE ?2 WHEN 'trash' THEN {IN_TRASH}
                ELSE deleted_at IS NULL
-                    AND CASE ?2 WHEN 'all' THEN 1 WHEN 'inbox' THEN topic_id IS NULL ELSE topic_id = ?3 END END
+                    AND CASE ?2 WHEN 'all' THEN 1 WHEN 'inbox' THEN topic_id IS NULL AND in_tunnel = 0
+                         WHEN 'tunnel' THEN in_tunnel = 1 ELSE topic_id = ?3 END END
            AND (?4 IS NULL OR (capture_time, id) < (?4, ?5))
          ORDER BY capture_time DESC, id DESC
          LIMIT ?6"
@@ -331,6 +354,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
                     text: r.get(1)?,
                     capture_time_us: r.get(2)?,
                     topic_id: r.get(3)?,
+                    in_tunnel: r.get(10)?,
                     pending: r.get(4)?,
                     purge_at_us: r.get(5)?,
                     edit_base: r.get(6)?,
@@ -372,11 +396,12 @@ pub(crate) fn attach(conn: &Connection, items: &mut [FeedItem]) -> rusqlite::Res
 pub fn nav_counts(conn: &Connection, now_us: i64) -> rusqlite::Result<Counts> {
     conn.query_row(
         &format!(
-            "SELECT (SELECT count(*) FROM items WHERE deleted_at IS NULL AND topic_id IS NULL),
+            "SELECT (SELECT count(*) FROM items WHERE deleted_at IS NULL AND topic_id IS NULL AND in_tunnel = 0),
+                    (SELECT count(*) FROM items WHERE deleted_at IS NULL AND in_tunnel = 1),
                     (SELECT count(*) FROM items WHERE {IN_TRASH})"
         ),
         [now_us],
-        |r| Ok(Counts { inbox: r.get(0)?, trash: r.get(1)? }),
+        |r| Ok(Counts { inbox: r.get(0)?, tunnel: r.get(1)?, trash: r.get(2)? }),
     )
 }
 
@@ -397,7 +422,7 @@ mod tests {
     #[test]
     fn capture_writes_the_item_and_its_op_together() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "  hello\n", &[], None, 1_760_000_000_123_456).unwrap();
+        capture(&conn, d.path(), "  hello\n", &[], &Target::Inbox, 1_760_000_000_123_456).unwrap();
 
         let items = list_items(&conn, &View::All, None, 0).unwrap();
         assert_eq!(items.len(), 1);
@@ -424,12 +449,12 @@ mod tests {
         let (d, conn) = fresh();
         let too_long = "x".repeat(MAX_ITEM_TEXT_BYTES + 1);
         for text in ["", "  \n ", "a\0b", too_long.as_str()] {
-            assert!(capture(&conn, d.path(), text, &[], None, 1).is_err(), "accepted {:.20?}", text);
+            assert!(capture(&conn, d.path(), text, &[], &Target::Inbox, 1).is_err(), "accepted {:.20?}", text);
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
         // The limit itself is allowed, so the guard above is the byte limit and not something stricter.
-        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], None, 1).unwrap();
+        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], &Target::Inbox, 1).unwrap();
     }
 
     #[test]
@@ -472,7 +497,7 @@ mod tests {
     #[test]
     fn an_item_stops_pending_when_its_op_leaves_the_outbox() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "hi", &[], None, 1).unwrap();
+        capture(&conn, d.path(), "hi", &[], &Target::Inbox, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(!list_items(&conn, &View::All, None, 0).unwrap()[0].pending);
     }
@@ -485,7 +510,7 @@ mod tests {
     fn an_attachment_is_captured_with_its_item_in_one_transaction() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), None, 1_760_000_000_000_000).unwrap();
+        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), &Target::Inbox, 1_760_000_000_000_000).unwrap();
 
         let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
         assert_eq!(item.text, None);
@@ -512,18 +537,18 @@ mod tests {
         let (d, conn) = fresh();
         let never_staged = uuid::Uuid::new_v4().to_string();
         for bad in ["../files", never_staged.as_str()] {
-            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], None, 1).is_err(), "accepted {bad}");
+            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], &Target::Inbox, 1).is_err(), "accepted {bad}");
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
-        assert!(capture(&conn, d.path(), " ", &[], None, 1).is_err(), "blank with no attachments");
+        assert!(capture(&conn, d.path(), " ", &[], &Target::Inbox, 1).is_err(), "blank with no attachments");
     }
 
     #[test]
     fn an_item_stays_pending_until_its_files_are_uploaded() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), None, 1).unwrap();
+        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), &Target::Inbox, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(list_items(&conn, &View::All, None, 0).unwrap()[0].pending, "the file isn't on the Server yet");
         conn.execute("UPDATE attachments SET uploaded = 1", []).unwrap();
@@ -599,7 +624,7 @@ mod tests {
     fn discard_removes_a_refused_capture_and_its_files() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "hi", std::slice::from_ref(&id), None, 1).unwrap();
+        capture(&conn, d.path(), "hi", std::slice::from_ref(&id), &Target::Inbox, 1).unwrap();
         conn.execute("UPDATE items SET sync_error = 'invalid'", []).unwrap();
         let file = d.path().join("files").join(&id).join("scan.png");
         assert!(file.exists());
@@ -770,7 +795,7 @@ mod tests {
         let trash = list_items(&conn, &View::Trash, None, 1000).unwrap();
         assert_eq!(trash.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["files", "unsynced", "counting"]);
         assert_eq!(trash.iter().map(|i| i.purge_at_us).collect::<Vec<_>>(), [Some(2000), None, Some(1001)]);
-        assert_eq!(nav_counts(&conn, 1000).unwrap(), Counts { inbox: 1, trash: 3 });
+        assert_eq!(nav_counts(&conn, 1000).unwrap(), Counts { inbox: 1, tunnel: 0, trash: 3 });
     }
 
     #[test]
@@ -790,7 +815,7 @@ mod tests {
     fn the_feed_marks_files_that_can_run_code() {
         let (d, conn) = fresh();
         let ids = ["setup.command", "report.pdf"].map(|n| crate::files::stage_bytes(d.path(), n, b"x").unwrap().id);
-        capture(&conn, d.path(), "", &ids, None, 1).unwrap();
+        capture(&conn, d.path(), "", &ids, &Target::Inbox, 1).unwrap();
         let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
         assert_eq!(item.attachments.iter().map(|a| a.runnable).collect::<Vec<_>>(), [true, false]);
     }
@@ -813,7 +838,7 @@ mod tests {
     fn capture_files_the_item_in_the_topic() {
         let (d, conn) = fresh();
         with_topics(&conn);
-        capture(&conn, d.path(), "squat 100", &[], Some("t"), 1).unwrap();
+        capture(&conn, d.path(), "squat 100", &[], &Target::Topic { id: "t".into() }, 1).unwrap();
         let ids: Vec<String> = list_items(&conn, &View::Topic { id: "t".into() }, None, 0).unwrap().into_iter().map(|i| i.id).collect();
         assert_eq!(ids.len(), 1);
         assert_eq!(outbox_ops(&conn)[0]["topic_id"], "t");
@@ -825,8 +850,8 @@ mod tests {
         with_topics(&conn);
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
         for id in ["a", "d", "nope"] {
-            assert!(capture(&conn, d.path(), "hi", &[], Some(id), 1).is_err(), "captured into {id}");
-            assert!(move_item(&conn, "i", Some(id), 1).is_err(), "moved into {id}");
+            assert!(capture(&conn, d.path(), "hi", &[], &Target::Topic { id: id.into() }, 1).is_err(), "captured into {id}");
+            assert!(move_item(&conn, "i", &Target::Topic { id: id.into() }, 1).is_err(), "moved into {id}");
         }
         assert_eq!(count(&conn, "items"), 1);
         assert_eq!(count(&conn, "outbox"), 0);
@@ -837,13 +862,60 @@ mod tests {
         let (_d, conn) = fresh();
         with_topics(&conn);
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
-        move_item(&conn, "i", Some("t"), 2).unwrap();
+        move_item(&conn, "i", &Target::Topic { id: "t".into() }, 2).unwrap();
         assert_eq!(list_items(&conn, &View::Topic { id: "t".into() }, None, 0).unwrap().len(), 1);
-        move_item(&conn, "i", Some("t"), 3).unwrap();
-        move_item(&conn, "i", None, 4).unwrap();
+        move_item(&conn, "i", &Target::Topic { id: "t".into() }, 3).unwrap();
+        move_item(&conn, "i", &Target::Inbox, 4).unwrap();
         assert_eq!(list_items(&conn, &View::Inbox, None, 0).unwrap().len(), 1);
         let moves: Vec<serde_json::Value> = outbox_ops(&conn).into_iter().map(|o| o["topic_id"].clone()).collect();
         assert_eq!(moves, [serde_json::json!("t"), serde_json::Value::Null]);
-        assert!(move_item(&conn, "missing", None, 5).is_err());
+        assert!(move_item(&conn, "missing", &Target::Inbox, 5).is_err());
+    }
+
+    #[test]
+    fn tunnel_and_inbox_are_disjoint_and_count_only_live_items() {
+        let (_d, conn) = fresh();
+        let tunnel: View = serde_json::from_value(serde_json::json!({"kind":"tunnel"})).unwrap();
+        conn.execute_batch("INSERT INTO items (id, text, capture_time, topic_id, in_tunnel, deleted_at) VALUES
+            ('inbox', 'note', 1, NULL, 0, NULL), ('tunnel', 'note', 2, NULL, 1, NULL),
+            ('topic', 'note', 3, 't', 0, NULL), ('trash', 'note', 4, NULL, 1, 5);").unwrap();
+        let ids = |view: &View| list_items(&conn, view, None, 0).unwrap().into_iter().map(|i| i.id).collect::<Vec<_>>();
+        assert_eq!(ids(&tunnel), ["tunnel"]);
+        assert_eq!(serde_json::to_value(&list_items(&conn, &tunnel, None, 0).unwrap()[0]).unwrap()["in_tunnel"], true);
+        assert_eq!(ids(&View::Inbox), ["inbox"]);
+        assert_eq!(ids(&View::All), ["topic", "tunnel", "inbox"]);
+        assert_eq!(serde_json::to_value(nav_counts(&conn, 0).unwrap()).unwrap(), serde_json::json!({"inbox":1,"tunnel":1,"trash":1}));
+    }
+
+    #[test]
+    fn capture_and_move_through_tunnel_topic_and_inbox_queue_the_whole_place() {
+        let (d, conn) = fresh();
+        with_topics(&conn);
+        let target: Target = serde_json::from_value(serde_json::json!({"kind":"tunnel"})).unwrap();
+        capture(&conn, d.path(), "transfer", &[], &target, 1).unwrap();
+        let id = list_items(&conn, &View::Tunnel, None, 0).unwrap()[0].id.clone();
+        assert_eq!(outbox_ops(&conn)[0]["tunnel"], true);
+        assert_eq!(outbox_ops(&conn)[0]["topic_id"], serde_json::Value::Null);
+        move_item(&conn, &id, &Target::Tunnel, 2).unwrap();
+        assert_eq!(count(&conn, "outbox"), 1, "moving within the Tunnel is a no-op");
+        for (json, topic, tunnel) in [
+            (serde_json::json!({"kind":"topic", "id":"t"}), Some("t"), false),
+            (serde_json::json!({"kind":"tunnel"}), None, true),
+            (serde_json::json!({"kind":"inbox"}), None, false),
+            (serde_json::json!({"kind":"tunnel"}), None, true),
+        ] {
+            let target: Target = serde_json::from_value(json).unwrap();
+            move_item(&conn, &id, &target, 3).unwrap();
+            let actual: (Option<String>, bool) = conn.query_row("SELECT topic_id, in_tunnel FROM items WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            assert_eq!(actual, (topic.map(String::from), tunnel));
+            let ops = outbox_ops(&conn);
+            let op = ops.last().unwrap();
+            assert_eq!(op["type"], "MoveItem");
+            assert_eq!(op["tunnel"], tunnel);
+            assert_eq!(op["topic_id"], serde_json::json!(topic));
+        }
+        set_trashed(&conn, &id, true, 4).unwrap();
+        set_trashed(&conn, &id, false, 5).unwrap();
+        assert_eq!(list_items(&conn, &View::Tunnel, None, 0).unwrap()[0].id, id);
     }
 }

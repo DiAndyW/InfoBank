@@ -1,9 +1,11 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
+import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { discardItem, listItems, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View } from "./api";
+import { doubleClickIntervalMs, discardItem, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View, type Target } from "./api";
 import { Attachments } from "./attachments";
 import Composer from "./Composer";
+import CaptureDestination from "./CaptureDestination";
 import ConflictDialog from "./ConflictDialog";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
@@ -24,15 +26,16 @@ function daysLeft(purgeAtUs: number) {
 
 type Props = {
   view: View;
+  home?: boolean;
   topics: Topic[];
   covered: boolean;
   editor: RefObject<EditorHandle | null>;
   notice: NoticeData | null;
   onDismissNotice: () => void;
   onError: (title: string, err: unknown) => void;
-  onTrashed: (id: string) => void;
+  onTrashed: (id: string, copied?: boolean) => void;
   onRestored: (item: FeedItem) => void;
-  onMove: (item: FeedItem, topicId: string | null) => void;
+  onMove: (item: FeedItem, target: Target) => void;
   onDragStart: (item: FeedItem, x: number, y: number) => void;
   highlight: string | null;
   onHighlightDone: () => void;
@@ -44,7 +47,19 @@ function refusal(reason: string) {
   return `${what} It's only on this Device.`;
 }
 
-export default function Feed({ view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+export default function Feed({ home, view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+  const [homeTunnel, setHomeTunnel] = useState(() => localStorage.getItem("tunnelSwitch") === "true");
+  const [homeTopic, setHomeTopic] = useState<string | null>(null);
+  useEffect(() => {
+    const changed = (event: StorageEvent) => {
+      if (event.key === "tunnelSwitch") setHomeTunnel(event.newValue === "true");
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+  const homeChosen = topics.find((t) => t.id === homeTopic && !t.archived);
+  useEffect(() => { if (homeTopic && !homeChosen) setHomeTopic(null); }, [topics]);
+  const displayed = useRef<{ key: string; items: FeedItem[] }>({ key: "", items: [] });
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
   const [exhausted, setExhausted] = useState(false);
   const pages = useRef(1);
@@ -66,11 +81,105 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
   const showLoadingOlder = useShownAfterDelay(loadingOlder);
   const current = view.kind === "topic" ? topics.find((t) => t.id === view.id) : undefined;
   const trash = view.kind === "trash";
-  const noComposer = trash || current?.archived === true;
-  const targets = [{ id: null as string | null, name: "Inbox" }, ...topics.filter((t) => !t.archived)];
+  const noComposer = !home && (view.kind === "all" || trash || current?.archived === true);
+  const targets: { id: string; name: string; target: Target }[] = [
+    { id: "inbox", name: "Inbox", target: { kind: "inbox" } },
+    { id: "tunnel", name: "Tunnel", target: { kind: "tunnel" } },
+    ...topics.filter((t) => !t.archived).map((t) => ({ id: t.id, name: t.name, target: { kind: "topic" as const, id: t.id } })),
+  ];
+  const [copied, setCopied] = useState<{ id: string } | null>(null);
+  const [asking, setAsking] = useState<FeedItem | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const copyTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const rowVersions = useRef(new Map<string, number>());
+  const copyVersion = useRef(0);
+  const answerBusy = useRef(false);
+
+  function cancelCopy(itemID?: string) {
+    if (itemID !== undefined) {
+      clearTimeout(copyTimers.current.get(itemID));
+      copyTimers.current.delete(itemID);
+      rowVersions.current.set(itemID, (rowVersions.current.get(itemID) ?? 0) + 1);
+    } else {
+      for (const timer of copyTimers.current.values()) clearTimeout(timer);
+      copyTimers.current.clear();
+      rowVersions.current.clear();
+      copyVersion.current++;
+    }
+  }
+
+  useEffect(() => {
+    cancelCopy();
+    setCopied(null);
+    setAsking(null);
+    return cancelCopy;
+  }, [viewKey, covered, !!home]);
+
+  useEffect(() => {
+    if (copied === null) return;
+    const timer = setTimeout(() => setCopied(null), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
+  function copyItem(it: FeedItem, delay = false) {
+    if (!it.text || asking || answerBusy.current) return;
+    cancelCopy(it.id);
+    const version = copyVersion.current;
+    const rowVersion = rowVersions.current.get(it.id);
+    const current = () => version === copyVersion.current && rowVersion === rowVersions.current.get(it.id);
+    // Keep the clipboard write inside the user's gesture; double-click can still cancel Trash.
+    const written = navigator.clipboard.writeText(it.text).then(() => true, (err) => {
+      if (current()) onError("Couldn't copy the text", err);
+      return false;
+    });
+    const finish = async () => {
+      copyTimers.current.delete(it.id);
+      if (!(await written) || !current()) return;
+      try {
+        const trash = await trashAfterCopy();
+        if (!current()) return;
+        if (trash === true) {
+          await trashItem(it.id);
+          setCopied(null);
+          onTrashed(it.id, true);
+        } else if (trash === null) setAsking(it);
+        else setCopied({ id: it.id });
+      } catch (err) {
+        if (current()) onError("Couldn't finish copying the Item", err);
+      }
+    };
+    if (delay) {
+      doubleClickIntervalMs().then((interval) => {
+        if (current()) copyTimers.current.set(it.id, setTimeout(finish, interval + 50));
+      }, (err) => { if (current()) onError("Couldn't finish copying the Item", err); });
+    } else finish();
+  }
+
+  async function answerCopy(on: boolean) {
+    if (!asking || answerBusy.current) return;
+    const it = asking;
+    answerBusy.current = true;
+    setAnswering(true);
+    try {
+      await setTrashAfterCopy(on);
+      if (on) {
+        await trashItem(it.id);
+        onTrashed(it.id, true);
+      } else setCopied({ id: it.id });
+      setAsking(null);
+    } catch (err) {
+      setAsking(null);
+      onError("Couldn't save Trash after copy", err);
+    } finally {
+      answerBusy.current = false;
+      setAnswering(false);
+    }
+  }
+
 
   function startDrag(e: PointerEvent<HTMLElement>, it: FeedItem) {
     if (e.button !== 0) return;
+    cancelCopy(it.id);
     e.preventDefault();
     const [x0, y0] = [e.clientX, e.clientY];
     const moved = (m: globalThis.PointerEvent) => {
@@ -108,7 +217,12 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
     if (id !== latestLoad.current) return;
     setLoadingOlder(false);
     pages.current = pageCount;
-    setItems(all);
+    const previous = displayed.current;
+    displayed.current = { key, items: all };
+    const removed = previous.key === key && previous.items.some((it) => !all.some((next) => next.id === it.id));
+    if (view.kind === "tunnel" && removed && document.startViewTransition && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      document.startViewTransition(() => flushSync(() => setItems(all))).ready.catch(() => {});
+    } else setItems(all);
     setLoadedView(key);
     setExhausted(page.length === 0);
   }
@@ -133,12 +247,13 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
 
   useEffect(() => {
     atBottom.current = true;
+    if (home) { latestLoad.current++; return; }
     load(1);
     const unlisten = listen("items-changed", () => load(pages.current));
     return () => {
       unlisten.then((stop) => stop());
     };
-  }, [viewKey]);
+  }, [viewKey, !!home]);
 
   useLayoutEffect(() => {
     const el = listRef.current!;
@@ -161,6 +276,8 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
   }
 
   async function edit(it: FeedItem, text?: string | null) {
+    cancelCopy(it.id);
+    setAsking(null);
     if (editing?.id === it.id) return;
     if (editing && !(await editor.current!.save())) return;
     setInitialText(text);
@@ -178,8 +295,9 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
   const shown = [...listed].reverse();
   const today = new Date().toDateString();
   return (
-    <main className={covered ? "nb-feed is-covered" : "nb-feed"} aria-hidden={covered || undefined} inert={covered}>
-      <div className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
+    <main className={["nb-feed", covered && "is-covered", home && "is-home"].filter(Boolean).join(" ")} aria-hidden={covered || undefined} inert={covered}>
+      {home && <h1 className="nb-home-title">NoteBank</h1>}
+      <div hidden={!!home} className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
         <div className="nb-feed-col">
           {loadingOlder && showLoadingOlder && (
             <div className="nb-loading" role="status">
@@ -197,7 +315,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
             ) : (
               <div className="nb-empty">
                 <p className="nb-empty-title">Nothing here yet.</p>
-                <p className="nb-empty-hint">Capture something below.</p>
+                <p className="nb-empty-hint">{view.kind === "all" ? "Capture something in Home or choose a place in the sidebar." : "Capture something below."}</p>
               </div>
             )
           ) : (
@@ -205,8 +323,8 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
               const time = new Date(it.capture_time_us / 1000);
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
-              const place = view.kind === "all" || trash ? (topic?.name ?? "Inbox") : undefined;
-              const copy = it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
+              const place = view.kind === "all" || trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
+              const copy = it.text ? [{ label: "Copy text", onSelect: () => view.kind === "tunnel" ? copyItem(it) : navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
               const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
               return (
                 <Fragment key={it.id}>
@@ -234,9 +352,18 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                     </article>
                   ) : (
                     <article
+                      style={view.kind === "tunnel" ? { viewTransitionName: `item-${it.id}` } : undefined}
                       data-item={it.id}
-                      onDoubleClick={trash || it.sync_error ? undefined : () => open(it)}
-                      className={["nb-item", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
+                      onClick={view.kind === "tunnel" && it.text && !it.sync_error ? (e) => {
+                        if (e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
+                        copyItem(it, true);
+                      } : undefined}
+                      onDoubleClick={trash || it.sync_error ? undefined : (e) => {
+                        if ((e.target as HTMLElement).closest("a, button, input")) return;
+                        cancelCopy(it.id);
+                        open(it);
+                      }}
+                      className={["nb-item", view.kind === "tunnel" && it.text && !it.sync_error && "is-copyable", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
                       onContextMenu={
                         trash
                           ? undefined
@@ -283,7 +410,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                       <div className="nb-item-meta">
                         {place && (
                           <span className="nb-topic-chip" title={`In ${place}`}>
-                            <Icon name={topic ? "topic" : "inbox"} size={12} />
+                            <Icon name={it.in_tunnel ? "send" : topic ? "topic" : "inbox"} size={12} />
                             <span className="nb-chip-label">{place}</span>
                           </span>
                         )}
@@ -300,6 +427,7 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                             Conflict
                           </button>
                         )}
+                        {copied?.id === it.id && <span className="nb-mark is-copied" role="status"><Icon name="check" size={12} />Copied</span>}
                         {it.pending && (
                           <span className="nb-pending" title="Not synced yet">
                             <Icon name="pending" label="Not synced yet" />
@@ -322,9 +450,9 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
                                 label: "Move to…",
                                 submenu: targets.map((t) => ({
                                   label: t.name,
-                                  checked: it.topic_id === t.id,
+                                  checked: (it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") === t.id,
                                   onSelect: () => {
-                                    if (it.topic_id !== t.id) onMove(it, t.id);
+                                    if ((it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") !== t.id) onMove(it, t.target);
                                   },
                                 })),
                               },
@@ -366,6 +494,13 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
           }}
         />
       )}
+      {asking && (
+        <Dialog alert title="Move Tunnel notes to Trash after you copy them?" onClose={() => answering || setAsking(null)}
+          actions={<>
+            <button type="button" className="nb-btn nb-btn-secondary" disabled={answering} autoFocus onClick={() => answerCopy(false)}>Not now</button>
+            <button type="button" className="nb-btn nb-btn-primary" disabled={answering} onClick={() => answerCopy(true)}>Turn on</button>
+          </>} />
+      )}
       {discarding && (
         <Dialog
           alert
@@ -405,14 +540,15 @@ export default function Feed({ view, topics, covered, editor, notice, onDismissN
           <span>Items in Trash are deleted for good after 30 days.</span>
         </div>
       )}
-      <div hidden={noComposer}>
+      <div hidden={noComposer} className="nb-main-composer">
         <Composer
-          acceptsDrops={!noComposer}
-          topicId={view.kind === "topic" ? view.id : null}
-          placeholder={`Write to ${current ? current.name : "Inbox"}…`}
+          acceptsDrops={!noComposer && !covered}
+          picker={home ? <CaptureDestination topics={topics.filter((t) => !t.archived)} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={setHomeTopic} /> : undefined}
+          target={home ? homeTunnel ? { kind: "tunnel" } : homeChosen ? { kind: "topic", id: homeChosen.id } : { kind: "inbox" } : view.kind === "topic" ? { kind: "topic", id: view.id } : view.kind === "tunnel" ? { kind: "tunnel" } : { kind: "inbox" }}
+          placeholder={home ? homeTunnel ? "Send to your other devices…" : "Capture something…" : view.kind === "tunnel" ? "Send to your other devices…" : `Write to ${current ? current.name : "Inbox"}…`}
           onCaptured={() => {
             atBottom.current = true;
-            load(pages.current);
+            if (!home) load(pages.current);
           }}
         />
       </div>

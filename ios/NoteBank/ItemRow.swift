@@ -12,15 +12,14 @@ struct ItemRow: View {
     let copyable: Bool
     let copied: Bool
     let onCopy: () -> Void
-    let onDiscard: () -> Void
+    let onCommands: () -> Void
 
     @Environment(\.palette) private var palette
     @State private var showingReason = false
-    @State private var confirmingDiscard = false
 
     private var chipTitle: String? {
         guard showsTopic else { return nil }
-        return item.topicID == nil ? "Inbox" : item.topicName
+        return item.inTunnel ? "Tunnel" : item.topicID == nil ? "Inbox" : item.topicName
     }
 
     private func reasonText(_ reason: String) -> String {
@@ -46,12 +45,6 @@ struct ItemRow: View {
         return result
     }
 
-    @ViewBuilder private var copyButton: some View {
-        if let text = item.text {
-            Button("Copy Text", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
-        }
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
@@ -73,6 +66,13 @@ struct ItemRow: View {
                         .padding(.horizontal, 6)
                         .frame(minHeight: 20)
                         .background(palette.chip, in: RoundedRectangle(cornerRadius: 4))
+                }
+                if item.conflict != nil {
+                    Button(action: onCommands) { Label("Text conflict", systemImage: "exclamationmark.bubble") }
+                        .font(.plex(.sansSemibold, 12, relativeTo: .caption))
+                        .foregroundStyle(palette.danger)
+                        .frame(minHeight: 44)
+                        .buttonStyle(.plain)
                 }
                 if let reason = item.syncError {
                     Button { showingReason = true } label: {
@@ -120,24 +120,10 @@ struct ItemRow: View {
         .onTapGesture { if copyable && item.text != nil { onCopy() } }
         .background(highlighted ? palette.accentSoft : .clear)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
-        .contextMenu {
-            if let reason = item.syncError {
-                Section(reasonText(reason)) {
-                    copyButton
-                    Button("Discard…", systemImage: "trash", role: .destructive) { confirmingDiscard = true }
-                }
-            } else {
-                copyButton
-            }
-        }
-        .alert("Discard this Item?", isPresented: $confirmingDiscard) {
-            Button("Cancel", role: .cancel) {}
-            Button("Discard", role: .destructive, action: onDiscard)
-        } message: {
-            Text("\"\(item.label)\" is only on this iPhone. Discarding deletes it here, and there's no Trash or Undo for this.")
-        }
+        .onLongPressGesture { onCommands() }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(copyable && item.text != nil ? .isButton : [])
+        .accessibilityAction(named: "Item actions", onCommands)
         .accessibilityAction(named: "Copy") { if copyable && item.text != nil { onCopy() } }
     }
 }

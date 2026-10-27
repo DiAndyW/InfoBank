@@ -30,6 +30,32 @@ pub async fn save_settings(app: AppHandle, state: State<'_, AppState>, server_ur
 }
 
 #[tauri::command]
+pub fn double_click_interval_ms() -> u64 {
+    #[cfg(target_os = "macos")]
+    { (objc2_app_kit::NSEvent::doubleClickInterval() * 1000.0).ceil() as u64 }
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn GetDoubleClickTime() -> u32; }
+        unsafe { GetDoubleClickTime() as u64 }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    { 500 }
+}
+
+#[tauri::command]
+pub async fn trash_after_copy(state: State<'_, AppState>) -> Result<Option<bool>, String> {
+    settings::trash_after_copy(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+pub async fn set_trash_after_copy(app: AppHandle, state: State<'_, AppState>, on: bool) -> Result<(), String> {
+    settings::set_trash_after_copy(&state.db.lock().unwrap(), on, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn nav_counts(state: State<'_, AppState>) -> Result<feed::Counts, String> {
     feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(|e| e.to_string())
 }
@@ -148,16 +174,16 @@ pub async fn capture(
     state: State<'_, AppState>,
     text: String,
     attachment_ids: Vec<String>,
-    topic_id: Option<String>,
+    target: feed::Target,
 ) -> Result<(), String> {
-    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, topic_id.as_deref(), now_us())?;
+    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, &target, now_us())?;
     changed(&app, &state);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn move_item(app: AppHandle, state: State<'_, AppState>, item_id: String, topic_id: Option<String>) -> Result<(), String> {
-    feed::move_item(&state.db.lock().unwrap(), &item_id, topic_id.as_deref(), now_us())?;
+pub async fn move_item(app: AppHandle, state: State<'_, AppState>, item_id: String, target: feed::Target) -> Result<(), String> {
+    feed::move_item(&state.db.lock().unwrap(), &item_id, &target, now_us())?;
     changed(&app, &state);
     Ok(())
 }

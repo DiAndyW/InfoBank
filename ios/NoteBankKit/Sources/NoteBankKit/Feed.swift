@@ -21,9 +21,14 @@ public struct FeedItem: Identifiable, Hashable, Sendable {
     public let captureTimeUs: Int64
     public let topicID: String?
     public let topicName: String?
+    public let inTunnel: Bool
+    public let editBase: Int64
+    public let conflict: TextConflict?
     public let pending: Bool
     public let syncError: String?
     public let attachmentNames: [String]
+
+    public var destination: Destination { inTunnel ? .tunnel : topicID.map(Destination.topic) ?? .inbox }
 
     public var cursor: FeedCursor { FeedCursor(captureTimeUs: captureTimeUs, id: id) }
     public var label: String { NoteBankKit.label(text: text, firstFilename: attachmentNames.first) }
@@ -72,7 +77,11 @@ extension Store {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error,
+                    SELECT items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error, items.in_tunnel,
+                           COALESCE((SELECT json_extract(op, '$.base_rev') FROM outbox WHERE json_extract(op, '$.item_id') = items.id
+                               AND json_extract(op, '$.type') = 'SetText' ORDER BY seq DESC LIMIT 1), items.text_rev) AS edit_base,
+                           (SELECT text FROM conflicts WHERE item_id = items.id) AS conflict_text,
+                           (SELECT mine FROM conflicts WHERE item_id = items.id) AS conflict_mine,
                            items.sync_error IS NULL AND EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) AS pending
                     FROM items LEFT JOIN topics ON topics.id = items.topic_id
                     WHERE \(conditions.joined(separator: " AND "))
@@ -91,7 +100,8 @@ extension Store {
             return rows.map { row in
                 FeedItem(
                     id: row["id"], text: row["text"], captureTimeUs: row["capture_time"], topicID: row["topic_id"],
-                    topicName: row["topic_name"], pending: row["pending"], syncError: row["sync_error"],
+                    topicName: row["topic_name"], inTunnel: row["in_tunnel"], editBase: row["edit_base"],
+                    conflict: (row["conflict_mine"] as Bool?).map { TextConflict(text: row["conflict_text"], mine: $0) }, pending: row["pending"], syncError: row["sync_error"],
                     attachmentNames: names[row["id"]] ?? [])
             }
         }

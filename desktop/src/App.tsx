@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic } from "./api";
+import { getSettings, itemTarget, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -16,9 +16,9 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
   const [editing, setEditing] = useState(false);
   const [topics, setTopics] = useState<Topic[]>([]);
-  // "all", "inbox", "trash", or a Topic id.
-  const [feed, setFeed] = useState("all");
-  const [counts, setCounts] = useState<Counts>({ inbox: 0, trash: 0 });
+  // Home or a feed place.
+  const [feed, setFeed] = useState(() => localStorage.getItem("place") ?? "home");
+  const [counts, setCounts] = useState<Counts>({ inbox: 0, tunnel: 0, trash: 0 });
   const [highlight, setHighlight] = useState<string | null>(null);
 
   const [startup, setStartup] = useState<StartupFailure | null>(null);
@@ -55,6 +55,7 @@ export default function App() {
   const select = async (key: string) => {
     if (editor.current && !(await editor.current.save())) return false;
     setFeed(key);
+    localStorage.setItem("place", key);
     setNotice(null);
     setResultsOpen(false);
     return true;
@@ -63,13 +64,13 @@ export default function App() {
   const [dragging, setDragging] = useState<{ item: FeedItem; x: number; y: number } | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
 
-  const move = (it: FeedItem, topicId: string | null) =>
-    moveItem(it.id, topicId).then(
+  const move = (it: FeedItem, target: Target) =>
+    moveItem(it.id, target).then(
       () => {
-        const place = topics.find((t) => t.id === topicId);
-        show(place ? `Moved to ${place.name}` : "Moved to the Inbox", {
+        const place = topics.find((t) => target.kind === "topic" && t.id === target.id);
+        show(target.kind === "tunnel" ? "Moved to the Tunnel" : place ? `Moved to ${place.name}` : "Moved to the Inbox", {
           label: "Undo",
-          onAction: () => moveItem(it.id, it.topic_id).then(() => setHighlight(it.id), (e) => showError("Couldn't move the Item back", e)),
+          onAction: () => moveItem(it.id, itemTarget(it)).then(() => setHighlight(it.id), (e) => showError("Couldn't move the Item back", e)),
         });
       },
       (e) => showError("Couldn't move the Item", e),
@@ -82,7 +83,7 @@ export default function App() {
       setDropOn(null);
     };
     const drop = () => {
-      if (dropOn) move(dragging.item, dropOn === "inbox" ? null : dropOn);
+      if (dropOn) move(dragging.item, dropOn === "inbox" || dropOn === "tunnel" ? { kind: dropOn } : { kind: "topic", id: dropOn });
       end();
     };
     const cancel = (e: KeyboardEvent) => {
@@ -151,8 +152,9 @@ export default function App() {
 
   // Only on a Topics change, so selecting a just-created Topic isn't undone before its refresh arrives.
   useEffect(() => {
-    if (!["all", "inbox", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) setFeed("inbox");
-  }, [topics]);
+    if (!settings) return;
+    if (!["home", "all", "inbox", "tunnel", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) setFeed("inbox");
+  }, [topics, !!settings]);
 
   useEffect(() => {
     const undo = notice?.action?.label === "Undo" ? notice.action : null;
@@ -241,7 +243,7 @@ export default function App() {
     <div className="nb-app">
       <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
         search={searchText}
-        drag={dragging && { from: dragging.item.topic_id ?? "inbox", over: dropOn }}
+        drag={dragging && { from: dragging.item.in_tunnel ? "tunnel" : dragging.item.topic_id ?? "inbox", over: dropOn }}
         onDragOver={setDropOn}
         onSearch={(text) => {
           setSearchText(text);
@@ -252,15 +254,16 @@ export default function App() {
         searchRef={searchField}
       />
       <Feed
-        view={feed === "all" || feed === "inbox" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
+        home={feed === "home"}
+        view={feed === "home" ? { kind: "all" } : feed === "all" || feed === "inbox" || feed === "tunnel" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
         topics={topics}
         covered={covered}
         editor={editor}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
         onError={showError}
-        onTrashed={(id) =>
-          show("Item moved to Trash", {
+        onTrashed={(id, copied = false) =>
+          show(copied ? "Copied · moved to Trash" : "Item moved to Trash", {
             label: "Undo",
             onAction: () => restoreItem(id).then(() => setHighlight(id), (e) => showError("Couldn't restore the Item", e)),
           })
@@ -269,10 +272,10 @@ export default function App() {
         onDragStart={(item, x, y) => setDragging({ item, x, y })}
         onRestored={(it) => {
           const place = topics.find((t) => t.id === it.topic_id);
-          show(`Restored to ${place ? place.name : "Inbox"}`, {
+          show(`Restored to ${it.in_tunnel ? "Tunnel" : place ? place.name : "Inbox"}`, {
             label: "Show",
             onAction: () => {
-              select(place ? place.id : "inbox");
+              select(it.in_tunnel ? "tunnel" : place ? place.id : "inbox");
               setHighlight(it.id);
             },
           });
@@ -286,7 +289,7 @@ export default function App() {
           topics={topics}
           hidden={!resultsOpen}
           onOpen={async (it) => {
-            const place = topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";
+            const place = it.in_tunnel ? "tunnel" : topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";
             if (await select(place)) setHighlight(it.id);
             // The save failed: uncover the Feed so the editor's error line shows.
             else setResultsOpen(false);

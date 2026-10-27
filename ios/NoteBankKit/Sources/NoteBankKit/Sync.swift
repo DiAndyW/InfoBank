@@ -10,6 +10,9 @@ public enum SyncFailure: Error, Equatable {
 }
 
 public struct SyncNotice: Equatable, Sendable {
+    public enum Kind: Sendable { case inbox, move, gone, empty, failed }
+    public internal(set) var kind: Kind = .inbox
+
     public enum TopicState: String, Sendable {
         case archived, deleted
     }
@@ -21,6 +24,13 @@ public struct SyncNotice: Equatable, Sendable {
     public internal(set) var topicState: TopicState?
 
     public var message: String {
+        switch kind {
+        case .gone: return "Couldn't save your change: this Item was deleted for good on another Device."
+        case .empty: return "Couldn't restore this Item: it has no text or files left."
+        case .failed: return "The Server refused this change. Its version will be restored when sync completes."
+        case .move: return "Couldn't move this Item: its destination was archived or deleted on another Device."
+        case .inbox: break
+        }
         guard let topicName, let topicState else { return #"Saved "\#(label)" to the Inbox: its Topic isn't on this Server."# }
         return #"Saved "\#(label)" to the Inbox: \#(topicName) was \#(topicState.rawValue) on another Device."#
     }
@@ -92,9 +102,10 @@ private struct PushResponse: Decodable {
         let opID: String
         let status: String
         let reason: String?
+        let text: String?
 
         enum CodingKeys: String, CodingKey {
-            case status, reason
+            case status, reason, text
             case opID = "op_id"
         }
     }
@@ -126,7 +137,7 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                 return op
             }
             let pushed = Dictionary(
-                ops.map { ($0["id"] as? String ?? "", (type: $0["type"] as? String, itemID: $0["item_id"] as? String, topicID: $0["topic_id"] as? String)) },
+                ops.map { ($0["id"] as? String ?? "", (type: $0["type"] as? String, itemID: $0["item_id"] as? String, topicID: $0["topic_id"] as? String, text: $0["text"] as? String)) },
                 uniquingKeysWith: { first, _ in first })
             let body = try JSONSerialization.data(withJSONObject: ["device_id": deviceID, "ops": ops], options: [.withoutEscapingSlashes])
             let answer = try await http.send(url, path: "/sync/push", secret: secret, body: body)
@@ -149,6 +160,16 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                         let filename = try String.fetchOne(db, sql: "SELECT filename FROM attachments WHERE item_id = ? ORDER BY rowid LIMIT 1", arguments: [itemID])
                         let topicName = try op.topicID.flatMap { try String.fetchOne(db, sql: "SELECT name FROM topics WHERE id = ?", arguments: [$0]) }
                         notices.append(SyncNotice(itemID: itemID, label: label(text: text, firstFilename: filename), topicName: topicName, topicID: op.topicID))
+                    case ("rejected", "SetText", let itemID?, "superseded"), ("changed", "SetText", let itemID?, "overwrote"):
+                        let mine = result.status == "rejected"
+                        try db.execute(sql: """
+                            INSERT INTO conflicts(item_id, text, mine) SELECT ?, ?, ? WHERE EXISTS(SELECT 1 FROM items WHERE id = ?)
+                            ON CONFLICT(item_id) DO UPDATE SET text = excluded.text, mine = excluded.mine
+                            """, arguments: [itemID, mine ? op.text : result.text, mine, itemID])
+                    case ("rejected", let type?, let itemID?, let reason) where ["MoveItem", "SetText", "TrashItem", "RestoreItem"].contains(type):
+                        var notice = SyncNotice(itemID: itemID, label: "", topicName: nil, topicID: op.topicID)
+                        notice.kind = reason == "not_found" ? .gone : reason == "topic_unavailable" ? .move : reason == "empty" ? .empty : .failed
+                        notices.append(notice)
                     case ("accepted", _, _, _):
                         break
                     default:

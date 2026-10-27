@@ -65,6 +65,15 @@ extension DatabaseMigrator {
                 INSERT INTO settings (id) VALUES (1);
                 """)
         }
+        migrator.registerMigration("v4") { db in
+            try db.execute(sql: """
+                CREATE TABLE conflicts (
+                    item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+                    text TEXT,
+                    mine INTEGER NOT NULL CHECK(mine IN (0, 1))
+                ) STRICT;
+                """)
+        }
         return migrator
     }
 }

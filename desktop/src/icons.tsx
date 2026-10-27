@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 
 const PATHS = {
+  home: <path d="M2 7 8 2l6 5v7H9.5V9h-3v5H2z" />,
   more: (
     <>
       <circle cx={3} cy={8} r={1.25} fill="currentColor" stroke="none" />

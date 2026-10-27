@@ -62,7 +62,7 @@ struct TunnelTests {
         let store = try tempStore().store
         let item = try tunnelItem(store)
         let model = FeedModel(store: store, place: .tunnel)
-        model.answerTrashAfterCopy(true, item: item)
+        #expect(model.answerTrashAfterCopy(true, item: item))
         #expect(try types(store) == ["SetTrashAfterCopy", "TrashItem"])
         #expect(try outbox(store)[0]["value"] as? Bool == true)
         #expect(try store.trashAfterCopy() == true)
@@ -73,7 +73,7 @@ struct TunnelTests {
         let store = try tempStore().store
         let item = try tunnelItem(store)
         let model = FeedModel(store: store, place: .tunnel)
-        model.answerTrashAfterCopy(false, item: item)
+        #expect(model.answerTrashAfterCopy(false, item: item))
         #expect(try types(store) == ["SetTrashAfterCopy"])
         #expect(try outbox(store)[0]["value"] as? Bool == false)
         #expect(try store.trashAfterCopy() == false)
@@ -104,6 +104,24 @@ struct TunnelTests {
     @Test func noticeCenterPostsTheTrashedNoticeWithUndo() {
         let center = NoticeCenter()
         center.postTrashed(itemID: "a")
-        #expect(center.current == Notice(message: "Copied · moved to Trash", itemID: "a", action: .undoTrash))
+        #expect(center.current?.message == "Copied · moved to Trash")
+        #expect(center.current?.itemID == "a")
+        #expect(center.current?.action == .undoTrash)
     }
+    @Test func aFailedTrashAnswerDoesNotReportSuccess() throws {
+        let store = try tempStore().store
+        let item = try tunnelItem(store)
+        let model = FeedModel(store: store, place: .tunnel)
+        try store.pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER refuse_trash BEFORE UPDATE OF deleted_at ON items
+                WHEN NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'Trash unavailable'); END
+                """)
+        }
+        #expect(!model.answerTrashAfterCopy(true, item: item))
+        #expect(model.loadError?.contains("Trash unavailable") == true)
+        #expect(try types(store) == ["SetTrashAfterCopy"])
+        #expect(try store.items(in: .tunnel, before: nil, limit: 10).map(\.id) == [item.id])
+    }
+
 }

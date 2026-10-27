@@ -5,7 +5,7 @@ extension Store {
     func observeChanges(onChange: @escaping @MainActor @Sendable () -> Void, onError: @escaping @MainActor @Sendable (Error) -> Void)
         -> AnyDatabaseCancellable
     {
-        DatabaseRegionObservation(tracking: Table("items"), Table("outbox"), Table("topics"), Table("attachments"))
+        DatabaseRegionObservation(tracking: Table("items"), Table("outbox"), Table("topics"), Table("attachments"), Table("conflicts"))
             .start(
                 in: pool,
                 onError: { error in Task { @MainActor in onError(error) } },
@@ -68,6 +68,7 @@ public final class FeedModel {
     }
 
     public func copied(_ item: FeedItem) -> CopyOutcome {
+        guard item.syncError == nil else { return .copied }
         do {
             switch try store.trashAfterCopy() {
             case true?:
@@ -83,14 +84,17 @@ public final class FeedModel {
         }
     }
 
-    public func answerTrashAfterCopy(_ on: Bool, item: FeedItem) {
+    @discardableResult
+    public func answerTrashAfterCopy(_ on: Bool, item: FeedItem) -> Bool {
         do {
             let nowUs = Time.nowUs()
             try store.setTrashAfterCopy(on, nowUs: nowUs)
             if on { try store.trash(itemID: item.id, nowUs: nowUs) }
             reload()
+            return true
         } catch {
             loadError = error.localizedDescription
+            return false
         }
     }
 

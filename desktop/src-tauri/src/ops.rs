@@ -13,18 +13,31 @@ struct Queued {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Op {
-    CaptureItem { item_id: String, topic_id: Option<String>, text: Option<String>, attachments: Vec<NewAttachment> },
+    CaptureItem {
+        item_id: String,
+        topic_id: Option<String>,
+        #[serde(default)]
+        tunnel: bool,
+        text: Option<String>,
+        attachments: Vec<NewAttachment>,
+    },
     CreateTopic { topic_id: String, name: String },
     RenameTopic { topic_id: String, name: String },
     ArchiveTopic { topic_id: String },
     UnarchiveTopic { topic_id: String },
     DeleteTopic { topic_id: String, trash: Vec<String> },
-    MoveItem { item_id: String, topic_id: Option<String> },
+    MoveItem {
+        item_id: String,
+        topic_id: Option<String>,
+        #[serde(default)]
+        tunnel: bool,
+    },
     SetText { item_id: String, text: Option<String>, base_rev: i64 },
     AddAttachment { item_id: String, attachment: NewAttachment },
     RemoveAttachment { item_id: String, attachment_id: String },
     TrashItem { item_id: String },
     RestoreItem { item_id: String },
+    SetTrashAfterCopy { value: bool },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,8 +99,8 @@ fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
             )?;
             conn.execute("UPDATE items SET topic_id = NULL WHERE topic_id = ?1", [topic_id])?;
         }
-        Op::MoveItem { item_id, topic_id } => {
-            conn.execute("UPDATE items SET topic_id = ?2 WHERE id = ?1", (item_id, topic_id))?;
+        Op::MoveItem { item_id, topic_id, tunnel } => {
+            conn.execute("UPDATE items SET topic_id = ?2, in_tunnel = ?3 WHERE id = ?1", (item_id, topic_id, tunnel))?;
         }
         Op::SetText { item_id, text, .. } => {
             conn.execute("UPDATE items SET text = ?2, deleted_at = NULL, purge_at = NULL WHERE id = ?1", (item_id, text))?;
@@ -107,6 +120,9 @@ fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
         }
         Op::TrashItem { item_id } => {
             conn.execute("UPDATE items SET deleted_at = ?2, purge_at = NULL WHERE id = ?1", (item_id, at))?;
+        }
+        Op::SetTrashAfterCopy { value } => {
+            conn.execute("UPDATE settings SET trash_after_copy = ?1 WHERE id = 1", [value])?;
         }
         Op::RestoreItem { item_id } => {
             conn.execute("UPDATE items SET deleted_at = NULL, purge_at = NULL WHERE id = ?1", [item_id])?;
@@ -137,14 +153,14 @@ mod tests {
     fn ops_go_out_in_the_servers_format() {
         let (_d, conn) = fresh();
         let at = 1_760_000_000_123_456;
-        queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: None }, at).unwrap();
+        queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: None, tunnel: false }, at).unwrap();
         queue(&conn, Op::DeleteTopic { topic_id: "t".into(), trash: vec!["i".into()] }, at).unwrap();
 
         let ops = outbox(&conn);
         assert_eq!(
             ops[0],
             serde_json::json!({"id": ops[0]["id"], "type": "MoveItem", "at": "2025-10-09T08:53:20.123456Z",
-                               "item_id": "i", "topic_id": null})
+                               "item_id": "i", "topic_id": null, "tunnel": false})
         );
         assert_eq!(
             ops[1],
@@ -167,7 +183,7 @@ mod tests {
         queue(&conn, Op::CreateTopic { topic_id: "n".into(), name: "New".into() }, 5).unwrap();
         queue(&conn, Op::RenameTopic { topic_id: "t".into(), name: "Lifting".into() }, 5).unwrap();
         queue(&conn, Op::ArchiveTopic { topic_id: "u".into() }, 7).unwrap();
-        queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()) }, 5).unwrap();
+        queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()), tunnel: false }, 5).unwrap();
         queue(&conn, Op::DeleteTopic { topic_id: "d".into(), trash: vec!["bin".into()] }, 9).unwrap();
 
         let topic = |id: &str| -> (String, Option<i64>, Option<i64>) {
@@ -273,5 +289,33 @@ mod tests {
         queue(&conn, Op::AddAttachment { item_id: "gone".into(), attachment: png("a") }, 1).unwrap();
         let n: i64 = conn.query_row("SELECT count(*) FROM attachments", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn old_capture_and_move_ops_decode_as_outside_the_tunnel() {
+        for json in [
+            serde_json::json!({"type":"CaptureItem", "item_id":"i", "topic_id":null, "text":"hi", "attachments":[]}),
+            serde_json::json!({"type":"MoveItem", "item_id":"i", "topic_id":null}),
+        ] {
+            let op: Op = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(op).unwrap()["tunnel"], false);
+        }
+    }
+
+    #[test]
+    fn setting_ops_apply_locally_and_replay_in_queue_order() {
+        let (_d, conn) = fresh();
+        for value in [true, false] {
+            let op: Op = serde_json::from_value(serde_json::json!({"type":"SetTrashAfterCopy", "value":value})).unwrap();
+            queue(&conn, op, 1).unwrap();
+            let actual: bool = conn.query_row("SELECT trash_after_copy FROM settings", [], |r| r.get(0)).unwrap();
+            assert_eq!(actual, value);
+        }
+        conn.execute("UPDATE settings SET trash_after_copy = NULL", []).unwrap();
+        replay(&conn).unwrap();
+        let actual: bool = conn.query_row("SELECT trash_after_copy FROM settings", [], |r| r.get(0)).unwrap();
+        assert!(!actual);
+        assert_eq!(outbox(&conn)[0]["value"], true);
+        assert_eq!(outbox(&conn)[1]["value"], false);
     }
 }

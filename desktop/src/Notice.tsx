@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 
-const SHOW_MS = 8000;
-
 export type NoticeData = { id: number; message: string; action?: { label: "Undo" | "Show"; onAction: () => void } };
 
 export default function Notice({ message, action, onClose }: { message: string; action?: NoticeData["action"]; onClose: () => void }) {
@@ -22,9 +20,9 @@ export default function Notice({ message, action, onClose }: { message: string; 
 
   useEffect(() => {
     if (held || !focused) return;
-    const timer = setTimeout(onClose, SHOW_MS);
+    const timer = setTimeout(onClose, action?.label === "Undo" ? 6000 : 4000);
     return () => clearTimeout(timer);
-  }, [held, focused]);
+  }, [held, focused, action?.label]);
 
   return (
     <div

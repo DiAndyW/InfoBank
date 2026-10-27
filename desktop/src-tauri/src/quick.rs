@@ -19,11 +19,9 @@ pub fn summon<R: Runtime>(app: &AppHandle<R>) {
 }
 
 pub fn dismiss<R: Runtime>(app: &AppHandle<R>) {
-    // Hiding before the other app is active would bring the main window forward for a moment; focus_lost hides instead.
+    // Activate first to avoid bringing the main window forward; activation may emit no focus event.
     #[cfg(target_os = "macos")]
-    if reactivate_previous(&app.state::<AppState>()) {
-        return;
-    }
+    reactivate_previous(&app.state::<AppState>());
     hide(app);
 }
 
@@ -65,6 +63,23 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
     use tauri::Listener;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dismiss_resets_even_when_previous_app_activation_has_no_focus_callback() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::default()).build().unwrap();
+        let previous = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication().expect("a foreground app");
+        *app.state::<AppState>().previous_app.lock().unwrap() = Some(previous.processIdentifier());
+        let (tx, rx) = mpsc::channel();
+        app.listen_any("quick-capture-hidden", move |_| tx.send(()).unwrap());
+        dismiss(app.handle());
+        rx.recv_timeout(Duration::from_secs(2)).expect("successful activation left quick capture open without a focus callback");
+    }
 
     #[test]
     fn losing_focus_hides_and_resets_the_box_unless_a_file_dialog_is_open() {

@@ -169,6 +169,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
+            commands::double_click_interval_ms,
+            commands::trash_after_copy,
+            commands::set_trash_after_copy,
             commands::list_topics,
             commands::capture,
             commands::move_item,
@@ -240,6 +243,9 @@ mod tests {
         let main = names(include_str!("../capabilities/default.json"), "\"permissions\"", "\n  ]", "allow-");
         let quick = names(include_str!("../capabilities/quick-capture.json"), "\"permissions\"", "\n  ]", "allow-");
         assert_eq!(declared, handler, "build.rs and generate_handler! disagree");
+        assert!(handler.contains(&"double_click_interval_ms".into()));
+        assert!(handler.contains(&"trash_after_copy".into()));
+        assert!(handler.contains(&"set_trash_after_copy".into()));
         assert!(handler.iter().all(|c| main.contains(c)), "the main window can't call every command: {main:?}");
         let mut expected = [
             "capture",

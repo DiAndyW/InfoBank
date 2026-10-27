@@ -35,7 +35,7 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
   const loading = useRef(false);
   // Answers can arrive out of order; only the latest request may render.
   const latest = useRef(0);
-  const [place, setPlace] = useState("all"); // "all", "inbox", or a Topic id
+  const [place, setPlace] = useState("all"); // "all", "inbox", "tunnel", or a Topic id
   const [range, setRange] = useState<Range>("any");
   // Set when a preset is picked, not on every render, so the query stays the same between renders.
   const [presetFrom, setPresetFrom] = useState<number | null>(null);
@@ -46,7 +46,7 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
   const filtered = place !== "all" || range !== "any" || hasFiles;
   const query: SearchQuery = {
     text,
-    place: place === "all" || place === "inbox" ? { kind: place } : { kind: "topic", id: place },
+    place: place === "all" || place === "inbox" || place === "tunnel" ? { kind: place } : { kind: "topic", id: place },
     from_us: range === "custom" ? (from ? midnight(from) : null) : presetFrom,
     to_us: range === "custom" && to ? midnight(to, 1) : null,
     has_files: hasFiles,
@@ -54,7 +54,7 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
   const queryKey = JSON.stringify(query);
 
   useEffect(() => {
-    if (place !== "all" && place !== "inbox" && !topics.some((t) => t.id === place)) setPlace("all");
+    if (place !== "all" && place !== "inbox" && place !== "tunnel" && !topics.some((t) => t.id === place)) setPlace("all");
   }, [topics]);
 
   function pickRange(r: Range) {
@@ -132,13 +132,14 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
             onOpenChange={(o) => setMenu(o ? "place" : null)}
             trigger={
               <>
-                <Icon name={place === "all" ? "all" : place === "inbox" ? "inbox" : "topic"} />
-                {place === "all" ? "Anywhere" : place === "inbox" ? "Inbox" : topics.find((t) => t.id === place)?.name}
+                <Icon name={place === "all" ? "all" : place === "inbox" ? "inbox" : place === "tunnel" ? "send" : "topic"} />
+                {place === "all" ? "Anywhere" : place === "inbox" ? "Inbox" : place === "tunnel" ? "Tunnel" : topics.find((t) => t.id === place)?.name}
               </>
             }
             entries={[
               { label: "Anywhere", checked: place === "all", onSelect: () => setPlace("all") },
               { label: "Inbox", checked: place === "inbox", onSelect: () => setPlace("inbox") },
+              { label: "Tunnel", checked: place === "tunnel", onSelect: () => setPlace("tunnel") },
               ...topics.filter((t) => !t.archived).map((t) => ({ label: t.name, checked: place === t.id, onSelect: () => setPlace(t.id) })),
               ...(topics.some((t) => t.archived)
                 ? [
@@ -226,9 +227,9 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
                     )}
                   </span>
                   <span className="nb-item-meta">
-                    <span className="nb-topic-chip" title={`In ${topic?.name ?? "Inbox"}`}>
-                      <Icon name={topic ? "topic" : "inbox"} size={12} />
-                      <span className="nb-chip-label">{topic?.name ?? "Inbox"}</span>
+                    <span className="nb-topic-chip" title={`In ${it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}`}>
+                      <Icon name={it.in_tunnel ? "send" : topic ? "topic" : "inbox"} size={12} />
+                      <span className="nb-chip-label">{it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}</span>
                     </span>
                     <time className="nb-item-time">
                       {time.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}{" "}

@@ -71,8 +71,13 @@ struct RootView: View {
 
     private func show(_ itemID: String) {
         services.notices.dismiss()
-        path = [.inbox]
-        target = ShowTarget(place: .inbox, itemID: itemID)
+        let place: Place = (try? services.store.pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT topic_id, in_tunnel FROM items WHERE id = ? AND deleted_at IS NULL", arguments: [itemID]) else { return Place.inbox }
+            if row["in_tunnel"] as Bool { return .tunnel }
+            return (row["topic_id"] as String?).map(Place.topic) ?? .inbox
+        }) ?? .inbox
+        path = [place]
+        target = ShowTarget(place: place, itemID: itemID)
     }
 
     private func suspendAfterSync() {

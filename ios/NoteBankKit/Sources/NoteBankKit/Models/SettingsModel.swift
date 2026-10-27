@@ -1,8 +1,13 @@
 import Foundation
+import GRDB
 import Observation
 
 @MainActor @Observable
 public final class SettingsModel {
+    public private(set) var trashAfterCopy = false
+    public private(set) var trashError: String?
+    @ObservationIgnored private var copyObservation: AnyDatabaseCancellable?
+
     public var url = ""
     public var secret = ""
     public private(set) var hasSecret = false
@@ -24,6 +29,11 @@ public final class SettingsModel {
         self.secrets = secrets
         self.onSaved = onSaved
         load()
+        refreshTrashAfterCopy()
+        copyObservation = DatabaseRegionObservation(tracking: Table("settings"), Table("outbox")).start(
+            in: store.pool,
+            onError: { [weak self] error in Task { @MainActor in self?.trashError = error.localizedDescription } },
+            onChange: { [weak self] _ in Task { @MainActor in self?.refreshTrashAfterCopy() } })
         var keychainReadable = true
         do { hasSecret = try store.settings(secrets: secrets).hasSecret } catch {
             self.error = error.message
@@ -51,6 +61,26 @@ public final class SettingsModel {
         error = nil
         onSaved()
         return true
+    }
+
+    @discardableResult
+    public func setTrashAfterCopy(_ on: Bool) -> Bool {
+        do {
+            try store.setTrashAfterCopy(on, nowUs: Time.nowUs())
+            trashAfterCopy = on
+            trashError = nil
+            return true
+        } catch {
+            trashError = error.localizedDescription
+            return false
+        }
+    }
+
+    private func refreshTrashAfterCopy() {
+        do {
+            trashAfterCopy = try store.trashAfterCopy() ?? false
+            trashError = nil
+        } catch { trashError = error.localizedDescription }
     }
 
     private func load() {

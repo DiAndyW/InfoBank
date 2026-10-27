@@ -62,6 +62,16 @@ pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Opt
     tx.commit().map_err(|e| e.to_string())
 }
 
+pub fn trash_after_copy(conn: &Connection) -> Result<Option<bool>, String> {
+    conn.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0)).map_err(|e| e.to_string())
+}
+
+pub fn set_trash_after_copy(conn: &Connection, on: bool, now_us: i64) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    crate::ops::queue(&tx, crate::ops::Op::SetTrashAfterCopy { value: on }, now_us)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +185,7 @@ mod tests {
              INSERT INTO topics (id, name) VALUES ('old', 'Old');",
         )
         .unwrap();
-        crate::feed::capture(&conn, d.path(), "unsynced", &[], None, 2).unwrap();
+        crate::feed::capture(&conn, d.path(), "unsynced", &[], &crate::feed::Target::Inbox, 2).unwrap();
         crate::topics::create(&conn, "Mine", 3).unwrap();
         let count = |table: &str| -> i64 { conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap() };
 
@@ -187,5 +197,22 @@ mod tests {
         let name: String = conn.query_row("SELECT name FROM topics", [], |r| r.get(0)).unwrap();
         assert_eq!((count("items"), text.as_str(), count("topics"), name.as_str()), (1, "unsynced", 1, "Mine"));
         assert_eq!(count("outbox"), 2);
+    }
+
+    #[test]
+    fn trash_after_copy_can_be_answered_and_changed_offline() {
+        let (_d, conn, _secret) = env();
+        assert_eq!(trash_after_copy(&conn).unwrap(), None);
+        for value in [true, false] {
+            set_trash_after_copy(&conn, value, 1).unwrap();
+            assert_eq!(trash_after_copy(&conn).unwrap(), Some(value));
+        }
+        let mut stmt = conn.prepare("SELECT op FROM outbox ORDER BY seq").unwrap();
+        let ops: Vec<serde_json::Value> = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap()
+            .map(|s| serde_json::from_str(&s.unwrap()).unwrap()).collect();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0]["type"], "SetTrashAfterCopy");
+        assert_eq!(ops[0]["value"], true);
+        assert_eq!(ops[1]["value"], false);
     }
 }

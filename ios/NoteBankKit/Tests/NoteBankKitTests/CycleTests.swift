@@ -433,3 +433,71 @@ struct FakeServerCycleTests {
         #expect(fake.requests(to: "/sync/pull") == 0)
     }
 }
+
+extension ServerCycleTests {
+    @Test func offlineEditsAndMovesSyncAndConflictsPreserveBothTexts() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(server)
+        let b = try Device(server)
+        let id = try a.capture("original", at: t0)
+        try await a.sync()
+        try await b.sync()
+        let base = try b.feed()[0].editBase
+        #expect(try !b.store.editText(itemID: id, text: "mine", baseRev: base, nowUs: t0 + second))
+        #expect(try !a.store.editText(itemID: id, text: "theirs", baseRev: base, nowUs: t0 + 2 * second))
+        try a.store.move(itemID: id, to: .tunnel, nowUs: t0 + 2 * second)
+        try await a.sync()
+        try await b.sync()
+        let conflicted = try #require(b.feed().first)
+        #expect(conflicted.text == "theirs")
+        #expect(conflicted.conflict?.text == "mine")
+        #expect(conflicted.conflict?.mine == true)
+        #expect(conflicted.inTunnel)
+        #expect(try !b.store.resolveTextConflict(itemID: id, keepMine: true, nowUs: t0 + 3 * second))
+        try await b.sync()
+        try await a.sync()
+        #expect(try a.feed()[0].text == "mine")
+        #expect(try b.feed()[0].conflict == nil)
+    }
+}
+
+extension ServerCycleTests {
+    @Test func overwritingAnOfflineEditPreservesTheReplacedServerText() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(server)
+        let b = try Device(server)
+        let id = try a.capture("original", at: t0)
+        try await a.sync()
+        try await b.sync()
+        let base = try b.feed()[0].editBase
+        try a.store.editText(itemID: id, text: "older", baseRev: base, nowUs: t0 + second)
+        try b.store.editText(itemID: id, text: "newer", baseRev: base, nowUs: t0 + 2 * second)
+        try await a.sync()
+        try await b.sync()
+        #expect(try b.feed()[0].text == "newer")
+        #expect(try b.feed()[0].conflict?.text == "older")
+        #expect(try b.feed()[0].conflict?.mine == false)
+        try b.store.resolveTextConflict(itemID: id, keepMine: false, nowUs: t0 + 3 * second)
+        try await b.sync()
+        try await a.sync()
+        #expect(try a.feed()[0].text == "older")
+    }
+
+    @Test func aRefusedMoveIsReportedAndReturnsToTheServerPlace() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(server)
+        let topic = newID()
+        let remote = newID()
+        try await server.push(device: remote, ops: [["id": newID(), "type": "CreateTopic", "at": Time.rfc3339(t0), "topic_id": topic, "name": "Gym"]])
+        let id = try a.capture("move", at: t0, to: .tunnel)
+        try await a.sync()
+        try a.store.move(itemID: id, to: .topic(topic), nowUs: t0 + second)
+        try await server.push(device: remote, ops: [["id": newID(), "type": "ArchiveTopic", "at": Time.rfc3339(t0 + 2 * second), "topic_id": topic]])
+        try await a.sync()
+        #expect(a.queued.last?.kind == .move)
+        #expect(try a.feed()[0].inTunnel)
+    }
+}

@@ -36,7 +36,7 @@ struct NoticeView: View {
         .accessibilityElement(children: .contain)
         .task(id: "\(scenePhase == .active)\(message)") {
             guard scenePhase == .active else { return }
-            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            do { try await Task.sleep(for: .seconds(actionTitle == "Undo" ? 6 : 4)) } catch { return }
             onDismiss()
         }
     }

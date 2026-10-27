@@ -281,3 +281,23 @@ struct ModelTests {
         #expect(center.current == nil)
     }
 }
+
+extension ModelTests {
+    @Test func settingsRefreshesTheSyncedCopySwitchWithoutClobberingServerDrafts() async throws {
+        let store = try tempStore().store
+        let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://notes.example.com", newSecret: "secret", secrets: secrets)
+        let settings = SettingsModel(store: store, secrets: secrets, onSaved: {})
+        settings.url = "https://draft.example.com"
+        settings.secret = "unsaved"
+        let json = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":true}}"#
+        _ = try store.applyPull(try JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
+        #expect(await eventually { settings.trashAfterCopy })
+        #expect(settings.url == "https://draft.example.com")
+        #expect(settings.secret == "unsaved")
+        #expect(settings.setTrashAfterCopy(false))
+        _ = try store.applyPull(try JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
+        #expect(try store.trashAfterCopy() == false)
+        #expect(!settings.trashAfterCopy)
+    }
+}

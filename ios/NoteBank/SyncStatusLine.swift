@@ -23,7 +23,7 @@ struct SyncStatusLine: View {
                 Text(status.label)
             }
             .font(.plex(status.needsSettings ? .sansSemibold : .sansMedium, size, relativeTo: .caption))
-            .foregroundStyle(status.needsSettings ? palette.danger : palette.inkMuted)
+            .foregroundStyle(status.needsSettings ? palette.danger : status == .offline ? palette.ink : palette.inkMuted)
         }
     }
 }

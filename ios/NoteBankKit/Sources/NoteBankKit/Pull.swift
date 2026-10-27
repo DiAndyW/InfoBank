@@ -126,6 +126,17 @@ extension Store {
                         arguments: [a.id, item.id, a.filename, a.mimeType, a.sizeBytes, a.uploaded, a.hasThumbnail])
                 }
             }
+            for row in try Row.fetchAll(db, sql: "SELECT op FROM outbox ORDER BY seq") {
+                let op = try JSONSerialization.jsonObject(with: Data((row["op"] as String).utf8)) as! [String: Any]
+                guard let id = op["item_id"] as? String else { continue }
+                switch op["type"] as? String {
+                case "SetText":
+                    try db.execute(sql: "UPDATE items SET text = ? WHERE id = ?", arguments: [op["text"] as? String, id])
+                case "MoveItem":
+                    try db.execute(sql: "UPDATE items SET topic_id = ?, in_tunnel = ? WHERE id = ?", arguments: [op["topic_id"] as? String, op["tunnel"] as? Bool ?? false, id])
+                default: break
+                }
+            }
             for id in page.tombstones {
                 try db.execute(sql: "DELETE FROM items WHERE id = ?", arguments: [id])
             }

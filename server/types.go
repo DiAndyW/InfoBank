@@ -34,7 +34,7 @@ type pushOp struct {
 	TopicID *uuid.UUID `json:"topic_id"`
 	Tunnel  bool       `json:"tunnel"`
 	Text    *string    `json:"text"`
-	Value   *bool      `json:"value"`    // SetTrashAfterCopy
+	Value   *bool      `json:"value"`
 	BaseRev *int64     `json:"base_rev"` // SetText: the text_rev the Device last saw
 
 	Name  string      `json:"name"`

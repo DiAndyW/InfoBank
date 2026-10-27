@@ -53,9 +53,6 @@ struct SettingsView: View {
     @Binding var theme: Theme
     @State private var model: SettingsModel
     @State private var draftTheme: Theme
-    @State private var trashAfterCopy: Bool
-    @State private var tunnelError: String?
-    private let store: Store
     private let wake: () -> Void
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
@@ -64,9 +61,7 @@ struct SettingsView: View {
         _theme = theme
         _draftTheme = State(initialValue: theme.wrappedValue)
         _model = State(wrappedValue: services.settingsModel())
-        store = services.store
         wake = services.wake
-        _trashAfterCopy = State(initialValue: (try? services.store.trashAfterCopy()) ?? false)
     }
 
     private func header(_ title: String) -> some View {
@@ -91,16 +86,9 @@ struct SettingsView: View {
                     Toggle(
                         "Trash Tunnel notes after copying",
                         isOn: Binding(
-                            get: { trashAfterCopy },
+                            get: { model.trashAfterCopy },
                             set: { on in
-                                do {
-                                    try store.setTrashAfterCopy(on, nowUs: Time.nowUs())
-                                    trashAfterCopy = on
-                                    tunnelError = nil
-                                    wake()
-                                } catch {
-                                    tunnelError = error.localizedDescription
-                                }
+                                if model.setTrashAfterCopy(on) { wake() }
                             })
                     )
                     .font(.plex(.sans, 17))
@@ -109,7 +97,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 16)
                     .frame(minHeight: 48)
                     .card()
-                    if let tunnelError {
+                    if let tunnelError = model.trashError {
                         Label(tunnelError, systemImage: "exclamationmark.triangle")
                             .font(.plex(.sansMedium, 13, relativeTo: .footnote))
                             .foregroundStyle(palette.danger)

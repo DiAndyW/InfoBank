@@ -36,12 +36,20 @@ pub struct Page {
     tombstones: Vec<String>,
     cursor: i64,
     has_more: bool,
+    settings: PulledSettings,
+}
+
+#[derive(Deserialize)]
+struct PulledSettings {
+    trash_after_copy: Option<bool>,
 }
 
 #[derive(Deserialize)]
 struct PulledItem {
     id: String,
     topic_id: Option<String>,
+    #[serde(default)]
+    tunnel: bool,
     text: Option<String>,
     capture_time: DateTime<Utc>,
     deleted_at: Option<DateTime<Utc>>,
@@ -75,6 +83,8 @@ fn micros(t: Option<DateTime<Utc>>) -> Option<i64> {
 /// Writes one pull page and its cursor in one transaction; true if it held any change.
 pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     let tx = conn.unchecked_transaction()?;
+    let previous: Option<bool> = tx.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0))?;
+    tx.execute("UPDATE settings SET trash_after_copy = ?1 WHERE id = 1", [page.settings.trash_after_copy])?;
     for t in &page.topics {
         tx.execute(
             "INSERT INTO topics (id, name, archived_at, deleted_at) VALUES (?1, ?2, ?3, ?4)
@@ -85,13 +95,13 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     }
     for it in &page.items {
         tx.execute(
-            "INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at, text_rev)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO items (id, topic_id, text, capture_time, deleted_at, purge_at, text_rev, in_tunnel)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
-                topic_id = excluded.topic_id, text = excluded.text, capture_time = excluded.capture_time,
+                topic_id = excluded.topic_id, in_tunnel = excluded.in_tunnel, text = excluded.text, capture_time = excluded.capture_time,
                 deleted_at = excluded.deleted_at, purge_at = excluded.purge_at,
                 text_rev = excluded.text_rev, sync_error = NULL",
-            (&it.id, &it.topic_id, &it.text, it.capture_time.timestamp_micros(), micros(it.deleted_at), micros(it.purge_at), it.text_rev),
+            (&it.id, &it.topic_id, &it.text, it.capture_time.timestamp_micros(), micros(it.deleted_at), micros(it.purge_at), it.text_rev, it.tunnel),
         )?;
         // Pull sends the Item's whole live set, so anything missing from it was removed.
         let keep: Vec<&str> = it.attachments.iter().map(|a| a.id.as_str()).collect();
@@ -115,8 +125,9 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     }
     crate::ops::replay(&tx)?;
     tx.execute("UPDATE device SET pull_cursor = ?1", [page.cursor])?;
+    let current: Option<bool> = tx.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0))?;
     tx.commit()?;
-    Ok(!(page.items.is_empty() && page.topics.is_empty() && page.tombstones.is_empty()))
+    Ok(previous != current || !(page.items.is_empty() && page.topics.is_empty() && page.tombstones.is_empty()))
 }
 
 /// The status to show after a cycle and what to wait for before the next.
@@ -550,11 +561,11 @@ mod tests {
     #[test]
     fn a_pull_that_purges_an_item_with_a_queued_file_still_applies() {
         let (_d, conn) = fresh();
-        let pulled = serde_json::json!({"items": [item("i", "x", vec![])], "topics": [], "tombstones": [], "cursor": 1, "has_more": false});
+        let pulled = serde_json::json!({"items": [item("i", "x", vec![])], "topics": [], "tombstones": [], "cursor": 1, "settings": {"trash_after_copy":null}, "has_more": false});
         apply_pull(&conn, &page(pulled)).unwrap();
         let png = crate::ops::NewAttachment { id: "a".into(), filename: "a.png".into(), mime_type: "image/png".into(), size_bytes: 3 };
         crate::ops::queue(&conn, crate::ops::Op::AddAttachment { item_id: "i".into(), attachment: png }, 2).unwrap();
-        let purged = serde_json::json!({"items": [], "topics": [], "tombstones": ["i"], "cursor": 2, "has_more": false});
+        let purged = serde_json::json!({"items": [], "topics": [], "tombstones": ["i"], "cursor": 2, "settings": {"trash_after_copy":null}, "has_more": false});
         apply_pull(&conn, &page(purged)).unwrap();
         let cursor: i64 = conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap();
         assert_eq!(cursor, 2);
@@ -566,7 +577,7 @@ mod tests {
         conn.execute("INSERT INTO items (id, text, capture_time, sync_error) VALUES ('i', 'x', 1, 'exists')", []).unwrap();
         let mut pulled = item("i", "x", vec![]);
         pulled["text_rev"] = 7.into();
-        let p = page(serde_json::json!({"items": [pulled], "topics": [], "tombstones": [], "cursor": 1, "has_more": false}));
+        let p = page(serde_json::json!({"items": [pulled], "topics": [], "tombstones": [], "cursor": 1, "settings": {"trash_after_copy":null}, "has_more": false}));
         apply_pull(&conn, &p).unwrap();
         let (rev, error): (i64, Option<String>) =
             conn.query_row("SELECT text_rev, sync_error FROM items WHERE id = 'i'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -579,7 +590,7 @@ mod tests {
         let p = page(serde_json::json!({
             "items": [item("i", "hello", vec![attachment("a")])],
             "topics": [{"id": "t", "name": "Mosaic", "archived_at": null, "deleted_at": null}],
-            "tombstones": [], "cursor": 7, "has_more": false,
+            "tombstones": [], "cursor": 7, "settings": {"trash_after_copy":null}, "has_more": false,
         }));
         assert!(apply_pull(&conn, &p).unwrap());
 
@@ -599,12 +610,12 @@ mod tests {
         let (_d, conn) = fresh();
         let first = page(serde_json::json!({
             "items": [item("i", "v1", vec![attachment("a0"), attachment("a1")])],
-            "topics": [], "tombstones": [], "cursor": 1, "has_more": false,
+            "topics": [], "tombstones": [], "cursor": 1, "settings": {"trash_after_copy":null}, "has_more": false,
         }));
         apply_pull(&conn, &first).unwrap();
         let second = page(serde_json::json!({
             "items": [item("i", "v2", vec![attachment("a1"), attachment("a2")])],
-            "topics": [], "tombstones": [], "cursor": 2, "has_more": false,
+            "topics": [], "tombstones": [], "cursor": 2, "settings": {"trash_after_copy":null}, "has_more": false,
         }));
         apply_pull(&conn, &second).unwrap();
         apply_pull(&conn, &second).unwrap(); // a retried page changes nothing
@@ -619,10 +630,10 @@ mod tests {
         let (_d, conn) = fresh();
         apply_pull(&conn, &page(serde_json::json!({
             "items": [item("i", "x", vec![attachment("a")])],
-            "topics": [], "tombstones": [], "cursor": 1, "has_more": false,
+            "topics": [], "tombstones": [], "cursor": 1, "settings": {"trash_after_copy":null}, "has_more": false,
         }))).unwrap();
         apply_pull(&conn, &page(serde_json::json!({
-            "items": [], "topics": [], "tombstones": ["i"], "cursor": 2, "has_more": false,
+            "items": [], "topics": [], "tombstones": ["i"], "cursor": 2, "settings": {"trash_after_copy":null}, "has_more": false,
         }))).unwrap();
         let items: i64 = conn.query_row("SELECT count(*) FROM items", [], |r| r.get(0)).unwrap();
         assert_eq!(items, 0);
@@ -632,7 +643,7 @@ mod tests {
     #[test]
     fn an_empty_page_changes_nothing_but_the_cursor() {
         let (_d, conn) = fresh();
-        let empty = page(serde_json::json!({"items": [], "topics": [], "tombstones": [], "cursor": 3, "has_more": false}));
+        let empty = page(serde_json::json!({"items": [], "topics": [], "tombstones": [], "cursor": 3, "settings": {"trash_after_copy":null}, "has_more": false}));
         assert!(!apply_pull(&conn, &empty).unwrap());
         let cursor: i64 = conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap();
         assert_eq!(cursor, 3);
@@ -649,12 +660,12 @@ mod tests {
                 "items": [item("i", "x", vec![]), filed],
                 "topics": [{"id": "t", "name": "Gym", "archived_at": null, "deleted_at": null},
                            {"id": "d", "name": "Old", "archived_at": null, "deleted_at": null}],
-                "tombstones": [], "cursor": cursor, "has_more": false,
+                "tombstones": [], "cursor": cursor, "settings": {"trash_after_copy":null}, "has_more": false,
             }))
         };
         apply_pull(&conn, &rows(1)).unwrap();
         ops::queue(&conn, Op::RenameTopic { topic_id: "t".into(), name: "Lifting".into() }, 5).unwrap();
-        ops::queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()) }, 5).unwrap();
+        ops::queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()), tunnel: false }, 5).unwrap();
         ops::queue(&conn, Op::DeleteTopic { topic_id: "d".into(), trash: vec!["j".into()] }, 5).unwrap();
 
         let state = |conn: &Connection| -> (String, Option<String>, bool, bool) {
@@ -688,6 +699,53 @@ mod tests {
         assert_eq!(outcome(&Err(SyncError::NotConfigured), 0), ("not_configured", Wait::UntilSettingsSaved));
         assert_eq!(outcome(&Err(SyncError::Keychain("denied".into())), 0), ("keychain", Wait::UntilWoken));
     }
+    #[test]
+    fn pull_sets_and_clears_the_tunnel_place() {
+        let (_d, conn) = fresh();
+        for (tunnel, topic) in [(true, None), (false, Some("t")), (false, None)] {
+            let mut it = item("i", "note", vec![]);
+            it["tunnel"] = tunnel.into();
+            it["topic_id"] = topic.into();
+            apply_pull(&conn, &page(serde_json::json!({"items":[it],"topics":[],"tombstones":[],"cursor":1,"has_more":false,
+                "settings":{"trash_after_copy":null}}))).unwrap();
+            let actual: (bool, Option<String>) = conn.query_row("SELECT in_tunnel, topic_id FROM items", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+            assert_eq!(actual, (tunnel, topic.map(String::from)));
+        }
+    }
+
+    #[test]
+    fn pulled_setting_changes_are_reported_even_without_items() {
+        let (_d, conn) = fresh();
+        for (value, changed) in [(None, false), (Some(true), true), (Some(true), false), (Some(false), true)] {
+            let p = page(serde_json::json!({"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,
+                "settings":{"trash_after_copy":value}}));
+            assert_eq!(apply_pull(&conn, &p).unwrap(), changed);
+            let actual: Option<bool> = conn.query_row("SELECT trash_after_copy FROM settings", [], |r| r.get(0)).unwrap();
+            assert_eq!(actual, value);
+        }
+    }
+
+    #[test]
+    fn pull_replays_pending_setting_move_and_trash() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'note', 1)", []).unwrap();
+        for json in [serde_json::json!({"type":"SetTrashAfterCopy","value":true}),
+            serde_json::json!({"type":"MoveItem","item_id":"i","topic_id":null,"tunnel":true}),
+            serde_json::json!({"type":"TrashItem","item_id":"i"})] {
+            crate::ops::queue(&conn, serde_json::from_value(json).unwrap(), 5).unwrap();
+        }
+        apply_pull(&conn, &page(serde_json::json!({"items":[item("i", "note", vec![])],"topics":[],"tombstones":[],"cursor":1,"has_more":false,
+            "settings":{"trash_after_copy":false}}))).unwrap();
+        let value: bool = conn.query_row("SELECT trash_after_copy FROM settings", [], |r| r.get(0)).unwrap();
+        assert!(value);
+        let actual: (bool, Option<i64>) = conn.query_row("SELECT in_tunnel, deleted_at FROM items", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(actual, (true, Some(5)));
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        apply_pull(&conn, &page(serde_json::json!({"items":[],"topics":[],"tombstones":[],"cursor":1,"has_more":false,
+            "settings":{"trash_after_copy":false}}))).unwrap();
+        assert!(!conn.query_row("SELECT trash_after_copy FROM settings", [], |r| r.get::<_, bool>(0)).unwrap());
+    }
+
 }
 
 #[cfg(test)]
@@ -848,12 +906,12 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let b = device(&server, &server.secret);
 
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], &feed::Target::Inbox, T0).unwrap();
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
         assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
 
         server.start();
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], None, T0 + 1_000_000).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], &feed::Target::Inbox, T0 + 1_000_000).unwrap();
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
@@ -868,7 +926,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, &server.secret);
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], &feed::Target::Inbox, T0).unwrap();
         let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
         sync(&a).await.unwrap();
         a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
@@ -884,7 +942,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, "not-the-secret");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, T0).unwrap();
         assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
         assert_eq!(count(&a, "outbox"), 1);
     }
@@ -895,7 +953,7 @@ mod server_tests {
         server.start();
         let a = device(&server, &server.secret);
         for i in 0..501 {
-            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], None, T0 + i).unwrap();
+            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], &feed::Target::Inbox, T0 + i).unwrap();
         }
         sync(&a).await.unwrap();
         assert_eq!(count(&a, "outbox"), 0);
@@ -1027,7 +1085,7 @@ mod server_tests {
 
     fn capture_png(d: &Device, text: &str) -> String {
         let id = crate::files::stage_bytes(&d.dir, "pixel.png", PIXEL_PNG).unwrap().id;
-        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), None, T0).unwrap();
+        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
         id
     }
 
@@ -1134,7 +1192,7 @@ mod server_tests {
         });
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
 
         let started = std::time::Instant::now();
         assert_eq!(upload_pending(&a, &url, "s").await, Ok(true));
@@ -1164,7 +1222,7 @@ mod server_tests {
         let url = stall(b"");
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
         let res = tokio::time::timeout(IDLE_TIMEOUT * 3, upload_pending(&a, &url, "s")).await.expect("never gave up");
         assert!(matches!(res, Err(SyncError::Failed(e)) if e.contains("stalled")));
     }
@@ -1288,7 +1346,7 @@ mod server_tests {
         let a = device(&server, &server.secret);
         let name = format!("{}.png", "x".repeat(251));
         let id = crate::files::stage_bytes(&a.dir, &name, PIXEL_PNG).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
         sync(&a).await.unwrap();
         let b = device(&server, &server.secret);
         sync(&b).await.unwrap();
@@ -1303,7 +1361,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let b = device(&server, &server.secret);
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], None, T0).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], &feed::Target::Inbox, T0).unwrap();
         sync(&b).await.unwrap();
         let a = device(&server, &server.secret);
         let id = capture_png(&a, "photo");
@@ -1339,12 +1397,12 @@ mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], None, T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, T0 + SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
 
-        feed::move_item(&a.db.lock().unwrap(), &item, Some(&gym), T0 + 10 * SECOND).unwrap();
+        feed::move_item(&a.db.lock().unwrap(), &item, &feed::Target::Topic { id: gym.clone() }, T0 + 10 * SECOND).unwrap();
         topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 20 * SECOND).unwrap();
         sync(&b).await.unwrap();
         sync(&a).await.unwrap();
@@ -1374,7 +1432,7 @@ mod server_tests {
 
         topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 10 * SECOND).unwrap();
         sync(&b).await.unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], Some(&gym), T0 + 20 * SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, T0 + 20 * SECOND).unwrap();
         sync(&a).await.unwrap();
 
         let item = only_item(&a);
@@ -1410,7 +1468,7 @@ mod server_tests {
     async fn two_devices_on_one_item(server: &mut TestServer) -> (Device, Device, String) {
         server.start();
         let (a, b) = (device(server, &server.secret), device(server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
@@ -1500,7 +1558,7 @@ mod server_tests {
                     let sent: serde_json::Value = serde_json::from_slice(&raw[head_len..]).unwrap();
                     (200, push_reply(&sent).to_string())
                 } else if request_line.starts_with("GET /sync/pull") {
-                    let empty = r#"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false}"#;
+                    let empty = r#"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":null}}"#;
                     (pull_status, empty.to_string())
                 } else {
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1551,7 +1609,7 @@ mod server_tests {
     async fn ops_on_a_refused_capture_are_silent() {
         let (url, _) = fake_server(|req| answers(req, &[("rejected", "invalid"), ("rejected", "not_found")]), 200);
         let a = device_at(&url, "secret");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
         let item = only_item(&a);
         edit(&a, &item, "shoes, size 9", 0, T0 + SECOND);
 
@@ -1596,8 +1654,8 @@ mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "keep me", &[], Some(&gym), T0 + SECOND).unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], Some(&gym), T0 + 2 * SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "keep me", &[], &feed::Target::Topic { id: gym.clone() }, T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], &feed::Target::Topic { id: gym.clone() }, T0 + 2 * SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let items = feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap();
@@ -1620,7 +1678,7 @@ mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], Some(&gym), T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, T0 + SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         assert_eq!(place(&b, &only_item(&b)), (Some(gym), false));
@@ -1681,7 +1739,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, T0).unwrap();
         sync(&a).await.unwrap();
         let item = only_item(&a);
 
@@ -1705,7 +1763,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
@@ -1732,7 +1790,7 @@ mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], None, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);

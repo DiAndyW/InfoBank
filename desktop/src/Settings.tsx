@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Settings as SettingsData } from "./api";
+import { listen } from "@tauri-apps/api/event";
+import { trashAfterCopy, setTrashAfterCopy, autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Settings as SettingsData } from "./api";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
+import Menu from "./Menu";
 import { Icon } from "./icons";
 import { THEMES, type Theme } from "./theme";
 
@@ -30,6 +32,7 @@ type Props = {
 };
 
 export default function Settings({ initial, theme, onThemeChange, onSaved, onCancel }: Props) {
+  const [themeOpen, setThemeOpen] = useState(false);
   const [url, setUrl] = useState(initial.server_url ?? "");
   const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +45,48 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
   const [recording, setRecording] = useState(false);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
   const [openAtLogin, setOpenAtLogin] = useState<boolean | null>(null);
+  const [trashCopied, setTrashCopied] = useState<boolean | null>(null);
+  const [trashError, setTrashError] = useState<string | null>(null);
+  const changingTrash = useRef(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
     if (onCancel) autostartOn().then(setOpenAtLogin, (err) => setLoginError(String(err)));
   }, []);
+
+  useEffect(() => {
+    if (!onCancel) return;
+    let active = true;
+    let latest = 0;
+    const load = async () => {
+      const request = ++latest;
+      try {
+        const value = await trashAfterCopy();
+        if (active && request === latest && !changingTrash.current) {
+          setTrashCopied(value ?? false);
+          setTrashError(null);
+        }
+      } catch (err) {
+        if (active && request === latest) setTrashError(String(err));
+      }
+    };
+    load();
+    const stop = listen("items-changed", load);
+    return () => { active = false; stop.then((s) => s()); };
+  }, []);
+
+  async function changeTrashAfterCopy(on: boolean) {
+    changingTrash.current = true;
+    try {
+      await setTrashAfterCopy(on);
+      setTrashCopied(on);
+      setTrashError(null);
+    } catch (err) {
+      setTrashError(String(err));
+    } finally {
+      changingTrash.current = false;
+    }
+  }
 
   async function changeOpenAtLogin(on: boolean) {
     try {
@@ -112,19 +152,11 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
         </span>
         <input id={secretId} className="nb-input" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoComplete="off" />
       </div>
-      <label className="nb-field">
+      <div className="nb-field">
         <span className="nb-field-label">Theme</span>
-        <span className="nb-select">
-          <select className="nb-input" value={theme} onChange={(e) => onThemeChange(e.target.value as Theme)}>
-            {Object.entries(THEMES).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-          <Icon name="chevron-down" />
-        </span>
-      </label>
+        <Menu label="Theme" trigger={THEMES[theme]} open={themeOpen} onOpenChange={setThemeOpen}
+          entries={Object.entries(THEMES).map(([value, label]) => ({ label, checked: value === theme, onSelect: () => onThemeChange(value as Theme) }))} />
+      </div>
       <div className="nb-field">
         <span className="nb-field-label">Quick capture</span>
         <span className="nb-shortcut-row">
@@ -159,6 +191,21 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
           </span>
         )}
       </div>
+      {onCancel && (
+        <div className="nb-field">
+          <label className="nb-switch">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={trashCopied ?? false}
+              disabled={trashCopied === null}
+              onChange={(e) => changeTrashAfterCopy(e.target.checked)}
+            />
+            Trash Tunnel notes after copying
+          </label>
+          {trashError && <span role="alert" className="nb-field-error">{trashError}</span>}
+        </div>
+      )}
       {onCancel && (
         <div className="nb-field">
           <span className="nb-field-label">Open at login</span>

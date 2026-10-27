@@ -2,16 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { dismissQuickCapture, listTopics, sortedTopics, type Topic } from "./api";
 import Composer, { type ComposerHandle } from "./Composer";
-import { Icon } from "./icons";
-import Menu from "./Menu";
+import CaptureDestination from "./CaptureDestination";
 import { applyTheme, storedTheme } from "./theme";
 
 const dismiss = () => dismissQuickCapture().catch(() => {});
 
 export default function QuickCapture() {
+  const [session, setSession] = useState(0);
   const [topics, setTopics] = useState<Topic[]>([]);
   const [topicId, setTopicId] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [tunnel, setTunnel] = useState(() => localStorage.getItem("tunnelSwitch") === "true");
   const composer = useRef<ComposerHandle>(null);
 
   useEffect(() => {
@@ -21,11 +21,12 @@ export default function QuickCapture() {
     const stops = [
       listen("quick-capture-shown", () => {
         applyTheme(storedTheme());
+        setTunnel(localStorage.getItem("tunnelSwitch") === "true");
         load();
         composer.current?.focus();
       }),
       listen("quick-capture-hidden", () => {
-        setMenuOpen(false);
+        setSession((s) => s + 1);
         setTopicId(null);
         composer.current?.discard();
       }),
@@ -45,27 +46,11 @@ export default function QuickCapture() {
       <Composer
         ref={composer}
         acceptsDrops
-        topicId={topicId}
-        placeholder="Capture to NoteBank…"
+        target={tunnel ? { kind: "tunnel" } : chosen ? { kind: "topic", id: chosen.id } : { kind: "inbox" }}
+        placeholder={tunnel ? "Send to your other devices…" : "Capture to NoteBank…"}
         onCaptured={dismiss}
         onCancel={dismiss}
-        picker={
-          <Menu
-            label="Topic"
-            open={menuOpen}
-            onOpenChange={setMenuOpen}
-            trigger={
-              <>
-                <Icon name={chosen ? "topic" : "inbox"} />
-                {chosen?.name ?? "Inbox"}
-              </>
-            }
-            entries={[
-              { label: "Inbox", checked: topicId === null, onSelect: () => setTopicId(null) },
-              ...topics.map((t) => ({ label: t.name, checked: topicId === t.id, onSelect: () => setTopicId(t.id) })),
-            ]}
-          />
-        }
+        picker={<CaptureDestination key={session} topics={topics} tunnel={tunnel} topicId={chosen?.id ?? null} onTunnelChange={setTunnel} onTopicChange={setTopicId} />}
       />
     </div>
   );

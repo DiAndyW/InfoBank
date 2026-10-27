@@ -56,7 +56,7 @@ test("the composer hears only drops on its own window", async () => {
   mockIPC((cmd, args: any) => {
     if (cmd === "plugin:event|listen" && args.event === "attachments-staged") targets.push(args.target);
   });
-  render(<Composer acceptsDrops topicId={null} placeholder="" onCaptured={() => {}} />);
+  render(<Composer acceptsDrops target={{ kind: "inbox" }} placeholder="" onCaptured={() => {}} />);
   await waitFor(() => expect(targets).toEqual([{ kind: "WebviewWindow", label: "quick-capture" }]));
 });
 
@@ -65,7 +65,7 @@ test("Enter captures into the Inbox and dismisses, leaving the text until the bo
   render(<QuickCapture />);
   await userEvent.type(box(), "milk{Enter}");
   await waitFor(() => expect(count(calls, "dismiss_quick_capture")).toBe(1));
-  expect(calls.find((c) => c.cmd === "capture")!.args).toEqual({ text: "milk", attachmentIds: [], topicId: null });
+  expect(calls.find((c) => c.cmd === "capture")!.args).toEqual({ text: "milk", attachmentIds: [], target: { kind: "inbox" } });
   expect(box()).toHaveValue("milk");
   await act(() => emit("quick-capture-hidden"));
   expect(box()).toHaveValue("");
@@ -94,7 +94,7 @@ test("the Topic picker lists the Inbox and open Topics only, and a chosen Topic 
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
   expect(picker()).toHaveTextContent("Gym");
   await userEvent.type(box(), "squat{Enter}");
-  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args.topicId).toBe("t1"));
+  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args.target).toEqual({ kind: "topic", id: "t1" }));
 });
 
 test("opening the Topic picker doesn't send the draft", async () => {
@@ -210,7 +210,7 @@ test("a chosen Topic that's archived or deleted falls back to the Inbox", async 
   await act(() => emit("items-changed"));
   await waitFor(() => expect(picker()).toHaveTextContent("Inbox"));
   await userEvent.type(box(), "x{Enter}");
-  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args.topicId).toBe(null));
+  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args.target).toEqual({ kind: "inbox" }));
 });
 
 test("being shown focuses the text and reloads Topics", async () => {
@@ -236,4 +236,50 @@ test("the quick box has autocorrect, spellcheck and writing suggestions off", ()
   expect(box()).toHaveAttribute("autocorrect", "off");
   expect(box()).toHaveAttribute("spellcheck", "false");
   expect(box()).toHaveAttribute("writingsuggestions", "false");
+});
+
+
+test("quick capture remembers the Tunnel switch, hides the picker, and sends to Tunnel", async () => {
+  const calls = quickBackend({ topics: () => [topic("g", "Gym")] });
+  const { unmount } = render(<QuickCapture />);
+  await screen.findByRole("button", { name: "Topic" });
+  await choose("Gym");
+  await userEvent.click(screen.getByRole("switch", { name: "Tunnel" }));
+  expect(screen.queryByRole("button", { name: "Topic" })).not.toBeInTheDocument();
+  expect(box()).toHaveAttribute("placeholder", "Send to your other devices…");
+  expect(box().closest(".nb-composer")).toHaveClass("is-tunnel");
+  await userEvent.type(box(), "transfer{Enter}");
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "transfer", attachmentIds: [], target: { kind: "tunnel" } } }));
+  await act(() => emit("quick-capture-hidden"));
+  await act(() => emit("quick-capture-shown"));
+  expect(screen.getByRole("switch", { name: "Tunnel" })).toBeChecked();
+  unmount();
+  render(<QuickCapture />);
+  expect(screen.getByRole("switch", { name: "Tunnel" })).toBeChecked();
+  await userEvent.click(screen.getByRole("switch", { name: "Tunnel" }));
+  expect(picker()).toHaveTextContent("Inbox");
+  await userEvent.type(box(), "normal{Enter}");
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "normal", attachmentIds: [], target: { kind: "inbox" } } }));
+});
+
+
+
+
+test("quick capture picks up a Tunnel switch changed in Home before it is shown", async () => {
+  quickBackend();
+  render(<QuickCapture />);
+  expect(screen.getByRole("switch", { name: "Tunnel" })).not.toBeChecked();
+  localStorage.setItem("tunnelSwitch", "true");
+  await act(() => emit("quick-capture-shown"));
+  expect(screen.getByRole("switch", { name: "Tunnel" })).toBeChecked();
+});
+
+test("hiding quick capture also closes its destination menu", async () => {
+  quickBackend();
+  render(<QuickCapture />);
+  await userEvent.click(picker());
+  expect(screen.getByRole("menu", { name: "Topic" })).toBeInTheDocument();
+  await act(() => emit("quick-capture-hidden"));
+  await act(() => emit("quick-capture-shown"));
+  expect(screen.queryByRole("menu", { name: "Topic" })).not.toBeInTheDocument();
 });

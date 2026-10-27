@@ -41,8 +41,18 @@ struct PlacesView: View {
                 .foregroundStyle(palette.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 32)
-                .padding(.bottom, 16)
+                .padding(.bottom, 4)
                 .accessibilityAddTraits(.isHeader)
+            Group {
+                if status.needsSettings {
+                    Button(action: openSettings) { SyncStatusLine(status: status, size: 13).frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.plain)
+                } else {
+                    SyncStatusLine(status: status, size: 13).frame(minHeight: 28)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 12)
             ScrollView {
                 VStack(spacing: 0) {
                     HomeComposerView(model: composer, topics: places.topics).padding(.bottom, 20)
@@ -79,16 +89,11 @@ struct PlacesView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .safeAreaInset(edge: .bottom) {
-            let line = SyncStatusLine(status: status, size: 13).frame(minHeight: 44)
             VStack(spacing: 0) {
                 if let notice = notices.current {
                     NoticeView(message: notice.message, actionTitle: "Show", onAction: { onShow(notice.itemID) }, onDismiss: notices.dismiss)
                         .padding(.horizontal, 12)
-                }
-                if status.needsSettings {
-                    Button(action: openSettings) { line.frame(maxWidth: .infinity).contentShape(Rectangle()) }.buttonStyle(.plain)
-                } else {
-                    line
+                        .id(notice.id)
                 }
             }
         }
