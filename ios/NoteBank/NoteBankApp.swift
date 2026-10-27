@@ -130,13 +130,14 @@ struct RootView: View {
             for await notices in services.engine.notices { services.notices.post(notices) }
         }
         .task {
-            path = switch savedPlace {
+            var restored: [Place] = switch savedPlace {
             case "all": [.all]
             case "inbox": [.inbox]
             case let saved where saved.hasPrefix("topic:"): [.topic(String(saved.dropFirst("topic:".count)))]
             default: []
             }
-            path.removeAll { if case .topic(let id) = $0 { !places.places.topics.contains { $0.id == id } } else { false } }
+            restored.removeAll { if case .topic(let id) = $0 { !places.places.topics.contains { $0.id == id } } else { false } }
+            path = restored
         }
         .onChange(of: path) { _, path in
             savedPlace = switch path.last {
