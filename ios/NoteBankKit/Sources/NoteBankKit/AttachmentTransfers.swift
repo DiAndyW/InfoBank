@@ -12,13 +12,14 @@ private struct UploadIdentity: Codable, Sendable {
 
 private final class UploadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let store: Store
+    let sessionIdentifier: String
     let wake = Mutex<(@Sendable () -> Void)?>(nil)
     struct Events: Sendable {
         var completion: (@MainActor @Sendable () -> Void)?
         var finished = false
     }
     let events = Mutex(Events())
-    init(store: Store) { self.store = store }
+    init(store: Store, sessionIdentifier: String) { self.store = store; self.sessionIdentifier = sessionIdentifier }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         guard let text = task.taskDescription, let identity = try? JSONDecoder().decode(UploadIdentity.self, from: Data(text.utf8)) else { return }
@@ -26,7 +27,7 @@ private final class UploadDelegate: NSObject, URLSessionDataDelegate, @unchecked
             let expected = URL(string: identity.serverURL + "/attachments/" + identity.attachmentID)
             let redirected = task.response?.url != expected
             try store.withFileDatabaseAccess {
-                try store.completeUpload(identity.attachmentID, serverURL: identity.serverURL, taskID: task.taskIdentifier, status: (task.response as? HTTPURLResponse)?.statusCode ?? 0, failed: error != nil || redirected, generation: identity.generation)
+                try store.completeUpload(identity.attachmentID, serverURL: identity.serverURL, taskID: task.taskIdentifier, status: (task.response as? HTTPURLResponse)?.statusCode ?? 0, failed: error != nil || redirected, generation: identity.generation, sessionIdentifier: sessionIdentifier)
             }
             wake.withLock { $0 }?()
         } catch {
@@ -44,6 +45,8 @@ private final class UploadDelegate: NSObject, URLSessionDataDelegate, @unchecked
 
 public actor AttachmentTransfers {
     public static let sessionIdentifier = "app.notebank.ios.attachment-uploads"
+    public static let shareSessionIdentifier = "app.notebank.ios.share.attachment-uploads"
+    private let identifier: String
     private let store: Store
     private let secrets: SecretStore
     private let session: URLSession
@@ -63,14 +66,15 @@ public actor AttachmentTransfers {
     private var thumbnailRetries: [ThumbnailRequest: ThumbnailRetry] = [:]
     private var thumbnailRequests: [ThumbnailRequest: Task<URL, Error>] = [:]
 
-    public init(store: Store, secrets: SecretStore, background: Bool = true, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
+    public init(store: Store, secrets: SecretStore, background: Bool = true, sessionIdentifier: String = AttachmentTransfers.sessionIdentifier, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
+        self.identifier = sessionIdentifier
         self.store = store
         self.secrets = secrets
         self.now = now
-        delegate = UploadDelegate(store: store)
+        delegate = UploadDelegate(store: store, sessionIdentifier: sessionIdentifier)
         let config: URLSessionConfiguration
         if background {
-            config = .background(withIdentifier: Self.sessionIdentifier)
+            config = .background(withIdentifier: sessionIdentifier)
             #if os(iOS)
             config.sharedContainerIdentifier = "group.app.notebank"
             config.sessionSendsLaunchEvents = true
@@ -98,7 +102,7 @@ public actor AttachmentTransfers {
         session.getAllTasks { _ in }
     }
 
-    public func synchronize() async throws {
+    public func synchronize(itemID: String? = nil) async throws {
         guard !scheduling else { return }
         scheduling = true
         defer { scheduling = false }
@@ -112,13 +116,15 @@ public actor AttachmentTransfers {
                   let identity = try? JSONDecoder().decode(UploadIdentity.self, from: Data(text.utf8)),
                   identity.serverURL == serverURL, identity.generation == generation, wanted.contains(identity.attachmentID), task.state != .completed, task.state != .canceling else { task.cancel(); continue }
             active.insert(identity.attachmentID)
-            try store.registerUpload(identity.attachmentID, serverURL: serverURL, taskID: task.taskIdentifier)
+            try store.registerUpload(identity.attachmentID, serverURL: serverURL, taskID: task.taskIdentifier, sessionIdentifier: identifier)
             if task.state == .suspended { task.resume() }
         }
         var waitingForRetry = false
         for attachment in candidates where !active.contains(attachment.id) {
+            if let itemID, try store.attachmentItemID(attachment.id) != itemID { continue }
+            guard try store.canScheduleUpload(attachment.id, sessionIdentifier: identifier) else { continue }
             if try store.uploadRetryAt(attachment.id) > Time.nowUs() { waitingForRetry = true; continue }
-            if active.count >= 4 { break }
+            if itemID == nil && active.count >= 4 { break }
             guard let file = try store.localFile(attachment.id) else {
                 try store.recordUploadError(attachment.id, serverURL: serverURL, message: "The local file is missing; it hasn't been uploaded")
                 waitingForRetry = true
@@ -135,7 +141,7 @@ public actor AttachmentTransfers {
             let task = session.uploadTask(with: request, fromFile: file)
             let identity = UploadIdentity(attachmentID: attachment.id, serverURL: serverURL, generation: generation)
             task.taskDescription = String(decoding: try JSONEncoder().encode(identity), as: UTF8.self)
-            do { try store.registerUpload(attachment.id, serverURL: serverURL, taskID: task.taskIdentifier) }
+            do { try store.registerUpload(attachment.id, serverURL: serverURL, taskID: task.taskIdentifier, sessionIdentifier: identifier) }
             catch { task.cancel(); throw error }
             task.resume()
             active.insert(attachment.id)

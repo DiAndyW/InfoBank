@@ -57,9 +57,9 @@ public final class SyncHTTP: NSObject, Sendable, URLSessionTaskDelegate {
         super.init()
     }
 
-    func send(_ serverURL: String, path: String, secret: String, body: Data? = nil) async throws(SyncFailure) -> Data {
+    func send(_ serverURL: String, path: String, secret: String, body: Data? = nil, timeoutSeconds: TimeInterval = SyncHTTP.timeoutSeconds) async throws(SyncFailure) -> Data {
         guard let url = URL(string: serverURL + path) else { throw .failed("the Server URL can't be used") }
-        var request = URLRequest(url: url, timeoutInterval: Self.timeoutSeconds)
+        var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
         request.setValue("Bearer " + secret, forHTTPHeaderField: "Authorization")
         if let body {
             request.httpMethod = "POST"

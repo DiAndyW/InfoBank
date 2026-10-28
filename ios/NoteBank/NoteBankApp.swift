@@ -185,10 +185,29 @@ private enum ApplicationServices {
 
 @MainActor
 private final class BackgroundTransferDelegate: NSObject, UIApplicationDelegate {
+    private var shareTransfers: AttachmentTransfers?
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
-        guard identifier == AttachmentTransfers.sessionIdentifier, case .success(let services) = ApplicationServices.result else { completionHandler(); return }
+        guard case .success(let services) = ApplicationServices.result else { completionHandler(); return }
+        let transfers: AttachmentTransfers
+        switch identifier {
+        case AttachmentTransfers.sessionIdentifier:
+            transfers = services.transfers
+        case AttachmentTransfers.shareSessionIdentifier:
+            if let shareTransfers { transfers = shareTransfers }
+            else {
+                transfers = AttachmentTransfers(store: services.store, secrets: services.secrets, sessionIdentifier: identifier)
+                shareTransfers = transfers
+            }
+        default: completionHandler(); return
+        }
         let completion = BackgroundCompletion(completionHandler)
-        Task { await services.transfers.backgroundEvents { completion.finish() } }
+        Task {
+            await transfers.setWakeHandler { [engine = services.engine] in Task { await engine.wake() } }
+            await transfers.backgroundEvents { [weak self] in
+                if identifier == AttachmentTransfers.shareSessionIdentifier { self?.shareTransfers = nil }
+                completion.finish()
+            }
+        }
     }
 }
 

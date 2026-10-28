@@ -2678,3 +2678,16 @@ test("All Items is view-only and keeps the draft for the next capture destinatio
   await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
   expect(screen.getByRole("textbox", { name: "New Item" })).toHaveValue("keep this draft");
 });
+
+test("opening an image refreshes its preview after the original downloads", async () => {
+  const options: Options = {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [{ ...photo, filename: "photo.heic", mime_type: "image/heic", has_thumbnail: false }])],
+  };
+  const calls = backend(configured, options);
+  render(<App />);
+  await screen.findByText("photo.heic");
+  await vi.waitFor(() => expect(calls.some(c => c.cmd === "thumbnail")).toBe(true));
+  options.thumbnail = "/data/files/a2/photo.heic";
+  await userEvent.click(screen.getByRole("button", { name: "Open photo.heic" }));
+  expect(await screen.findByRole("img", { name: "photo.heic" })).toHaveAttribute("src", expect.stringContaining("photo.heic"));
+});

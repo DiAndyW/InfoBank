@@ -32,6 +32,9 @@ function Attachment({ a }: { a: FeedAttachment }) {
     try {
       await action(a.id);
       setNote(null);
+      if (image && !src) {
+        try { setSrc(convertFileSrc(await thumbnail(a.id))); } catch {}
+      }
     } catch (err) {
       setNote(String(err));
     }
@@ -60,7 +63,7 @@ function Attachment({ a }: { a: FeedAttachment }) {
   return image ? (
     <button type="button" className="nb-thumb" onClick={open} aria-label={`Open ${a.filename}`}>
       {src ? (
-        <img src={src} alt={a.filename} />
+        <img src={src} alt={a.filename} onError={() => setSrc(null)} />
       ) : (
         <span className="nb-thumb-ph">
           <Icon name="image" />

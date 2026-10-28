@@ -42,10 +42,11 @@ extension Store {
         return (result.isEmpty ? "file" : result) + suffix
     }
 
-    func recoverAttachmentFiles() throws {
-        let staged = try pool.read { try String.fetchAll($0, sql: "SELECT id FROM staged_files") }
-        for id in staged { try discardStaged(id) }
-        let kept = try pool.read { Set(try String.fetchAll($0, sql: "SELECT path FROM cached_files")) }
+    func recoverAttachmentFiles(_ db: Database) throws {
+        // A second live Store may be importing files; startup recovery runs only without one.
+        try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM staged_files)")
+        try db.execute(sql: "DELETE FROM staged_files")
+        let kept = Set(try String.fetchAll(db, sql: "SELECT path FROM cached_files"))
         let files = directory.appending(path: "files")
         for folder in (try? FileManager.default.contentsOfDirectory(at: files, includingPropertiesForKeys: nil)) ?? [] {
             if !kept.contains(where: { $0.hasPrefix("files/" + folder.lastPathComponent + "/") }) { try? FileManager.default.removeItem(at: folder) }

@@ -261,3 +261,21 @@ extension AttachmentTransferTests {
         #expect(ids.reduce(0) { $0 + server.requests(to: "/attachments/\($1)/thumbnail") } == 2)
     }
 }
+
+extension AttachmentTransferTests {
+    @Test func otherSessionsCannotCompleteOrReplaceAnActiveUpload() throws {
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://example.com", newSecret: "secret", secrets: secrets)
+        let file = try store.stageFile(at: AttachmentTests().source())
+        _ = try store.capture(text: "", attachmentIDs: [file.id], to: .inbox, nowUs: 1)
+        try store.registerUpload(file.id, serverURL: "https://example.com", taskID: 1, sessionIdentifier: AttachmentTransfers.shareSessionIdentifier)
+        #expect(try !store.canScheduleUpload(file.id, sessionIdentifier: AttachmentTransfers.sessionIdentifier))
+        #expect(throws: AttachmentError.self) {
+            try store.registerUpload(file.id, serverURL: "https://example.com", taskID: 1)
+        }
+        try store.completeUpload(file.id, serverURL: "https://example.com", taskID: 1, status: 204, failed: false)
+        #expect(try store.attachment(file.id)?.uploaded == false)
+        try store.completeUpload(file.id, serverURL: "https://example.com", taskID: 1, status: 500, failed: false, sessionIdentifier: AttachmentTransfers.shareSessionIdentifier)
+        #expect(try store.canScheduleUpload(file.id, sessionIdentifier: AttachmentTransfers.sessionIdentifier))
+    }
+}

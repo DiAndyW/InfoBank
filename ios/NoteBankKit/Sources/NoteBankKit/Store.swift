@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import GRDB
 import Synchronization
@@ -11,6 +12,7 @@ public enum StoreError: Error, Equatable, LocalizedError {
 public final class Store: Sendable {
     public let pool: DatabasePool
     public let directory: URL
+    private let fileSessionID = UUID().uuidString
     private let fileAccess = Mutex(false)
 
     public init(at file: URL) throws {
@@ -35,8 +37,22 @@ public final class Store: Sendable {
             try db.execute(
                 sql: "INSERT INTO device (id, device_id) SELECT 1, ? WHERE NOT EXISTS (SELECT 1 FROM device)",
                 arguments: [UUID().uuidString.lowercased()])
+            let sessions = try Row.fetchAll(db, sql: "SELECT id, process_id FROM file_sessions")
+            var hasLiveStore = false
+            for row in sessions {
+                let pid: Int32 = row["process_id"]
+                if Darwin.kill(pid, 0) == 0 || errno != ESRCH { hasLiveStore = true }
+                else { try db.execute(sql: "DELETE FROM file_sessions WHERE id = ?", arguments: [row["id"] as String]) }
+            }
+            if !hasLiveStore { try recoverAttachmentFiles(db) }
+            try db.execute(sql: "INSERT INTO file_sessions VALUES (?, ?)", arguments: [fileSessionID, ProcessInfo.processInfo.processIdentifier])
         }
-        try recoverAttachmentFiles()
+    }
+
+    deinit {
+        try? withFileDatabaseAccess {
+            try pool.write { try $0.execute(sql: "DELETE FROM file_sessions WHERE id = ?", arguments: [fileSessionID]) }
+        }
     }
 
     public func suspendFileDatabaseAccess() {

@@ -101,14 +101,16 @@ pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBu
         .unwrap()
         .query_row(
             "SELECT c.path FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
-             WHERE a.id = ?1 AND a.uploaded = 0 AND a.mime_type LIKE 'image/%'",
+             WHERE a.id = ?1 AND a.mime_type LIKE 'image/%'",
             [&id],
             |r| r.get(0),
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    if let Some(path) = own {
-        return Ok(state.dir.join(path));
+    if own.is_some() {
+        if let Some(path) = cached(state, &id, "file", now_us)? {
+            return Ok(path);
+        }
     }
     download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), Size::AtMost(MAX_THUMBNAIL_BYTES), now_us).await
 }
@@ -308,4 +310,17 @@ mod tests {
         let state = AppState::new(conn, secret, d.path().to_path_buf());
         assert_eq!(file(&state, &id, 1).await.unwrap_err(), "Not uploaded yet");
     }
+    #[tokio::test]
+    async fn an_uploaded_image_uses_its_cached_original_as_a_preview() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, true);
+        conn.execute("UPDATE attachments SET mime_type = 'image/heic', has_thumbnail = 0 WHERE id = ?1", [&id]).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let path = thumbnail(&state, &id, 1).await.unwrap();
+        assert_eq!(path, d.path().join(format!("files/{id}/f.png")));
+        assert_eq!(std::fs::read(path).unwrap(), b"x");
+    }
+
 }

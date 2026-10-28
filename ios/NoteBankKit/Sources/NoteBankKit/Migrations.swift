@@ -93,6 +93,12 @@ extension DatabaseMigrator {
                 ) STRICT;
                 """)
         }
+        migrator.registerMigration("v6") { db in
+            try db.execute(sql: """
+                ALTER TABLE attachment_uploads ADD COLUMN session_identifier TEXT NOT NULL DEFAULT 'app.notebank.ios.attachment-uploads';
+                CREATE TABLE file_sessions (id TEXT PRIMARY KEY, process_id INTEGER NOT NULL CHECK(process_id > 0)) STRICT;
+                """)
+        }
         return migrator
     }
 }
