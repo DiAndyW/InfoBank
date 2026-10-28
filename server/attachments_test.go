@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"image"
 	"image/color"
@@ -380,5 +381,37 @@ func TestFailedPutLeavesNoFile(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("directory after failed Put holds %v, want nothing", entries)
+	}
+}
+
+func TestMissingOriginalDoesNotConfirmAnAlreadyUploadedFile(t *testing.T) {
+	e := newSyncEnv(t)
+	_, id := e.capturePhoto()
+	if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.send("GET", "/attachments/"+id, nil).Code; got != http.StatusInternalServerError {
+		t.Fatalf("missing original GET = %d, want 500", got)
+	}
+	if got := e.upload(id, pngOf(t, 10, 10)); got != http.StatusInternalServerError {
+		t.Fatalf("missing original PUT = %d, want 500 rather than confirming storage", got)
+	}
+}
+
+func TestMissingThumbnailDoesNotMakeOriginalUnavailable(t *testing.T) {
+	e := newSyncEnv(t)
+	_, id := e.capturePhoto()
+	var key string
+	if err := e.h.api.db.QueryRow(context.Background(), "SELECT thumbnail_key FROM attachments WHERE id = $1", id).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(e.dir, key)); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.send("GET", "/attachments/"+id+"/thumbnail", nil).Code; got != http.StatusInternalServerError {
+		t.Fatalf("missing thumbnail = %d, want 500", got)
+	}
+	if got := e.send("GET", "/attachments/"+id, nil).Code; got != http.StatusOK {
+		t.Fatalf("original = %d, want 200", got)
 	}
 }

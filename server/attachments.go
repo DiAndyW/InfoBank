@@ -79,6 +79,13 @@ func (a *syncAPI) upload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusGone)
 		return
 	case uploaded:
+		f, err := a.files.Open(fileKey)
+		if err != nil {
+			log.Printf("upload: stored original unavailable: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		f.Close()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

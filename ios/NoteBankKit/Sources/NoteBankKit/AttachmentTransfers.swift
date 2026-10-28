@@ -51,10 +51,22 @@ public actor AttachmentTransfers {
     private var scheduling = false
     private var prefetching = false
     private var pins: [String: Int] = [:]
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private struct ThumbnailRequest: Hashable {
+        let id: String
+        let generation: Int64
+    }
+    private struct ThumbnailRetry {
+        let attempts: Int
+        let after: ContinuousClock.Instant
+    }
+    private var thumbnailRetries: [ThumbnailRequest: ThumbnailRetry] = [:]
+    private var thumbnailRequests: [ThumbnailRequest: Task<URL, Error>] = [:]
 
-    public init(store: Store, secrets: SecretStore, background: Bool = true) {
+    public init(store: Store, secrets: SecretStore, background: Bool = true, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
         self.store = store
         self.secrets = secrets
+        self.now = now
         delegate = UploadDelegate(store: store)
         let config: URLSessionConfiguration
         if background {
@@ -163,7 +175,27 @@ public actor AttachmentTransfers {
                 }
             }
         }
-        return attachment.hasThumbnail ? try await fetch(id, thumbnail: true) : nil
+        guard attachment.hasThumbnail else { return nil }
+        let generation = try store.transferGeneration()
+        thumbnailRetries = thumbnailRetries.filter { $0.key.generation == generation }
+        let request = ThumbnailRequest(id: id, generation: generation)
+        if let active = thumbnailRequests[request] { return try await active.value }
+        guard thumbnailRetries[request].map({ now() >= $0.after }) ?? true else { return nil }
+        let download = Task { try await self.fetch(id, thumbnail: true) }
+        thumbnailRequests[request] = download
+        defer { thumbnailRequests.removeValue(forKey: request) }
+        do {
+            let file = try await download.value
+            thumbnailRetries.removeValue(forKey: request)
+            return file
+        } catch {
+            if (try? store.transferGeneration()) == generation {
+                let attempts = min((thumbnailRetries[request]?.attempts ?? 0) + 1, 5)
+                let delay = min(30 * (1 << (attempts - 1)), 300)
+                thumbnailRetries[request] = ThumbnailRetry(attempts: attempts, after: now() + .seconds(delay))
+            }
+            throw error
+        }
     }
 
     public func prefetchThumbnails() async {
@@ -174,7 +206,7 @@ public actor AttachmentTransfers {
             try String.fetchAll(db, sql: "SELECT a.id FROM attachments a JOIN items i ON i.id = a.item_id WHERE a.has_thumbnail = 1 AND i.deleted_at IS NULL AND max(i.capture_time, i.opened_at) >= ? AND NOT EXISTS(SELECT 1 FROM cached_files c WHERE c.attachment_id = a.id AND c.kind = 'thumbnail')", arguments: [Time.nowUs() - Store.thumbnailKeepUs])
         }
         for id in ids ?? [] {
-            do { _ = try await thumbnail(id) } catch { break }
+            do { _ = try await thumbnail(id) } catch { continue }
         }
         try? store.evictCache(nowUs: Time.nowUs(), pinned: Set(pins.keys))
     }

@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Testing
+import Synchronization
 @testable import NoteBankKit
 
 struct AttachmentTransferTests {
@@ -149,5 +150,114 @@ extension AttachmentTransferTests {
         #expect(try store.attachment(file.id)?.uploaded == false)
         try store.evictCache(nowUs: 100, maxFileBytes: 0)
         #expect(try store.localFile(file.id) != nil)
+    }
+}
+
+extension AttachmentTransferTests {
+    @Test func failedThumbnailBacksOffWithoutBlockingOtherThumbnailsAndRecovers() async throws {
+        let bad = UUID().uuidString.lowercased(), good = UUID().uuidString.lowercased()
+        let recovered = Mutex(false)
+        let server = try await FakeServer { request in
+            if request.path.contains(bad), !recovered.withLock({ $0 }) { return .init(status: 500) }
+            return .init(body: Data("thumbnail".utf8))
+        }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "images", to: .inbox, nowUs: Time.nowUs())
+        try await store.pool.write { db in
+            for id in [bad, good] {
+                try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'image.png', 'image/png', 9, 1, 1)", arguments: [id, item])
+            }
+        }
+        let time = Mutex(ContinuousClock.now)
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false, now: { time.withLock { $0 } })
+        _ = try? await transfers.thumbnail(bad)
+        await transfers.prefetchThumbnails()
+        await transfers.prefetchThumbnails()
+        #expect(server.requests(to: "/attachments/\(bad)/thumbnail") == 1)
+        #expect(try store.localFile(good, kind: "thumbnail") != nil)
+        time.withLock { $0 += .seconds(31) }
+        _ = try? await transfers.thumbnail(bad)
+        #expect(server.requests(to: "/attachments/\(bad)/thumbnail") == 2)
+        recovered.withLock { $0 = true }
+        time.withLock { $0 += .seconds(31) }
+        _ = try? await transfers.thumbnail(bad)
+        #expect(try store.localFile(bad, kind: "thumbnail") == nil)
+        time.withLock { $0 += .seconds(30) }
+        await transfers.prefetchThumbnails()
+        #expect(try store.localFile(bad, kind: "thumbnail") != nil)
+        #expect(server.requests(to: "/attachments/\(bad)/thumbnail") == 3)
+    }
+
+    @Test func thumbnailFailureDoesNotThrottleAnotherServerGeneration() async throws {
+        let server = try await FakeServer { _ in .init(status: 500) }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "image", to: .inbox, nowUs: Time.nowUs())
+        let id = UUID().uuidString.lowercased()
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'image.png', 'image/png', 9, 1, 1)", arguments: [id, item])
+        }
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        _ = try? await transfers.thumbnail(id)
+        _ = try? await transfers.thumbnail(id)
+        #expect(server.requests(to: "/attachments/\(id)/thumbnail") == 1)
+        try await store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
+        try store.saveSettings(url: "http://localhost:1", newSecret: "other", secrets: secrets)
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO items (id, text, capture_time, text_rev, topic_id, deleted_at, in_tunnel, opened_at) VALUES (?, 'image', ?, 1, NULL, NULL, 0, 0)", arguments: [item, Time.nowUs()])
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'image.png', 'image/png', 9, 1, 1)", arguments: [id, item])
+        }
+        _ = try? await transfers.thumbnail(id)
+        #expect(server.requests(to: "/attachments/\(id)/thumbnail") == 2)
+    }
+}
+
+extension AttachmentTransferTests {
+    @Test func concurrentThumbnailCallersBothReceiveTheDownloadedFile() async throws {
+        let server = try await FakeServer { _ in
+            Thread.sleep(forTimeInterval: 0.05)
+            return .init(body: Data("thumbnail".utf8))
+        }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "image", to: .inbox, nowUs: Time.nowUs())
+        let id = UUID().uuidString.lowercased()
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'image.png', 'image/png', 9, 1, 1)", arguments: [id, item])
+        }
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        async let first = transfers.thumbnail(id)
+        async let second = transfers.thumbnail(id)
+        let results = try await (first, second)
+        #expect(results.0 != nil)
+        #expect(results.1 != nil)
+        #expect(results.0 == results.1)
+        #expect(server.requests(to: "/attachments/\(id)/thumbnail") == 1)
+    }
+}
+
+extension AttachmentTransferTests {
+    @Test func prefetchContinuesAfterItsFirstThumbnailFails() async throws {
+        let first = Mutex(true)
+        let server = try await FakeServer { _ in
+            if first.withLock({ state in let wasFirst = state; state = false; return wasFirst }) { return .init(status: 500) }
+            return .init(body: Data("thumbnail".utf8))
+        }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "images", to: .inbox, nowUs: Time.nowUs())
+        let ids = [UUID().uuidString.lowercased(), UUID().uuidString.lowercased()]
+        try await store.pool.write { db in
+            for id in ids {
+                try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'image.png', 'image/png', 9, 1, 1)", arguments: [id, item])
+            }
+        }
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        await transfers.prefetchThumbnails()
+        let cached = try ids.filter { try store.localFile($0, kind: "thumbnail") != nil }
+        #expect(cached.count == 1)
+        #expect(ids.reduce(0) { $0 + server.requests(to: "/attachments/\($1)/thumbnail") } == 2)
     }
 }
