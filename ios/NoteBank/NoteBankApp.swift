@@ -114,12 +114,12 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(places: places.places, composer: home, status: status, notices: services.notices, onShow: show) { showingSettings = true }
+                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: home, status: status, notices: services.notices, onShow: show) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Place.self) { place in
                             FeedView(
                                 place: place,
-                                topicName: places.places.topics.first { .topic($0.id) == place }?.name,
+                                topicName: (places.places.topics + places.archived).first { .topic($0.id) == place }?.name,
                                 services: services,
                                 status: status,
                                 openSettings: { showingSettings = true },
@@ -144,17 +144,19 @@ struct RootView: View {
         .task {
             var restored: [Place] = switch savedPlace {
             case "all": [.all]
+            case "trash": [.trash]
             case "inbox": [.inbox]
             case "tunnel": [.tunnel]
             case let saved where saved.hasPrefix("topic:"): [.topic(String(saved.dropFirst("topic:".count)))]
             default: []
             }
-            restored.removeAll { if case .topic(let id) = $0 { !places.places.topics.contains { $0.id == id } } else { false } }
+            restored.removeAll { if case .topic(let id) = $0 { !(places.places.topics + places.archived).contains { $0.id == id } } else { false } }
             path = restored
         }
         .onChange(of: path) { _, path in
             savedPlace = switch path.last {
             case .all?: "all"
+            case .trash?: "trash"
             case .inbox?: "inbox"
             case .tunnel?: "tunnel"
             case .topic(let id)?: "topic:" + id

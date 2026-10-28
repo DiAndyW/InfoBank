@@ -2,16 +2,19 @@ import Foundation
 import GRDB
 
 public enum Place: Hashable, Codable, Sendable {
-    case all, inbox, tunnel, topic(String)
+    case all, inbox, tunnel, trash, topic(String)
 }
 
 public struct FeedCursor: Hashable, Sendable {
     public let captureTimeUs: Int64
     public let id: String
 
-    public init(captureTimeUs: Int64, id: String) {
+    public let purgeAtUs: Int64?
+
+    public init(captureTimeUs: Int64, id: String, purgeAtUs: Int64? = nil) {
         self.captureTimeUs = captureTimeUs
         self.id = id
+        self.purgeAtUs = purgeAtUs
     }
 }
 
@@ -22,6 +25,7 @@ public struct FeedItem: Identifiable, Hashable, Sendable {
     public let topicID: String?
     public let topicName: String?
     public let inTunnel: Bool
+    public var purgeAtUs: Int64? = nil
     public let editBase: Int64
     public let conflict: TextConflict?
     public let pending: Bool
@@ -31,7 +35,7 @@ public struct FeedItem: Identifiable, Hashable, Sendable {
 
     public var destination: Destination { inTunnel ? .tunnel : topicID.map(Destination.topic) ?? .inbox }
 
-    public var cursor: FeedCursor { FeedCursor(captureTimeUs: captureTimeUs, id: id) }
+    public var cursor: FeedCursor { FeedCursor(captureTimeUs: captureTimeUs, id: id, purgeAtUs: purgeAtUs) }
     public var label: String { NoteBankKit.label(text: text, firstFilename: attachmentNames.first) }
 }
 
@@ -39,6 +43,8 @@ public struct TopicPlace: Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let count: Int
+
+    public init(id: String, name: String, count: Int) { self.id = id; self.name = name; self.count = count }
 }
 
 public struct Places: Equatable, Sendable {
@@ -50,18 +56,28 @@ public struct Places: Equatable, Sendable {
 
 extension Store {
     public func items(in place: Place, before cursor: FeedCursor?, limit: Int) throws -> [FeedItem] {
-        try feed(place, after: cursor.map { ("(items.capture_time, items.id) < (?, ?)", [$0.captureTimeUs, $0.id]) }, limit: limit)
+        if place == .trash {
+            return try feed(place, after: cursor.map { ("(COALESCE(items.purge_at, 9223372036854775807), -items.capture_time, items.id) > (?, ?, ?)", [$0.purgeAtUs ?? Int64.max, -$0.captureTimeUs, $0.id]) }, limit: limit)
+        }
+        return try feed(place, after: cursor.map { ("(items.capture_time, items.id) < (?, ?)", [$0.captureTimeUs, $0.id]) }, limit: limit)
     }
 
     public func items(in place: Place, from cursor: FeedCursor) throws -> [FeedItem] {
-        try feed(place, after: ("(items.capture_time, items.id) >= (?, ?)", [cursor.captureTimeUs, cursor.id]), limit: -1)
+        if place == .trash {
+            return try feed(place, after: ("(COALESCE(items.purge_at, 9223372036854775807), -items.capture_time, items.id) <= (?, ?, ?)", [cursor.purgeAtUs ?? Int64.max, -cursor.captureTimeUs, cursor.id]), limit: -1)
+        }
+        return try feed(place, after: ("(items.capture_time, items.id) >= (?, ?)", [cursor.captureTimeUs, cursor.id]), limit: -1)
     }
 
     private func feed(_ place: Place, after cursor: (sql: String, arguments: [any DatabaseValueConvertible])?, limit: Int) throws -> [FeedItem] {
-        var conditions = ["items.deleted_at IS NULL"]
+        var conditions = [place == .trash ? "items.deleted_at IS NOT NULL" : "items.deleted_at IS NULL"]
         var arguments: [any DatabaseValueConvertible] = []
         switch place {
         case .all: break
+        case .trash:
+            conditions.append("(items.purge_at IS NULL OR items.purge_at > ?)")
+            conditions.append("(items.text IS NOT NULL OR EXISTS(SELECT 1 FROM attachments WHERE item_id = items.id))")
+            arguments.append(Time.nowUs())
         case .inbox: conditions.append("items.topic_id IS NULL AND items.in_tunnel = 0")
         case .tunnel: conditions.append("items.in_tunnel = 1")
         case .topic(let id):
@@ -78,7 +94,7 @@ extension Store {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error, items.in_tunnel,
+                    SELECT items.purge_at, items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error, items.in_tunnel,
                            COALESCE((SELECT json_extract(op, '$.base_rev') FROM outbox WHERE json_extract(op, '$.item_id') = items.id
                                AND json_extract(op, '$.type') = 'SetText' ORDER BY seq DESC LIMIT 1), items.text_rev) AS edit_base,
                            (SELECT text FROM conflicts WHERE item_id = items.id) AS conflict_text,
@@ -86,7 +102,7 @@ extension Store {
                            items.sync_error IS NULL AND (EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id AND uploaded = 0)) AS pending
                     FROM items LEFT JOIN topics ON topics.id = items.topic_id
                     WHERE \(conditions.joined(separator: " AND "))
-                    ORDER BY items.capture_time DESC, items.id DESC
+                    ORDER BY \(place == .trash ? "COALESCE(items.purge_at, 9223372036854775807) ASC, -items.capture_time ASC, items.id ASC" : "items.capture_time DESC, items.id DESC")
                     LIMIT ?
                     """,
                 arguments: StatementArguments(arguments))
@@ -101,7 +117,7 @@ extension Store {
             return rows.map { row in
                 FeedItem(
                     id: row["id"], text: row["text"], captureTimeUs: row["capture_time"], topicID: row["topic_id"],
-                    topicName: row["topic_name"], inTunnel: row["in_tunnel"], editBase: row["edit_base"],
+                    topicName: row["topic_name"], inTunnel: row["in_tunnel"], purgeAtUs: row["purge_at"], editBase: row["edit_base"],
                     conflict: (row["conflict_mine"] as Bool?).map { TextConflict(text: row["conflict_text"], mine: $0) }, pending: row["pending"], syncError: row["sync_error"],
                     attachments: attachments[row["id"]] ?? [])
             }

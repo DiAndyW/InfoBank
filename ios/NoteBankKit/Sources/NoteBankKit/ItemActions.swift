@@ -41,7 +41,7 @@ extension Store {
         try pool.write { try editText($0, itemID: itemID, text: text, baseRev: baseRev, nowUs: nowUs) }
     }
 
-    private func editText(_ db: Database, itemID: String, text: String, baseRev: Int64, nowUs: Int64) throws -> Bool {
+    func editText(_ db: Database, itemID: String, text: String, baseRev: Int64, nowUs: Int64) throws -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= Self.maxItemTextBytes else { throw CaptureError.tooLong }
         guard !text.utf8.contains(0) else { throw CaptureError.unsavableCharacter }
@@ -76,6 +76,40 @@ extension Store {
             }
             guard let revision = try Int64.fetchOne(db, sql: "SELECT text_rev FROM items WHERE id = ?", arguments: [itemID]) else { throw ItemActionError.notFound }
             return try editText(db, itemID: itemID, text: row["text"] as String? ?? "", baseRev: revision, nowUs: nowUs)
+        }
+    }
+}
+
+extension Store {
+    @discardableResult
+    public func editItem(itemID: String, text: String, baseRev: Int64, adding: [String], removing: Set<String>, nowUs: Int64) throws -> Bool {
+        try pool.write { db in
+            guard try Bool.fetchOne(db, sql: "SELECT deleted_at IS NULL AND sync_error IS NULL FROM items WHERE id = ?", arguments: [itemID]) == true else { throw ItemActionError.notFound }
+            guard Set(adding).count == adding.count else { throw AttachmentError("Choose each Attachment once") }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.utf8.count <= Self.maxItemTextBytes else { throw CaptureError.tooLong }
+            guard !trimmed.utf8.contains(0) else { throw CaptureError.unsavableCharacter }
+            let existing = Set(try String.fetchAll(db, sql: "SELECT id FROM attachments WHERE item_id = ?", arguments: [itemID]))
+            let removed = removing.intersection(existing)
+            if trimmed.isEmpty && existing.subtracting(removed).isEmpty && adding.isEmpty {
+                try db.execute(sql: "UPDATE items SET deleted_at = ?, purge_at = NULL WHERE id = ?", arguments: [nowUs,itemID])
+                try queue(db, "TrashItem", nowUs: nowUs, ["item_id":itemID])
+                return true
+            }
+            for id in adding {
+                guard let row = try Row.fetchOne(db, sql: "SELECT s.*, c.path FROM staged_files s JOIN cached_files c ON c.attachment_id = s.id AND c.kind = 'file' WHERE s.id = ?", arguments: [id]), FileManager.default.fileExists(atPath: directory.appending(path: row["path"] as String).path) else { throw AttachmentError("An Attachment is no longer available") }
+                let a: [String: Any] = ["id":id,"filename":row["filename"] as String,"mime_type":row["mime_type"] as String,"size_bytes":row["size_bytes"] as Int64]
+                try db.execute(sql: "INSERT INTO attachments VALUES (?,?,?,?,?,0,0)", arguments: [id,itemID,row["filename"] as String,row["mime_type"] as String,row["size_bytes"] as Int64])
+                try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [id])
+                try queue(db, "AddAttachment", nowUs: nowUs, ["item_id":itemID,"attachment":a])
+            }
+            // SetText runs before removals so the Server never observes a transient empty Item.
+            _ = try editText(db, itemID: itemID, text: text, baseRev: baseRev, nowUs: nowUs)
+            for id in removed {
+                try db.execute(sql: "DELETE FROM attachments WHERE id = ? AND item_id = ?", arguments: [id,itemID])
+                try queue(db, "RemoveAttachment", nowUs: nowUs, ["item_id":itemID,"attachment_id":id])
+            }
+            return false
         }
     }
 }

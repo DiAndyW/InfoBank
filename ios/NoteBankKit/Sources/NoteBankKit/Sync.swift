@@ -10,7 +10,7 @@ public enum SyncFailure: Error, Equatable {
 }
 
 public struct SyncNotice: Equatable, Sendable {
-    public enum Kind: Sendable { case inbox, move, gone, empty, failed }
+    public enum Kind: Sendable { case inbox, move, gone, empty, failed, topic, topicRenamed }
     public internal(set) var kind: Kind = .inbox
 
     public enum TopicState: String, Sendable {
@@ -25,6 +25,8 @@ public struct SyncNotice: Equatable, Sendable {
 
     public var message: String {
         switch kind {
+        case .topicRenamed: return "A Topic name was already in use. The Server gave it a unique name."
+        case .topic: return "The Server refused a Topic change. Its current version has been kept."
         case .gone: return "Couldn't save your change: this Item was deleted for good on another Device."
         case .empty: return "Couldn't restore this Item: it has no text or files left."
         case .failed: return "The Server refused this change. Its version will be restored when sync completes."
@@ -169,6 +171,21 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                     case ("rejected", let type?, let itemID?, let reason) where ["MoveItem", "SetText", "TrashItem", "RestoreItem"].contains(type):
                         var notice = SyncNotice(itemID: itemID, label: "", topicName: nil, topicID: op.topicID)
                         notice.kind = reason == "not_found" ? .gone : reason == "topic_unavailable" ? .move : reason == "empty" ? .empty : .failed
+                        notices.append(notice)
+                    case ("changed", let type?, _, "renamed") where ["CreateTopic", "RenameTopic"].contains(type):
+                        var notice = SyncNotice(itemID: "", label: "", topicName: nil, topicID: op.topicID)
+                        notice.kind = .topicRenamed
+                        notices.append(notice)
+                    case ("rejected", let type?, _, _) where ["CreateTopic", "RenameTopic", "ArchiveTopic", "UnarchiveTopic", "DeleteTopic"].contains(type):
+                        if type == "CreateTopic", let topicID = op.topicID {
+                            try db.execute(sql: "DELETE FROM topics WHERE id = ?", arguments: [topicID])
+                        }
+                        var notice = SyncNotice(itemID: "", label: "", topicName: nil, topicID: op.topicID)
+                        notice.kind = .topic
+                        notices.append(notice)
+                    case ("rejected", let type?, let itemID?, _) where ["AddAttachment", "RemoveAttachment"].contains(type):
+                        var notice = SyncNotice(itemID: itemID, label: "", topicName: nil, topicID: nil)
+                        notice.kind = .failed
                         notices.append(notice)
                     case ("accepted", _, _, _):
                         break

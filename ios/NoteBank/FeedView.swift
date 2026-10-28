@@ -30,6 +30,9 @@ struct FeedView: View {
     @State private var copyAfterSheet: FeedItem?
     @State private var actionError: String?
     @State private var asking: FeedItem?
+    @State private var renameTopic = false
+    @State private var topicNameDraft = ""
+    @State private var deleteTopic = false
 
     init(
         place: Place, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
@@ -46,6 +49,7 @@ struct FeedView: View {
         _target = target
         let title = switch place {
         case .all: "All Items"
+        case .trash: "Trash"
         case .inbox: "Inbox"
         case .tunnel: "Tunnel"
         case .topic: topicName ?? ""
@@ -53,7 +57,7 @@ struct FeedView: View {
         _title = State(wrappedValue: title)
         _model = State(wrappedValue: FeedModel(store: services.store, place: place))
         let destination: Destination = switch place {
-        case .all, .inbox: .inbox
+        case .all, .inbox, .trash: .inbox
         case .tunnel: .tunnel
         case .topic(let id): .topic(id)
         }
@@ -76,6 +80,27 @@ struct FeedView: View {
             }
         }
         return days
+    }
+
+    private var loadMore: some View {
+        ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { visible in
+            if visible { model.loadOlder() }
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(palette.line).frame(height: 1)
+            Text(title).font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
+            Rectangle().fill(palette.line).frame(height: 1)
+        }.padding(.top, 14).padding(.bottom, 6).accessibilityAddTraits(.isHeader)
+    }
+
+    private func itemRow(_ item: FeedItem) -> some View {
+        ItemRow(item: item, showsTopic: place == .all || place == .trash, highlighted: highlighted == item.id,
+                copyable: place == .tunnel, copied: copiedID == item.id,
+                onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash)
+            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
     private func copy(_ item: FeedItem) {
@@ -103,39 +128,38 @@ struct FeedView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if model.hasOlder {
-                        ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { visible in
-                            if visible { model.loadOlder() }
-                        }
-                    }
+                    if model.hasOlder && place != .trash { loadMore }
                     if let error = model.loadError {
                         Text(error).font(.plex(.sansMedium, 13, relativeTo: .footnote)).foregroundStyle(palette.danger)
                     }
-                    ForEach(days, id: \.start) { day in
-                        HStack(spacing: 10) {
-                            Rectangle().fill(palette.line).frame(height: 1)
-                            Text(Calendar.current.isDateInToday(day.start) ? "Today" : day.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
-                                .font(.plex(.sansSemibold, 12, relativeTo: .caption))
-                                .foregroundStyle(palette.inkMuted)
-                            Rectangle().fill(palette.line).frame(height: 1)
+                    if place == .trash {
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            let groups = TrashGroup.group(model.items, nowUs: Int64(context.date.timeIntervalSince1970 * 1_000_000))
+                            ForEach(groups) { group in
+                                sectionHeader(group.title)
+                                ForEach(group.items) { item in itemRow(item) }
+                            }
                         }
-                        .padding(.top, 14)
-                        .padding(.bottom, 6)
-                        .accessibilityHidden(true)
-                        ForEach(day.items) { item in
-                            ItemRow(
-                                item: item, showsTopic: place == .all, highlighted: highlighted == item.id,
-                                copyable: place == .tunnel, copied: copiedID == item.id,
-                                onCopy: { copy(item) }, onCommands: { commands = item })
-                                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+                    } else {
+                        ForEach(days, id: \.start) { day in
+                            sectionHeader(Calendar.current.isDateInToday(day.start) ? "Today" : day.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
+                            ForEach(day.items) { item in itemRow(item) }
                         }
+                    }
+                    if model.hasOlder && place == .trash { loadMore }
+                    if model.items.isEmpty && model.loadError == nil {
+                        Text(place == .trash ? "Trash is empty" : "No Items yet")
+                            .font(.plex(.sans, 15)).foregroundStyle(palette.inkMuted)
+                            .frame(maxWidth: .infinity).padding(.vertical, 32)
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
-            .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(place == .trash ? .top : .bottom)
             .background(palette.surface)
             .onChange(of: model.items.last?.id) { _, newest in
                 guard scrollsToNewest, let newest else { return }
@@ -164,6 +188,7 @@ struct FeedView: View {
                                 case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
                                 case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
                                 case .show: onShow(notice.itemID); return
+                                case .dismiss: notices.dismiss(); return
                                 }
                                 model.reload()
                                 notices.dismiss()
@@ -173,9 +198,11 @@ struct FeedView: View {
                         onDismiss: notices.dismiss)
                         .id(notice.id)
                 }
-                ComposerView(model: composer) {
-                    scrollsToNewest = true
-                    model.reload()
+                if place != .all && place != .trash && !model.topicUnavailable {
+                    ComposerView(model: composer) {
+                        scrollsToNewest = true
+                        model.reload()
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -190,6 +217,24 @@ struct FeedView: View {
                 else if let text = item.text { UIPasteboard.general.string = text }
             }
         }) { item in
+            if place == .trash {
+                NavigationStack {
+                    List {
+                        Button("Restore", systemImage: "arrow.uturn.backward") {
+                            do {
+                                try store.restore(itemID: item.id, nowUs: Time.nowUs())
+                                notices.postRestored(itemID: item.id)
+                                commands = nil
+                                model.reload()
+                                wake()
+                            } catch { actionError = error.localizedDescription }
+                        }
+                    }
+                    .navigationTitle("Item actions")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
+                }.presentationDetents([.medium])
+            } else {
             ItemActionsView(item: item, store: store, onCopy: {
                 copyAfterSheet = item
                 commands = nil
@@ -199,6 +244,7 @@ struct FeedView: View {
                 if moved { notices.postMoved(itemID: item.id, from: item.destination) }
                 wake()
             })
+            }
         }
         .alert("Couldn't finish the action", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
             Button("OK") { actionError = nil }
@@ -223,10 +269,37 @@ struct FeedView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(palette.surface, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
+        .alert("Rename Topic", isPresented: $renameTopic) {
+            TextField("Topic name", text: $topicNameDraft)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                guard case .topic(let id) = place else { return }
+                do { try store.renameTopic(id, name: topicNameDraft, nowUs: Time.nowUs()); model.reload(); wake() }
+                catch { actionError = error.localizedDescription }
+            }
+        }
+        .fullScreenCover(isPresented: $deleteTopic) {
+            if case .topic(let id) = place {
+                TopicDeletionView(store: store, topic: TopicPlace(id: id, name: model.topicName ?? title, count: model.items.count), wake: wake)
+            }
+        }
         .toolbar {
+            if case .topic(let id) = place, model.topicName != nil {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Rename", systemImage: "pencil") { topicNameDraft = model.topicName ?? title; renameTopic = true }
+                        Button(model.topicUnavailable ? "Unarchive" : "Archive", systemImage: "archivebox") {
+                            do { try store.setTopicArchived(id, archived: !model.topicUnavailable, nowUs: Time.nowUs()); model.reload(); wake() }
+                            catch { actionError = error.localizedDescription }
+                        }
+                        Button("Delete Topic…", systemImage: "trash", role: .destructive) { deleteTopic = true }
+                    } label: { Image(systemName: "ellipsis") }
+                    .accessibilityLabel("Topic actions")
+                }
+            }
             ToolbarItem(placement: .principal) {
                 let header = VStack(spacing: 0) {
-                    Text(title).font(.plex(.sansSemibold, 17, relativeTo: .headline)).foregroundStyle(palette.ink)
+                    Text(model.topicName ?? title).font(.plex(.sansSemibold, 17, relativeTo: .headline)).foregroundStyle(palette.ink)
                     SyncStatusLine(status: status)
                 }
                 if status.needsSettings {

@@ -8,6 +8,7 @@ extension Store {
                 SELECT a.* FROM attachments a JOIN items i ON i.id = a.item_id
                 WHERE a.uploaded = 0 AND i.sync_error IS NULL
                   AND NOT EXISTS(SELECT 1 FROM outbox WHERE json_extract(op, '$.type') = 'CaptureItem' AND json_extract(op, '$.item_id') = i.id)
+                  AND NOT EXISTS(SELECT 1 FROM outbox WHERE json_extract(op, '$.type') = 'AddAttachment' AND json_extract(op, '$.attachment.id') = a.id)
                 ORDER BY a.rowid
                 """).map(Self.feedAttachment)
         }

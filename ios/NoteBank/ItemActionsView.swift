@@ -13,6 +13,21 @@ struct ItemActionsView: View {
     @State private var topics: [TopicPlace] = []
     @State private var error: String?
     @State private var discard = false
+    @State private var imports: ComposerModel?
+    @State private var removed: Set<String> = []
+
+    private func beginEdit(_ value: String) {
+        text = value
+        removed = []
+        if imports == nil { imports = ComposerModel(store: store, destination: .inbox, placeholder: "", onCaptured: {}) }
+        page = .edit
+    }
+
+    private func discardImports() {
+        guard let imports else { return }
+        for attachment in imports.attachments { imports.removeAttachment(attachment.id) }
+        removed = []
+    }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.palette) private var palette
 
@@ -44,7 +59,7 @@ struct ItemActionsView: View {
                             if item.conflict != nil {
                                 Button("Resolve text conflict", systemImage: "exclamationmark.bubble") { page = .conflict }
                             }
-                            Button("Edit", systemImage: "pencil") { text = item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? ""; page = .edit }
+                            Button("Edit", systemImage: "pencil") { beginEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "") }
                             Button("Move to…", systemImage: "folder") {
                                 do { topics = try store.places().topics; page = .move }
                                 catch { self.error = error.localizedDescription }
@@ -65,6 +80,23 @@ struct ItemActionsView: View {
                         .scrollContentBackground(.hidden)
                         .padding()
                         .accessibilityLabel("Edit text")
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(item.attachments.filter { !removed.contains($0.id) }) { attachment in
+                                HStack {
+                                    AttachmentView(attachment: attachment)
+                                    Button { removed.insert(attachment.id) } label: { Image(systemName: "minus.circle").frame(minWidth: 44, minHeight: 44) }
+                                        .accessibilityLabel("Remove \(attachment.filename)")
+                                }
+                            }
+                            if let imports {
+                                StagedAttachmentsView(model: imports)
+                                AttachmentPicker(model: imports)
+                                if let error = imports.error { Text(error).foregroundStyle(palette.danger) }
+                            }
+                        }.padding(.horizontal)
+                    }
+                    .containerRelativeFrame(.vertical) { height, _ in height * 0.35 }
                 case .move:
                     List {
                         destination("Inbox", .inbox)
@@ -86,8 +118,7 @@ struct ItemActionsView: View {
                             Button("Keep mine") { resolve(true) }
                             Button("Use Server") { resolve(false) }
                             Button("Edit mine") {
-                                text = item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? ""
-                                page = .edit
+                                beginEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "")
                             }
                         }.padding()
                     }
@@ -101,21 +132,25 @@ struct ItemActionsView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(page == .commands ? "Done" : "Cancel") {
-                        if page == .commands { dismiss() } else { error = nil; page = .commands }
+                        if page == .commands { dismiss() } else { discardImports(); error = nil; page = .commands }
                     }
+                    .disabled(imports?.isImporting == true)
                 }
                 if page == .edit {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save") {
                             run {
-                                let trashed = try store.editText(itemID: item.id, text: text, baseRev: item.editBase, nowUs: Time.nowUs())
+                                let trashed = try store.editItem(itemID: item.id, text: text, baseRev: item.editBase, adding: imports?.attachments.map(\.id) ?? [], removing: removed, nowUs: Time.nowUs())
                                 onChanged(trashed, false)
                             }
                         }
+                        .disabled(imports?.isImporting == true)
                     }
                 }
             }
         }
+        .interactiveDismissDisabled(imports?.isImporting == true)
+        .onDisappear { discardImports() }
         .presentationDetents(page == .commands ? [.medium, .large] : [.large])
         .presentationDragIndicator(.visible)
         .alert("Discard this Item?", isPresented: $discard) {

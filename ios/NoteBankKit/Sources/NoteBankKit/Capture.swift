@@ -41,6 +41,9 @@ extension Store {
         ]
         if destination == .tunnel { fields["tunnel"] = true }
         try pool.write { db in
+            if let topicID {
+                if try Bool.fetchOne(db, sql: "SELECT archived_at IS NOT NULL OR deleted_at IS NOT NULL FROM topics WHERE id = ?", arguments: [topicID]) == true { throw ItemActionError.topicUnavailable }
+            }
             guard Set(attachmentIDs).count == attachmentIDs.count else { throw AttachmentError("Choose each attachment once") }
             let attachments = try attachmentIDs.map { id -> [String: Any] in
                 guard let row = try Row.fetchOne(db, sql: "SELECT s.*, c.path FROM staged_files s JOIN cached_files c ON c.attachment_id = s.id AND c.kind = 'file' WHERE s.id = ?", arguments: [id]),

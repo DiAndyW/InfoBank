@@ -12,7 +12,7 @@ extension Store {
     public func trash(itemID: String, nowUs: Int64) throws {
         try pool.write { db in
             guard try Bool.fetchOne(db, sql: "SELECT sync_error IS NULL FROM items WHERE id = ?", arguments: [itemID]) == true else { throw ItemActionError.notFound }
-            try db.execute(sql: "UPDATE items SET deleted_at = ? WHERE id = ?", arguments: [nowUs, itemID])
+            try db.execute(sql: "UPDATE items SET deleted_at = ?, purge_at = NULL WHERE id = ?", arguments: [nowUs, itemID])
             try queue(db, "TrashItem", nowUs: nowUs, ["item_id": itemID])
         }
     }
@@ -20,7 +20,7 @@ extension Store {
     public func restore(itemID: String, nowUs: Int64) throws {
         try pool.write { db in
             guard try Bool.fetchOne(db, sql: "SELECT sync_error IS NULL FROM items WHERE id = ?", arguments: [itemID]) == true else { throw ItemActionError.notFound }
-            try db.execute(sql: "UPDATE items SET deleted_at = NULL, purge_at = NULL WHERE id = ?", arguments: [itemID])
+            try db.execute(sql: "UPDATE items SET deleted_at = NULL, purge_at = NULL, topic_id = CASE WHEN EXISTS(SELECT 1 FROM topics WHERE topics.id = items.topic_id AND deleted_at IS NULL) THEN topic_id ELSE NULL END WHERE id = ?", arguments: [itemID])
             try queue(db, "RestoreItem", nowUs: nowUs, ["item_id": itemID])
         }
     }

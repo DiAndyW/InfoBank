@@ -13,6 +13,7 @@ struct ItemRow: View {
     let copied: Bool
     let onCopy: () -> Void
     let onCommands: () -> Void
+    var inTrash = false
 
     @Environment(\.palette) private var palette
     @State private var showingReason = false
@@ -57,15 +58,7 @@ struct ItemRow: View {
                 ForEach(item.attachments) { attachment in
                     AttachmentView(attachment: attachment)
                 }
-                if let chipTitle {
-                    Text(chipTitle)
-                        .font(.plex(.sansMedium, 12, relativeTo: .caption))
-                        .foregroundStyle(palette.inkMuted)
-                        .padding(.horizontal, 6)
-                        .frame(minHeight: 20)
-                        .background(palette.chip, in: RoundedRectangle(cornerRadius: 4))
-                }
-                if item.conflict != nil {
+                if item.conflict != nil && !inTrash {
                     Button(action: onCommands) { Label("Text conflict", systemImage: "exclamationmark.bubble") }
                         .font(.plex(.sansSemibold, 12, relativeTo: .caption))
                         .foregroundStyle(palette.danger)
@@ -94,7 +87,19 @@ struct ItemRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let chipTitle {
+                    Text(chipTitle)
+                        .font(.plex(.sansMedium, 12, relativeTo: .caption))
+                        .foregroundStyle(palette.inkMuted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(palette.chip, in: RoundedRectangle(cornerRadius: 4))
+                }
+                HStack(spacing: 4) {
                 if copied {
                     Label("Copied", systemImage: "checkmark")
                         .font(.plex(.sansSemibold, 12, relativeTo: .caption))
@@ -111,7 +116,9 @@ struct ItemRow: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            .frame(minHeight: 25)
+            }
+            .frame(minHeight: 25, alignment: .trailing)
+            .layoutPriority(1)
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())

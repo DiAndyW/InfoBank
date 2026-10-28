@@ -128,8 +128,27 @@ extension Store {
             }
             for row in try Row.fetchAll(db, sql: "SELECT op FROM outbox ORDER BY seq") {
                 let op = try JSONSerialization.jsonObject(with: Data((row["op"] as String).utf8)) as! [String: Any]
+                let topicID = op["topic_id"] as? String
+                let stamp = (op["at"] as? String).flatMap { Time.micros(rfc3339: $0) } ?? 0
+                switch op["type"] as? String {
+                case "CreateTopic":
+                    try db.execute(sql: "INSERT OR IGNORE INTO topics(id,name) VALUES (?,?)", arguments: [topicID,op["name"] as? String])
+                case "RenameTopic":
+                    try db.execute(sql: "UPDATE topics SET name = ? WHERE id = ?", arguments: [op["name"] as? String,topicID])
+                case "ArchiveTopic", "UnarchiveTopic":
+                    try db.execute(sql: "UPDATE topics SET archived_at = ? WHERE id = ?", arguments: [op["type"] as? String == "ArchiveTopic" ? stamp : nil,topicID])
+                case "DeleteTopic":
+                    if let topicID { try applyTopicDeletion(db, id: topicID, trash: op["trash"] as? [String] ?? [], nowUs: stamp) }
+                default: break
+                }
                 guard let id = op["item_id"] as? String else { continue }
                 switch op["type"] as? String {
+                case "AddAttachment":
+                    if let a = op["attachment"] as? [String: Any] {
+                        try db.execute(sql: "INSERT OR IGNORE INTO attachments VALUES (?,?,?,?,?,0,0)", arguments: [a["id"] as? String,id,a["filename"] as? String,a["mime_type"] as? String,a["size_bytes"] as? Int64])
+                    }
+                case "RemoveAttachment":
+                    try db.execute(sql: "DELETE FROM attachments WHERE id = ? AND item_id = ?", arguments: [op["attachment_id"] as? String,id])
                 case "SetText":
                     try db.execute(sql: "UPDATE items SET text = ? WHERE id = ?", arguments: [op["text"] as? String, id])
                 case "MoveItem":

@@ -3,9 +3,9 @@ import Observation
 
 public struct Notice: Equatable, Identifiable {
     public let id = UUID()
-    public enum Action: Equatable { case show, undoTrash, undoMove(Destination) }
+    public enum Action: Equatable { case show, dismiss, undoTrash, undoMove(Destination) }
 
-    public var actionTitle: String { action == .show ? "Show" : "Undo" }
+    public var actionTitle: String { action == .show ? "Show" : action == .dismiss ? "Dismiss" : "Undo" }
 
     public let message: String
     public let itemID: String
@@ -21,7 +21,7 @@ public final class NoticeCenter {
     public func post(_ notices: [SyncNotice]) {
         guard let last = notices.last else { return }
         let more = notices.count > 1 ? " And \(notices.count - 1) more." : ""
-        current = Notice(message: last.message + more, itemID: last.itemID, action: .show)
+        current = Notice(message: last.message + more, itemID: last.itemID, action: [.topic, .topicRenamed].contains(last.kind) ? .dismiss : .show)
     }
 
     public func postTrashed(itemID: String, copied: Bool = true) {
@@ -30,6 +30,10 @@ public final class NoticeCenter {
 
     public func postMoved(itemID: String, from destination: Destination) {
         current = Notice(message: "Item moved", itemID: itemID, action: .undoMove(destination))
+    }
+
+    public func postRestored(itemID: String) {
+        current = Notice(message: "Item restored", itemID: itemID, action: .show)
     }
 
     public func dismiss() { current = nil }

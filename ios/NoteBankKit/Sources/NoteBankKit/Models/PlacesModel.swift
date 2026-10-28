@@ -5,6 +5,8 @@ import Observation
 public final class PlacesModel {
     public private(set) var places = Places(allCount: 0, inboxCount: 0, tunnelCount: 0, topics: [])
 
+    public private(set) var archived: [TopicPlace] = []
+
     private let store: Store
     @ObservationIgnored private var observation: AnyDatabaseCancellable?
 
@@ -16,5 +18,6 @@ public final class PlacesModel {
 
     public func refresh() {
         if let places = try? store.places() { self.places = places }
+        if let archived = try? store.archivedTopics() { self.archived = archived }
     }
 }

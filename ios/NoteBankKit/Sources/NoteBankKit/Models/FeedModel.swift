@@ -21,6 +21,8 @@ public final class FeedModel {
 
     public private(set) var items: [FeedItem] = []
     public private(set) var hasOlder = false
+    public private(set) var topicUnavailable = false
+    public private(set) var topicName: String?
     public private(set) var loadError: String?
 
     private let store: Store
@@ -38,8 +40,8 @@ public final class FeedModel {
 
     public func loadOlder() {
         do {
-            let page = try store.items(in: place, before: items.first?.cursor, limit: Self.pageSize)
-            items = page.reversed() + items
+            let page = try store.items(in: place, before: (place == .trash ? items.last : items.first)?.cursor, limit: Self.pageSize)
+            items = place == .trash ? items + page : page.reversed() + items
             hasOlder = page.count == Self.pageSize
             loadError = nil
         } catch {
@@ -48,9 +50,15 @@ public final class FeedModel {
     }
 
     public func reload() {
-        guard let oldest = items.first?.cursor else { return loadOlder() }
+        if case .topic(let id) = place {
+            let topic = try? store.topic(id)
+            topicUnavailable = topic?.archived != false
+            topicName = topic?.name
+        }
+        guard let oldest = (place == .trash ? items.last : items.first)?.cursor else { return loadOlder() }
         do {
-            items = try store.items(in: place, from: oldest).reversed()
+            let loaded = try store.items(in: place, from: oldest)
+            items = place == .trash ? loaded : loaded.reversed()
             hasOlder = try !store.items(in: place, before: oldest, limit: 1).isEmpty
             loadError = nil
         } catch {
