@@ -32,6 +32,7 @@ struct HomeComposerView: View {
             .font(.plex(.serif, 17))
             .lineSpacing(3)
             .foregroundStyle(palette.ink)
+            StagedAttachmentsView(model: model)
             HStack(spacing: 8) {
                 Toggle("Tunnel", isOn: $tunnelOn)
                     .labelsHidden()
@@ -64,6 +65,7 @@ struct HomeComposerView: View {
                     .accessibilityValue(chipTitle)
                 }
                 Spacer(minLength: 0)
+                AttachmentPicker(model: model)
                 Button {
                     _ = model.send()
                 } label: {

@@ -5,7 +5,7 @@ extension Store {
     func observeChanges(onChange: @escaping @MainActor @Sendable () -> Void, onError: @escaping @MainActor @Sendable (Error) -> Void)
         -> AnyDatabaseCancellable
     {
-        DatabaseRegionObservation(tracking: Table("items"), Table("outbox"), Table("topics"), Table("attachments"), Table("conflicts"))
+        DatabaseRegionObservation(tracking: Table("items"), Table("outbox"), Table("topics"), Table("attachments"), Table("conflicts"), Table("attachment_uploads"))
             .start(
                 in: pool,
                 onError: { error in Task { @MainActor in onError(error) } },

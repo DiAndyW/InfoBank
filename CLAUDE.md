@@ -35,6 +35,13 @@ Never test changes through git either (no stash/checkout to compare); copy files
 - Comments: very few. Write only about 10% of the comments you are inclined to write, and when reviewing, cut about 90% of the ones there. Keep a comment only when a reader would likely get the code wrong without it (a security or data-loss invariant, a surprising external constraint). One line, the why, never restating the code or narrating history.
 - Don't mix `sed -i` and the Edit tool on the same file.
 
+## Security and authorization
+
+- Default to least privilege: grant only the operations, resources and lifetime a workflow needs. Delegated work, including background transfers, uses narrowly scoped credentials instead of the account-wide secret.
+- Enforce authorization at the Server boundary and deny access unless explicitly granted. Check the requested operation and resource; UI restrictions are not authorization.
+- Use role-based access control (RBAC) when distinct user roles exist, with explicit permissions per role. Keep NoteBank's single-user model; scoped upload credentials do not require adding user roles.
+- Credentials must not appear in URLs, logs or error messages. Expiration and retries must not cause loss of locally saved content.
+
 ## Tests
 
 - Write the failing test first, for real flows and for every bug. Test where the logic lives; assert observable effects, not call sequences.

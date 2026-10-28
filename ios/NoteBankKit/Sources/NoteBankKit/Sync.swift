@@ -46,7 +46,7 @@ public final class SyncHTTP: NSObject, Sendable, URLSessionTaskDelegate {
     public static let live = SyncHTTP()
 
     private static let timeoutSeconds: TimeInterval = 30
-    private let session: URLSession
+    let session: URLSession
 
     private override init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -265,6 +265,7 @@ public actor SyncEngine {
     private let secrets: SecretStore
     private let http: SyncHTTP
     private let pollInterval: Duration
+    private let transfers: AttachmentTransfers?
     private let monitor = NWPathMonitor()
 
     private var loop: Task<Void, Never>?
@@ -284,22 +285,24 @@ public actor SyncEngine {
     private var queued: [SyncNotice] = []
     private var saves = 0
 
-    public init(store: Store, secrets: SecretStore, http: SyncHTTP = .live, pollInterval: Duration = SyncEngine.defaultPollInterval) {
+    public init(store: Store, secrets: SecretStore, http: SyncHTTP = .live, transfers: AttachmentTransfers? = nil, pollInterval: Duration = SyncEngine.defaultPollInterval) {
         self.store = store
         self.secrets = secrets
         self.http = http
+        self.transfers = transfers
         self.pollInterval = pollInterval
         (status, statusSink) = AsyncStream.makeStream()
         (notices, noticeSink) = AsyncStream.makeStream()
     }
 
-    public func start() {
+    public func start() async {
         guard loop == nil else { return }
         monitor.pathUpdateHandler = { [weak self] path in
             let satisfied = path.status == .satisfied
             Task { await self?.pathChanged(satisfied: satisfied) }
         }
         monitor.start(queue: DispatchQueue(label: "app.notebank.ios.path"))
+        if let transfers { await transfers.setWakeHandler { [weak self] in Task { await self?.wake() } } }
         wait = .after(.zero)
         loop = Task {
             while !Task.isCancelled {
@@ -402,7 +405,13 @@ public actor SyncEngine {
         var carried = queued
         let result: Result<Bool, SyncFailure>
         do throws(SyncFailure) {
-            result = .success(try await cycle(store: store, secrets: secrets, http: http, queued: &carried))
+            let changed = try await cycle(store: store, secrets: secrets, http: http, queued: &carried)
+            if let transfers {
+                do { try await transfers.synchronize() }
+                catch let failure as SyncFailure { throw failure }
+                catch { throw SyncFailure.failed("couldn't schedule attachment uploads") }
+            }
+            result = .success(changed)
         } catch {
             result = .failure(error)
         }
@@ -414,7 +423,9 @@ public actor SyncEngine {
             noticeSink.yield(queued)
             queued = []
         }
-        emit(next)
+        let pending = (try? store.pendingUploads().isEmpty) == false
+        emit(next == .synced && pending ? .syncing : next)
+        if case .success = result, !background, let transfers { Task { await transfers.prefetchThumbnails() } }
         wait = following
         elapsed = false
         flight = nil

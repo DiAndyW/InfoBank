@@ -7,8 +7,8 @@ struct StoreTests {
     @Test func aNewStoreMigratesOnce() throws {
         let (store, file) = try tempStore()
         let applied = { (s: Store) in try s.pool.read { try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations") } }
-        #expect(try applied(store) == ["v1", "v2", "v3", "v4"])
-        #expect(try applied(Store(at: file)) == ["v1", "v2", "v3", "v4"])
+        #expect(try applied(store) == ["v1", "v2", "v3", "v4", "v5"])
+        #expect(try applied(Store(at: file)) == ["v1", "v2", "v3", "v4", "v5"])
     }
 
     @Test func theDeviceIDIsCreatedOnceAndKept() throws {

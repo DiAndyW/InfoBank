@@ -74,6 +74,25 @@ extension DatabaseMigrator {
                 ) STRICT;
                 """)
         }
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: """
+                ALTER TABLE device ADD COLUMN transfer_generation INTEGER NOT NULL DEFAULT 0;
+                ALTER TABLE items ADD COLUMN opened_at INTEGER NOT NULL DEFAULT 0;
+                CREATE TABLE staged_files (
+                    id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0), created_at INTEGER NOT NULL
+                ) STRICT;
+                CREATE TABLE cached_files (
+                    attachment_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('file', 'thumbnail')),
+                    path TEXT NOT NULL, size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0), last_used_at INTEGER NOT NULL,
+                    PRIMARY KEY(attachment_id, kind)
+                ) STRICT;
+                CREATE TABLE attachment_uploads (
+                    attachment_id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+                    server_url TEXT NOT NULL, task_id INTEGER NOT NULL, generation INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '', retry_at INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0
+                ) STRICT;
+                """)
+        }
         return migrator
     }
 }

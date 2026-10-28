@@ -110,6 +110,8 @@ extension Store {
                         DELETE FROM items WHERE id NOT IN
                             (SELECT json_extract(op, '$.item_id') FROM outbox WHERE json_extract(op, '$.type') = 'CaptureItem');
                         DELETE FROM topics;
+                        DELETE FROM attachment_uploads;
+                        UPDATE device SET transfer_generation = transfer_generation + 1;
                         UPDATE device SET pull_cursor = 0;
                         """)
                 }

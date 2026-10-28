@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import Synchronization
 
 public enum StoreError: Error, Equatable, LocalizedError {
     case noAppGroup
@@ -9,10 +10,16 @@ public enum StoreError: Error, Equatable, LocalizedError {
 
 public final class Store: Sendable {
     public let pool: DatabasePool
+    public let directory: URL
+    private let fileAccess = Mutex(false)
 
     public init(at file: URL) throws {
         var directory = file.deletingLastPathComponent()
+        self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        #if os(iOS)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: directory.path)
+        #endif
         var excluded = URLResourceValues()
         excluded.isExcludedFromBackup = true
         try directory.setResourceValues(excluded)
@@ -28,6 +35,29 @@ public final class Store: Sendable {
             try db.execute(
                 sql: "INSERT INTO device (id, device_id) SELECT 1, ? WHERE NOT EXISTS (SELECT 1 FROM device)",
                 arguments: [UUID().uuidString.lowercased()])
+        }
+        try recoverAttachmentFiles()
+    }
+
+    public func suspendFileDatabaseAccess() {
+        fileAccess.withLock { suspended in
+            suspended = true
+            NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+        }
+    }
+
+    public func resumeFileDatabaseAccess() {
+        fileAccess.withLock { suspended in
+            suspended = false
+            NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+        }
+    }
+
+    func withFileDatabaseAccess<T>(_ body: () throws -> T) rethrows -> T {
+        try fileAccess.withLock { suspended in
+            if suspended { NotificationCenter.default.post(name: Database.resumeNotification, object: nil) }
+            defer { if suspended { NotificationCenter.default.post(name: Database.suspendNotification, object: nil) } }
+            return try body()
         }
     }
 

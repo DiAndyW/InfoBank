@@ -26,7 +26,8 @@ public struct FeedItem: Identifiable, Hashable, Sendable {
     public let conflict: TextConflict?
     public let pending: Bool
     public let syncError: String?
-    public let attachmentNames: [String]
+    public let attachments: [FeedAttachment]
+    public var attachmentNames: [String] { attachments.map(\.filename) }
 
     public var destination: Destination { inTunnel ? .tunnel : topicID.map(Destination.topic) ?? .inbox }
 
@@ -82,27 +83,27 @@ extension Store {
                                AND json_extract(op, '$.type') = 'SetText' ORDER BY seq DESC LIMIT 1), items.text_rev) AS edit_base,
                            (SELECT text FROM conflicts WHERE item_id = items.id) AS conflict_text,
                            (SELECT mine FROM conflicts WHERE item_id = items.id) AS conflict_mine,
-                           items.sync_error IS NULL AND EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) AS pending
+                           items.sync_error IS NULL AND (EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id AND uploaded = 0)) AS pending
                     FROM items LEFT JOIN topics ON topics.id = items.topic_id
                     WHERE \(conditions.joined(separator: " AND "))
                     ORDER BY items.capture_time DESC, items.id DESC
                     LIMIT ?
                     """,
                 arguments: StatementArguments(arguments))
-            var names: [String: [String]] = [:]
+            var attachments: [String: [FeedAttachment]] = [:]
             for row in try Row.fetchAll(
                 db,
-                sql: "SELECT item_id, filename FROM attachments WHERE item_id IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                sql: "SELECT a.*, NULLIF(u.error, '') AS upload_error FROM attachments a LEFT JOIN attachment_uploads u ON u.attachment_id = a.id WHERE a.item_id IN (SELECT value FROM json_each(?)) ORDER BY a.rowid",
                 arguments: [String(decoding: try JSONEncoder().encode(rows.map { $0["id"] as String }), as: UTF8.self)])
             {
-                names[row["item_id"], default: []].append(row["filename"])
+                attachments[row["item_id"], default: []].append(Self.feedAttachment(row))
             }
             return rows.map { row in
                 FeedItem(
                     id: row["id"], text: row["text"], captureTimeUs: row["capture_time"], topicID: row["topic_id"],
                     topicName: row["topic_name"], inTunnel: row["in_tunnel"], editBase: row["edit_base"],
                     conflict: (row["conflict_mine"] as Bool?).map { TextConflict(text: row["conflict_text"], mine: $0) }, pending: row["pending"], syncError: row["sync_error"],
-                    attachmentNames: names[row["id"]] ?? [])
+                    attachments: attachments[row["id"]] ?? [])
             }
         }
     }

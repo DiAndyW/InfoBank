@@ -130,6 +130,7 @@ final class FakeServer: Sendable {
         let method: String
         let path: String
         let query: String
+        let headers: [String: String]
         let body: Data
     }
 
@@ -196,7 +197,12 @@ final class FakeServer: Sendable {
         guard body.count >= length else { return nil }
         let parts = lines[0].split(separator: " ")
         let target = parts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-        return Request(method: String(parts[0]), path: String(target[0]), query: target.count > 1 ? String(target[1]) : "", body: Data(body.prefix(length)))
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            let pair = line.split(separator: ":", maxSplits: 1)
+            if pair.count == 2 { headers[String(pair[0]).lowercased()] = pair[1].trimmingCharacters(in: .whitespaces) }
+        }
+        return Request(method: String(parts[0]), path: String(target[0]), query: target.count > 1 ? String(target[1]) : "", headers: headers, body: Data(body.prefix(length)))
     }
 
     private func respond(to request: Request, on connection: NWConnection) {

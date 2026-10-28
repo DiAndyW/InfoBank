@@ -8,7 +8,9 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            StagedAttachmentsView(model: model)
             HStack(alignment: .bottom, spacing: 4) {
+                AttachmentPicker(model: model)
                 TextField("", text: $model.text, prompt: Text(model.placeholder).foregroundStyle(palette.inkMuted), axis: .vertical)
                     .lineLimit(1...6)
                     .font(.plex(.serif, 17))

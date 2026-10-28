@@ -14,6 +14,7 @@ struct Services {
     let store: Store
     let secrets: SecretStore
     let engine: SyncEngine
+    let transfers: AttachmentTransfers
     let notices = NoticeCenter()
 
     init() throws {
@@ -22,7 +23,8 @@ struct Services {
             throw ServicesError.missingKeychainPrefix
         }
         secrets = .keychain(accessGroup: prefix + "app.notebank.shared")
-        engine = SyncEngine(store: store, secrets: secrets)
+        transfers = AttachmentTransfers(store: store, secrets: secrets)
+        engine = SyncEngine(store: store, secrets: secrets, transfers: transfers)
     }
 
     func wake() { Task { [engine] in await engine.wake() } }
@@ -34,12 +36,13 @@ struct Services {
 
 @main
 struct NoteBankApp: App {
-    private let services = Result { try Services() }
+    @UIApplicationDelegateAdaptor(BackgroundTransferDelegate.self) private var appDelegate
+    private let services = ApplicationServices.result
 
     var body: some Scene {
         WindowGroup {
             switch services {
-            case .success(let services): RootView(services: services)
+            case .success(let services): RootView(services: services).environment(\.attachmentTransfers, services.transfers)
             case .failure(let error): StorageFailureView(error: error)
             }
         }
@@ -91,7 +94,7 @@ struct RootView: View {
             guard !finished else { return }
             finished = true
             if episode == backgroundEpisode {
-                NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+                services.store.suspendFileDatabaseAccess()
             }
             if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
         }
@@ -162,7 +165,7 @@ struct RootView: View {
             switch phase {
             case .active:
                 backgroundEpisode += 1
-                NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
+                services.store.resumeFileDatabaseAccess()
                 places.refresh()
                 foregrounds += 1
                 Task { await services.engine.enterForeground() }
@@ -171,4 +174,25 @@ struct RootView: View {
             }
         }
     }
+}
+
+@MainActor
+private enum ApplicationServices {
+    static let result = Result { try Services() }
+}
+
+@MainActor
+private final class BackgroundTransferDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
+        guard identifier == AttachmentTransfers.sessionIdentifier, case .success(let services) = ApplicationServices.result else { completionHandler(); return }
+        let completion = BackgroundCompletion(completionHandler)
+        Task { await services.transfers.backgroundEvents { completion.finish() } }
+    }
+}
+
+@MainActor
+private final class BackgroundCompletion {
+    private let completion: () -> Void
+    init(_ completion: @escaping () -> Void) { self.completion = completion }
+    func finish() { completion() }
 }

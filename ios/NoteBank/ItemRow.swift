@@ -54,10 +54,8 @@ struct ItemRow: View {
                         .lineSpacing(3)
                         .foregroundStyle(palette.ink)
                 }
-                ForEach(item.attachmentNames, id: \.self) { name in
-                    Label(name, systemImage: "paperclip")
-                        .font(.plex(.sans, 13, relativeTo: .footnote))
-                        .foregroundStyle(palette.inkMuted)
+                ForEach(item.attachments) { attachment in
+                    AttachmentView(attachment: attachment)
                 }
                 if let chipTitle {
                     Text(chipTitle)
@@ -121,7 +119,7 @@ struct ItemRow: View {
         .background(highlighted ? palette.accentSoft : .clear)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
         .onLongPressGesture { onCommands() }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: item.attachments.isEmpty ? .combine : .contain)
         .accessibilityAddTraits(copyable && item.text != nil ? .isButton : [])
         .accessibilityAction(named: "Item actions", onCommands)
         .accessibilityAction(named: "Copy") { if copyable && item.text != nil { onCopy() } }

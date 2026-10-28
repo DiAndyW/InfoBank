@@ -43,7 +43,8 @@ func New(cfg Config) (*Server, error) {
 	api := &syncAPI{db: cfg.DB, now: cfg.Now, files: files}
 	authed.HandleFunc("POST /sync/push", api.push)
 	authed.HandleFunc("GET /sync/pull", api.pull)
-	authed.HandleFunc("PUT /attachments/{id}", api.upload)
+	tokens := uploadTokens{key: []byte(cfg.Secret), now: cfg.Now}
+	authed.HandleFunc("POST /attachments/{id}/upload-token", func(w http.ResponseWriter, r *http.Request) { tokens.issue(w, r, api) })
 	authed.HandleFunc("GET /attachments/{id}", api.download)
 	authed.HandleFunc("GET /attachments/{id}/thumbnail", api.thumbnail)
 
@@ -55,21 +56,25 @@ func New(cfg Config) (*Server, error) {
 		w.WriteHeader(http.StatusOK)
 	})
 	limiter := newFailureLimiter(cfg.Now)
-	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
-		if limiter.blocked(ip) {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		tokenHash := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(tokenHash[:], secretHash[:]) != 1 {
-			limiter.recordFailure(ip)
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		authed.ServeHTTP(w, r)
-	})
+	authorize := func(next http.Handler, scopedUpload bool) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientIP(r)
+			if limiter.blocked(ip) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			tokenHash := sha256.Sum256([]byte(token))
+			if !ok || (subtle.ConstantTimeCompare(tokenHash[:], secretHash[:]) != 1 && !(scopedUpload && tokens.valid(token, r.PathValue("id")))) {
+				limiter.recordFailure(ip)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	root.Handle("PUT /attachments/{id}", authorize(http.HandlerFunc(api.upload), true))
+	root.Handle("/", authorize(authed, false))
 	return &Server{Handler: root, api: api}, nil
 }
 
