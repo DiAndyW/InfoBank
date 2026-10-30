@@ -279,3 +279,28 @@ extension AttachmentTransferTests {
         #expect(try store.canScheduleUpload(file.id, sessionIdentifier: AttachmentTransfers.sessionIdentifier))
     }
 }
+
+extension AttachmentTransferTests {
+    @Test func clipboardExportsSurviveOriginalRemovalAndKeepDuplicateNames() async throws {
+        let (store, _) = try tempStore()
+        let first = try store.stageFile(at: AttachmentTests().source())
+        let second = try store.stageFile(at: AttachmentTests().source())
+        _ = try store.capture(text: "", attachmentIDs: [first.id, second.id], to: .tunnel, nowUs: 1)
+        let transfers = AttachmentTransfers(store: store, secrets: .memory(), background: false)
+        let files = try await transfers.clipboardFiles([first.id, second.id])
+        #expect(files.count == 2)
+        #expect(files[0] != files[1])
+        try FileManager.default.removeItem(at: store.directory.appending(path: "files"))
+        for file in files { #expect(try Data(contentsOf: file) == Data("hello".utf8)) }
+    }
+
+    @Test func clipboardExportFailureRetainsItemAndRemovesPartialExports() async throws {
+        let (store, _) = try tempStore()
+        let staged = try store.stageFile(at: AttachmentTests().source())
+        let item = try store.capture(text: "keep me", attachmentIDs: [staged.id], to: .tunnel, nowUs: 1)
+        let transfers = AttachmentTransfers(store: store, secrets: .memory(), background: false)
+        await #expect(throws: AttachmentError.self) { try await transfers.clipboardFiles([staged.id, UUID().uuidString.lowercased()]) }
+        #expect(try store.items(in: .tunnel, before: nil, limit: 10).first?.id == item)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: store.directory.appending(path: "clipboard").path).isEmpty)
+    }
+}

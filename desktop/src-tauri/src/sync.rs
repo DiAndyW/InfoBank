@@ -198,7 +198,7 @@ fn label(conn: &Connection, item_id: &str) -> Option<String> {
     }
 }
 
-async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
+pub(crate) async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
     let res = req.bearer_auth(token).send().await.map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
     match res.status() {
         s if s.is_success() => Ok(res),
@@ -353,6 +353,11 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
         Err(e) if !changed => return Err(e),
         // The Feed must still hear about what was pulled; the next cycle retries and reports the error.
         Err(_) => {}
+    }
+    #[cfg(target_os = "macos")]
+    if crate::thumbnails::upload(state, &url, &token).await.unwrap_or(false) {
+        changed = true;
+        let _ = pull(state, &url, &token).await;
     }
     Ok(changed)
 }
@@ -1139,6 +1144,78 @@ mod server_tests {
 
         assert_eq!(upload_pending(&a, &server.url, &server.secret).await, Ok(true));
         assert!(flag(&a, "uploaded", &id), "a 410 must stop the retries");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn thumbnail_authorization_failure_backs_off_without_affecting_the_original() {
+        let (url, requests) = reject_all();
+        let a = device_at(&url, "secret");
+        let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
+        let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        a.db.lock().unwrap().execute("DELETE FROM outbox", []).unwrap();
+        a.db.lock().unwrap().execute("UPDATE attachments SET uploaded = 1", []).unwrap();
+        assert_eq!(crate::thumbnails::upload(&a, &url, "secret").await, Ok(false));
+        assert_eq!(seen(&requests), 1);
+        assert!(flag(&a, "uploaded", &staged.id));
+        assert!(!flag(&a, "has_thumbnail", &staged.id));
+        let cached: i64 = a.db.lock().unwrap().query_row(
+            "SELECT count(*) FROM cached_files WHERE attachment_id = ?1 AND kind = 'thumbnail'", [&staged.id], |row| row.get(0)).unwrap();
+        assert_eq!(cached, 1, "a failed preview upload must retain its generated JPEG for retry");
+        assert_eq!(crate::thumbnails::upload(&a, &url, "secret").await, Ok(false));
+        assert_eq!(seen(&requests), 1);
+        for (_, after) in a.thumbnail_retries.lock().unwrap().values_mut() { *after = std::time::Instant::now(); }
+        assert_eq!(crate::thumbnails::upload(&a, &url, "secret").await, Ok(false));
+        assert_eq!(seen(&requests), 2);
+        let full = crate::cache::file(&a, &staged.id, T0).await.unwrap();
+        assert_eq!(std::fs::read(full).unwrap(), original);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn old_uploaded_heic_gets_a_preview_after_relaunch() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
+        let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        let (op, device_id): (String, String) = a.db.lock().unwrap().query_row(
+            "SELECT op, (SELECT device_id FROM device) FROM outbox", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        let body = serde_json::json!({"device_id": device_id, "ops": [serde_json::from_str::<serde_json::Value>(&op).unwrap()]});
+        assert!(client().post(format!("{}/sync/push", server.url)).bearer_auth(&server.secret).json(&body).send().await.unwrap().status().is_success());
+        a.db.lock().unwrap().execute("DELETE FROM outbox", []).unwrap();
+        upload_pending(&a, &server.url, &server.secret).await.unwrap();
+        assert!(flag(&a, "uploaded", &staged.id));
+        assert!(!flag(&a, "has_thumbnail", &staged.id));
+        let a = reopen(a);
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "has_thumbnail", &staged.id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        assert!(flag(&b, "has_thumbnail", &staged.id));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_device_generated_heic_preview_reaches_another_device_without_its_original() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
+        let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "has_thumbnail", &staged.id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        assert!(flag(&b, "has_thumbnail", &staged.id));
+        let preview = crate::cache::thumbnail(&b, &staged.id, T0).await.unwrap();
+        assert_eq!(&std::fs::read(preview).unwrap()[..2], [0xff, 0xd8]);
+        assert!(!b.dir.join("files").join(&staged.id).exists());
+        let full = crate::cache::file(&a, &staged.id, T0).await.unwrap();
+        assert_eq!(std::fs::read(full).unwrap(), original);
     }
 
     #[tokio::test]

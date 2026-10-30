@@ -65,6 +65,7 @@ public actor AttachmentTransfers {
     }
     private var thumbnailRetries: [ThumbnailRequest: ThumbnailRetry] = [:]
     private var thumbnailRequests: [ThumbnailRequest: Task<URL, Error>] = [:]
+    private var thumbnailUploadRetries: [ThumbnailRequest: ThumbnailRetry] = [:]
 
     public init(store: Store, secrets: SecretStore, background: Bool = true, sessionIdentifier: String = AttachmentTransfers.sessionIdentifier, now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
         self.identifier = sessionIdentifier
@@ -130,6 +131,7 @@ public actor AttachmentTransfers {
                 waitingForRetry = true
                 continue
             }
+            if attachment.mimeType.hasPrefix("image/") { _ = try? await thumbnail(attachment.id) }
             let data = try await SyncHTTP.live.send(serverURL, path: "/attachments/\(attachment.id)/upload-token", secret: secret, body: Data("{}".utf8))
             struct Capability: Decodable { let token: String }
             guard let token = try? JSONDecoder().decode(Capability.self, from: data).token, !token.isEmpty else { throw AttachmentError("Couldn't authorize the upload") }
@@ -146,8 +148,55 @@ public actor AttachmentTransfers {
             task.resume()
             active.insert(attachment.id)
         }
+        await uploadThumbnails(serverURL: serverURL, secret: secret, generation: generation)
         try store.evictCache(nowUs: Time.nowUs(), pinned: Set(pins.keys).union(wanted))
         if waitingForRetry { throw AttachmentError("An upload is waiting to retry") }
+    }
+
+    private func uploadThumbnails(serverURL: String, secret: String, generation: Int64) async {
+        thumbnailUploadRetries = thumbnailUploadRetries.filter { $0.key.generation == generation }
+        let candidates = try? await store.pool.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT a.id FROM attachments a JOIN items i ON i.id = a.item_id
+                WHERE a.uploaded = 1 AND a.has_thumbnail = 0 AND a.mime_type LIKE 'image/%'
+                  AND i.deleted_at IS NULL AND i.sync_error IS NULL
+                  AND EXISTS(SELECT 1 FROM cached_files c WHERE c.attachment_id = a.id)
+                ORDER BY a.rowid
+                """)
+        }
+        var attempted = 0
+        for id in candidates ?? [] {
+            let key = ThumbnailRequest(id: id, generation: generation)
+            if thumbnailUploadRetries[key].map({ now() < $0.after }) == true { continue }
+            guard attempted < 4 else { break }
+            attempted += 1
+            do {
+                guard try store.serverURL() == serverURL, try store.transferGeneration() == generation else { return }
+                guard let file = try await thumbnail(id) else { throw AttachmentError("No image preview is available") }
+                let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 1 << 20 else { throw AttachmentError("The image preview is too large") }
+                let bytes = try Data(contentsOf: file)
+                let data = try await SyncHTTP.live.send(serverURL, path: "/attachments/\(id)/thumbnail-upload-token", secret: secret, body: Data("{}".utf8))
+                struct Capability: Decodable { let token: String }
+                let token = try JSONDecoder().decode(Capability.self, from: data).token
+                guard !token.isEmpty, try store.serverURL() == serverURL, try store.transferGeneration() == generation else { return }
+                var request = URLRequest(url: URL(string: serverURL + "/attachments/\(id)/thumbnail")!)
+                request.httpMethod = "PUT"
+                request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+                request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+                request.httpBody = bytes
+                let (_, response) = try await SyncHTTP.live.session.data(for: request, delegate: SyncHTTP.live)
+                guard (response as? HTTPURLResponse)?.statusCode == 204 else { throw AttachmentError("Couldn't upload the image preview") }
+                try await store.pool.write { db in
+                    try db.execute(sql: "UPDATE attachments SET has_thumbnail = 1 WHERE id = ? AND EXISTS(SELECT 1 FROM device WHERE server_url = ? AND transfer_generation = ?)", arguments: [id, serverURL, generation])
+                }
+                thumbnailUploadRetries.removeValue(forKey: key)
+                delegate.wake.withLock { $0 }?()
+            } catch {
+                let attempts = min((thumbnailUploadRetries[key]?.attempts ?? 0) + 1, 5)
+                thumbnailUploadRetries[key] = ThumbnailRetry(attempts: attempts, after: now() + .seconds(min(30 * (1 << (attempts - 1)), 300)))
+            }
+        }
     }
 
     public func open(_ id: String) async throws -> URL {
@@ -157,6 +206,35 @@ public actor AttachmentTransfers {
             try store.markOpened(id, nowUs: Time.nowUs())
             return file
         } catch { release(id); throw error }
+    }
+
+    public func clipboardFiles(_ ids: [String]) async throws -> [URL] {
+        let root = store.directory.appending(path: "clipboard", directoryHint: .isDirectory)
+        let manager = FileManager.default
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+        // Keep clipboard preparation independent of cache eviction and Trash.
+        for entry in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            if let modified = try? entry.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+               modified < Date().addingTimeInterval(-7 * 24 * 3600) { try? manager.removeItem(at: entry) }
+        }
+        let folder = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        var completed = false
+        defer { if !completed { try? manager.removeItem(at: folder) } }
+        var exported: [URL] = []
+        for id in ids {
+            try Task.checkCancellation()
+            let source = try await open(id)
+            do {
+                let target = folder.appending(path: id, directoryHint: .isDirectory).appending(path: source.lastPathComponent)
+                try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try manager.copyItem(at: source, to: target)
+                exported.append(target)
+                release(id)
+            } catch { release(id); throw error }
+        }
+        try Task.checkCancellation()
+        completed = true
+        return exported
     }
 
     public func release(_ id: String) {
@@ -172,7 +250,7 @@ public actor AttachmentTransfers {
             let target = store.directory.appending(path: "thumbnails/\(id).jpg")
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let source = CGImageSourceCreateWithURL(local as CFURL, nil),
-               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 640, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary),
+               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 400, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary),
                let output = CGImageDestinationCreateWithURL(target as CFURL, UTType.jpeg.identifier as CFString, 1, nil) {
                 CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
                 if CGImageDestinationFinalize(output) {

@@ -45,6 +45,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       calls.push({ cmd, args });
       await opts.gates?.[cmd];
       if (opts.failing?.[cmd]) throw opts.failing[cmd];
+      if (cmd === "copy_item") return null;
       if (cmd === "startup_error") return opts.startup ?? null;
       if (["show_data_folder", "quit"].includes(cmd)) return null;
       if (cmd === "get_settings") return settings;
@@ -246,7 +247,7 @@ test("a file pasted while a Capture is saving stays for the next Item", async ()
   render(<App />);
   const box = await screen.findByLabelText("New Item");
   await userEvent.type(box, "milk{Enter}");
-  fireEvent.paste(box, { clipboardData: { files: [new File(["x"], "late.png", { type: "image/png" })] } });
+  fireEvent.paste(box, { clipboardData: { files: [new File(["x"], "late.png", { type: "image/png" })], getData: () => "" } });
   await screen.findByText("late.png");
   await act(async () => release());
   await vi.waitFor(() => expect(box).toHaveValue(""));
@@ -481,6 +482,26 @@ test("a pasted image is staged from its bytes, and an oversized one is refused",
   fireEvent.paste(box, { clipboardData: { files: [huge], getData: () => "" } });
   expect(await screen.findByRole("alertdialog")).toHaveTextContent("huge.mov is over 100 MB");
 });
+
+for (const count of [1, 3]) {
+  test(`pasting text with ${count} images preserves both in the captured Item`, async () => {
+    const user = userEvent.setup();
+    const staged = Array.from({ length: count }, (_, i) => ({ ...scan, id: `mixed-${i}`, filename: `mixed-${i}.png` }));
+    const calls = backend(configured, { staged: [...staged] });
+    localStorage.setItem("place", "inbox");
+    render(<App />);
+    const box = await screen.findByLabelText("New Item");
+    await user.click(box);
+    await user.paste({
+      files: staged.map((file) => new File(["image"], file.filename, { type: "image/png" })),
+      getData: (type: string) => type === "text" || type === "text/plain" ? "caption\nsecond line" : "",
+    } as unknown as DataTransfer);
+    expect(box).toHaveValue("caption\nsecond line");
+    for (const file of staged) await screen.findByText(file.filename);
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(calls).toContainEqual({ cmd: "capture", args: { text: "caption\nsecond line", attachmentIds: staged.map((file) => file.id), target: { kind: "inbox" } } });
+  });
+}
 
 test("files staged from a drop become chips, and failures are named", async () => {
   backend(configured);
@@ -1428,12 +1449,30 @@ test("files can be added, pasted and removed while editing, into the editor and 
   render(<App />);
   await openEdit("receipt");
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Attach files" }));
-  fireEvent.paste(screen.getByRole("textbox", { name: "Edit Item" }), { clipboardData: { files: [new File(["x"], "")] } });
+  fireEvent.paste(screen.getByRole("textbox", { name: "Edit Item" }), { clipboardData: { files: [new File(["x"], "")], getData: () => "" } });
   await within(editorOf()).findByText("Pasted image.png");
   expect(within(screen.getByLabelText("New Item").closest("form")!).queryByText("Pasted image.png")).not.toBeInTheDocument();
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Remove report.pdf" }));
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
   expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "receipt", addIds: ["s1", "s2"], removeIds: ["a1"], baseRev: 0 } });
+});
+
+test("a mixed paste replaces selected editor text and keeps its image", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [filed("1", "before AFTER after", null)], staged: [scan] });
+  render(<App />);
+  await openEdit("before AFTER after");
+  const box = screen.getByRole("textbox", { name: "Edit Item" }) as HTMLTextAreaElement;
+  await user.click(box);
+  box.setSelectionRange(7, 12);
+  await user.paste({
+    files: [new File(["image"], "image.png", { type: "image/png" })],
+    getData: (type: string) => type === "text" || type === "text/plain" ? "caption" : "",
+  } as unknown as DataTransfer);
+  expect(box).toHaveValue("before caption after");
+  await within(editorOf()).findByText(scan.filename);
+  await user.click(within(editorOf()).getByRole("button", { name: "Save" }));
+  expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "before caption after", addIds: [scan.id], removeIds: [], baseRev: 0 } });
 });
 
 test("a refetch while editing doesn't make Save remove the Item's files", async () => {
@@ -2343,7 +2382,7 @@ test("a Tunnel row copies once and shows Copied when trash after copy is off", a
   render(<App />);
   await user.click(await openTunnel());
   expect(await screen.findByText("Copied")).toBeInTheDocument();
-  expect(await navigator.clipboard.readText()).toBe("transfer this");
+  expect(calls).toContainEqual({ cmd: "copy_item", args: { itemId: "tunnel-note" } });
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 });
@@ -2369,7 +2408,7 @@ for (const answer of ["Turn on", "Not now"]) {
     render(<App />);
     await user.click(await openTunnel());
     const popup = await screen.findByRole("alertdialog", { name: "Move Tunnel notes to Trash after you copy them?" });
-    expect(await navigator.clipboard.readText()).toBe("transfer this");
+    expect(calls).toContainEqual({ cmd: "copy_item", args: { itemId: "tunnel-note" } });
     await user.click(within(popup).getByRole("button", { name: answer }));
     expect(calls).toContainEqual({ cmd: "set_trash_after_copy", args: { on: answer === "Turn on" } });
     expect(calls.some((c) => c.cmd === "trash_item")).toBe(answer === "Turn on");
@@ -2385,19 +2424,17 @@ for (const answer of ["Turn on", "Not now"]) {
 
 test("double-clicking a Tunnel note edits it with at most one copy and no trash", async () => {
   const user = userEvent.setup();
-  const write = vi.spyOn(navigator.clipboard, "writeText");
   const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
   render(<App />);
   await user.dblClick(await openTunnel());
   expect(await screen.findByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
   await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(write.mock.calls.length).toBeLessThanOrEqual(1);
+  expect(calls.filter((c) => c.cmd === "copy_item").length).toBeLessThanOrEqual(1);
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
 });
 
 test("links, attachments, and row buttons in the Tunnel never copy or trash", async () => {
   const user = userEvent.setup();
-  const write = vi.spyOn(navigator.clipboard, "writeText");
   const note = tunnelItem("https://example.com");
   note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
   const calls = backend(configured, { items: () => [note], trashAfterCopy: true });
@@ -2407,7 +2444,7 @@ test("links, attachments, and row buttons in the Tunnel never copy or trash", as
   await user.click(screen.getByRole("button", { name: /note.pdf/ }));
   await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
   await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(write).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
   expect(calls.some((c) => c.cmd === "plugin:opener|open_url")).toBe(true);
   expect(calls.some((c) => c.cmd === "open_attachment")).toBe(true);
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
@@ -2415,24 +2452,61 @@ test("links, attachments, and row buttons in the Tunnel never copy or trash", as
 
 test("a failed clipboard write never changes the setting or trashes", async () => {
   const user = userEvent.setup();
-  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce("Clipboard unavailable");
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, failing: { copy_item: "Clipboard unavailable" } });
   render(<App />);
   await user.click(await openTunnel());
-  expect(await screen.findByText("Couldn't copy the text")).toBeInTheDocument();
+  expect(await screen.findByText("Couldn't copy the Item")).toBeInTheDocument();
   expect(calls.some((c) => ["trash_item", "set_trash_after_copy"].includes(c.cmd))).toBe(false);
 });
 
-test("a Tunnel note with no text is not copyable", async () => {
+test("an empty Tunnel Item is not copyable", async () => {
   const user = userEvent.setup();
-  const write = vi.spyOn(navigator.clipboard, "writeText");
   const calls = backend(configured, { items: () => [tunnelItem(null)], trashAfterCopy: true });
   render(<App />);
   await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
   await user.click(screen.getByRole("article"));
   await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(write).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+test("an attachment-only Tunnel Item copies completely before it can be trashed", async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>((resolve) => { finish = resolve; });
+  const note = tunnelItem(null);
+  note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
+  const calls = backend(configured, { items: () => [note], trashAfterCopy: true, gates: { copy_item: gate } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  await userEvent.click(screen.getByRole("article"));
+  await vi.waitFor(() => expect(calls.some((c) => c.cmd === "copy_item")).toBe(true));
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  await act(async () => finish());
+  expect(await screen.findByText("Copied · moved to Trash")).toBeInTheDocument();
+});
+
+test("a whole-Item download or clipboard failure retains the Tunnel Item", async () => {
+  const note = tunnelItem();
+  note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
+  const calls = backend(configured, { items: () => [note], trashAfterCopy: true, failing: { copy_item: "Download failed" } });
+  render(<App />);
+  await userEvent.click(await openTunnel());
+  expect(await screen.findByText("Couldn't copy the Item")).toBeInTheDocument();
+  expect(calls.some((c) => ["trash_item", "set_trash_after_copy"].includes(c.cmd))).toBe(false);
+});
+
+test("leaving Tunnel during attachment downloads keeps the Item out of Trash", async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>((resolve) => { finish = resolve; });
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, gates: { copy_item: gate } });
+  render(<App />);
+  await userEvent.click(await openTunnel());
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  await act(async () => finish());
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  expect(screen.queryByText("Copied · moved to Trash")).not.toBeInTheDocument();
 });
 
 test("Move to Tunnel and Undo preserve the original place", async () => {
@@ -2562,7 +2636,7 @@ test("a failed system timing read keeps a copied Tunnel note out of Trash", asyn
   await user.click(await openTunnel());
   expect(await screen.findByText("Timing unavailable")).toBeInTheDocument();
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
-  expect(await navigator.clipboard.readText()).toBe("transfer this");
+  expect(calls).toContainEqual({ cmd: "copy_item", args: { itemId: "tunnel-note" } });
 });
 
 

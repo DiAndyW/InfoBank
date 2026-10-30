@@ -8,6 +8,7 @@ struct ShowTarget: Equatable {
 
 struct FeedView: View {
     private let store: Store
+    private let transfers: AttachmentTransfers
     let place: Place
     let status: SyncStatus
     let openSettings: () -> Void
@@ -25,6 +26,7 @@ struct FeedView: View {
     @State private var scrollsToNewest = false
     @State private var title: String
     @State private var copiedID: String?
+    @State private var copyTask: Task<Void, Never>?
     @State private var copies = 0
     @State private var commands: FeedItem?
     @State private var copyAfterSheet: FeedItem?
@@ -39,6 +41,7 @@ struct FeedView: View {
         onShow: @escaping (String) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
     ) {
         self.store = services.store
+        self.transfers = services.transfers
         self.place = place
         self.status = status
         self.openSettings = openSettings
@@ -104,18 +107,38 @@ struct FeedView: View {
     }
 
     private func copy(_ item: FeedItem) {
-        guard let text = item.text else { return }
-        UIPasteboard.general.string = text
-        copies += 1
-        let outcome = model.copied(item)
-        if outcome == .trashed {
-            copiedID = nil
-            notices.postTrashed(itemID: item.id)
-        } else {
-            copiedID = item.id
+        guard copyTask == nil, item.syncError == nil else { return }
+        copyTask = Task { @MainActor in
+            defer { copyTask = nil }
+            do {
+                let files = try await transfers.clipboardFiles(item.attachments.map(\.id))
+                try Task.checkCancellation()
+                guard UIApplication.shared.applicationState == .active else { return }
+                guard let current = model.items.first(where: { $0.id == item.id }),
+                      current.text == item.text, current.attachments == item.attachments else {
+                    throw AttachmentError("The Item changed while preparing the copy; copy it again")
+                }
+                let providers = try ItemClipboard.providers(text: item.text, attachments: zip(item.attachments, files).map {
+                    (file: $0.1, mimeType: $0.0.mimeType)
+                })
+                guard !providers.isEmpty else { throw AttachmentError("This Item is empty") }
+                let board = UIPasteboard.general
+                let previous = board.changeCount
+                board.setItemProviders(providers, localOnly: false, expirationDate: Date().addingTimeInterval(7 * 24 * 3600))
+                guard board.changeCount != previous, board.numberOfItems == providers.count else {
+                    throw AttachmentError("Couldn't copy the complete Item")
+                }
+                copies += 1
+                let outcome = model.copied(item)
+                if outcome == .trashed {
+                    copiedID = nil
+                    notices.postTrashed(itemID: item.id)
+                } else { copiedID = item.id }
+                if outcome == .ask { asking = item }
+                wake()
+            } catch is CancellationError {
+            } catch { actionError = error.localizedDescription }
         }
-        if outcome == .ask { asking = item }
-        wake()
     }
 
     private func answer(_ on: Bool, _ item: FeedItem) {
@@ -235,7 +258,7 @@ struct FeedView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
                 }.presentationDetents([.medium])
             } else {
-            ItemActionsView(item: item, store: store, onCopy: {
+            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, onCopy: {
                 copyAfterSheet = item
                 commands = nil
             }, onChanged: { trashed, moved in
@@ -264,6 +287,7 @@ struct FeedView: View {
             Button("Not now", role: .cancel) { answer(false, item) }
         }
         .onDisappear {
+            copyTask?.cancel()
             if let notice = notices.current, notice.action != .show { notices.dismiss() }
         }
         .navigationBarTitleDisplayMode(.inline)

@@ -17,11 +17,13 @@ const (
 	maxTopicNameBytes = 200
 
 	// Attachments
-	maxAttachmentBytes       = 100 << 20
-	maxAttachmentFieldBytes  = 255 // filename and mime type
-	thumbnailEdgePixels      = 400
-	thumbnailJPEGQuality     = 80
-	maxThumbnailSourcePixels = 64 << 20 // above a 48 MP phone photo; decoding takes 4–8 bytes per pixel
+	maxAttachmentBytes           = 100 << 20
+	maxAttachmentFieldBytes      = 255 // filename and mime type
+	thumbnailEdgePixels          = 400
+	thumbnailJPEGQuality         = 80
+	maxThumbnailSourcePixels     = 64 << 20 // above a 48 MP phone photo; decoding takes 4–8 bytes per pixel
+	maxThumbnailUploadBytes      = 1 << 20
+	maxThumbnailUploadEdgePixels = 640
 
 	// Purge
 	PurgeInterval      = time.Hour

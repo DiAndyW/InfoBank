@@ -13,15 +13,17 @@ import (
 
 const uploadTokenLifetime = 24 * time.Hour
 const uploadTokenDomain = "notebank/attachment-upload/v1\x00"
+const thumbnailTokenDomain = "notebank/attachment-thumbnail-upload/v1\x00"
 
 type uploadTokens struct {
-	key []byte
-	now func() time.Time
+	key    []byte
+	now    func() time.Time
+	domain string
 }
 
 func (u uploadTokens) signature(payload []byte) []byte {
 	mac := hmac.New(sha256.New, u.key)
-	mac.Write([]byte(uploadTokenDomain))
+	mac.Write([]byte(u.domain))
 	mac.Write(payload)
 	return mac.Sum(nil)
 }

@@ -1,4 +1,5 @@
 mod cache;
+mod clipboard;
 mod commands;
 mod feed;
 mod files;
@@ -11,6 +12,8 @@ mod store;
 mod sync;
 mod topics;
 mod tray;
+#[cfg(target_os = "macos")]
+mod thumbnails;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -29,6 +32,8 @@ pub struct AppState {
     settings_saved: tokio::sync::Notify,
     status: Mutex<&'static str>,
     skipped_uploads: Mutex<HashSet<String>>,
+    #[cfg(target_os = "macos")]
+    thumbnail_retries: Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
     notices: Mutex<Vec<sync::SyncNotice>>,
     picking_files: AtomicBool,
     prefetching: AtomicBool,
@@ -47,6 +52,8 @@ impl AppState {
             settings_saved: tokio::sync::Notify::new(),
             status: Mutex::new("synced"),
             skipped_uploads: Mutex::new(HashSet::new()),
+            #[cfg(target_os = "macos")]
+            thumbnail_retries: Mutex::new(std::collections::HashMap::new()),
             notices: Mutex::new(Vec::new()),
             picking_files: AtomicBool::new(false),
             prefetching: AtomicBool::new(false),
@@ -190,6 +197,7 @@ pub fn run() {
             commands::stage_attachment_bytes,
             commands::unstage_attachment,
             commands::thumbnail,
+            commands::copy_item,
             commands::open_attachment,
             commands::reveal_attachment,
             commands::list_items,

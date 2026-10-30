@@ -12,6 +12,6 @@ let package = Package(
     ],
     targets: [
         .target(name: "NoteBankKit", dependencies: [.product(name: "GRDB", package: "GRDB.swift")]),
-        .testTarget(name: "NoteBankKitTests", dependencies: ["NoteBankKit", .product(name: "GRDB", package: "GRDB.swift")]),
+        .testTarget(name: "NoteBankKitTests", dependencies: ["NoteBankKit", .product(name: "GRDB", package: "GRDB.swift")], resources: [.copy("Fixtures")]),
     ]
 )

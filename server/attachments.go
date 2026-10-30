@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image/jpeg"
+	"io"
 	"log"
 	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,7 +108,7 @@ func (a *syncAPI) upload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	live, err := a.markUploaded(r.Context(), id, thumbnailKey)
+	live, err := a.publishAttachment(r.Context(), id, thumbnailKey, true)
 	switch {
 	case err != nil:
 		log.Printf("upload: %v", err)
@@ -132,8 +135,8 @@ func (a *syncAPI) storeThumbnail(fileKey string) (*string, error) {
 	return &key, a.files.Put(key, bytes.NewReader(thumb), int64(len(thumb)))
 }
 
-// markUploaded reports false if the Attachment was removed. It bumps the Item's seq so Devices re-pull it.
-func (a *syncAPI) markUploaded(ctx context.Context, id uuid.UUID, thumbnailKey *string) (bool, error) {
+// Publishing either upload bumps the Item's seq so Devices re-pull its Attachment flags.
+func (a *syncAPI) publishAttachment(ctx context.Context, id uuid.UUID, thumbnailKey *string, original bool) (bool, error) {
 	tx, err := a.db.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -145,10 +148,14 @@ func (a *syncAPI) markUploaded(ctx context.Context, id uuid.UUID, thumbnailKey *
 	// coalesce keeps the first of two concurrent uploads of the same file.
 	var itemID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		UPDATE attachments SET uploaded_at = coalesce(uploaded_at, $2), thumbnail_key = coalesce(thumbnail_key, $3)
-		WHERE id = $1 AND deleted_at IS NULL RETURNING item_id`, id, a.now(), thumbnailKey).Scan(&itemID)
+		UPDATE attachments SET uploaded_at = CASE WHEN $4 THEN coalesce(uploaded_at, $2) ELSE uploaded_at END,
+		thumbnail_key = coalesce(thumbnail_key, $3)
+		WHERE id = $1 AND deleted_at IS NULL AND ($4 OR thumbnail_key IS NULL)
+		RETURNING item_id`, id, a.now(), thumbnailKey, original).Scan(&itemID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		var live bool
+		err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE id = $1 AND deleted_at IS NULL)", id).Scan(&live)
+		return live, err
 	}
 	if err != nil {
 		return false, err
@@ -157,6 +164,73 @@ func (a *syncAPI) markUploaded(ctx context.Context, id uuid.UUID, thumbnailKey *
 		return false, err
 	}
 	return true, tx.Commit(ctx)
+}
+
+func (a *syncAPI) uploadThumbnail(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var mimeType string
+	var removed, ready bool
+	err = a.db.QueryRow(r.Context(), "SELECT mime_type, deleted_at IS NOT NULL, thumbnail_key IS NOT NULL FROM attachments WHERE id = $1", id).Scan(&mimeType, &removed, &ready)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		http.NotFound(w, r)
+		return
+	case err != nil:
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	case removed:
+		w.WriteHeader(http.StatusGone)
+		return
+	case !strings.HasPrefix(mimeType, "image/"):
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		return
+	}
+	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || contentType != "image/jpeg" {
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		return
+	}
+	if ready {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxThumbnailUploadBytes+1))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxThumbnailUploadBytes {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		return
+	}
+	config, err := jpeg.DecodeConfig(bytes.NewReader(body))
+	if err != nil || config.Width <= 0 || config.Height <= 0 || config.Width > maxThumbnailUploadEdgePixels || config.Height > maxThumbnailUploadEdgePixels {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	preview := thumbnailJPEG(bytes.NewReader(body))
+	if preview == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	key := uuid.NewString()
+	if err := a.files.Put(key, bytes.NewReader(preview), int64(len(preview))); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	live, err := a.publishAttachment(r.Context(), id, &key, false)
+	switch {
+	case err != nil:
+		w.WriteHeader(http.StatusInternalServerError)
+	case !live:
+		w.WriteHeader(http.StatusGone)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func (a *syncAPI) download(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +258,7 @@ func (a *syncAPI) thumbnail(w http.ResponseWriter, r *http.Request) {
 	var uploadedAt time.Time
 	found := a.lookup(w, r, `
 		SELECT thumbnail_key, uploaded_at FROM attachments
-		WHERE id = $1 AND deleted_at IS NULL AND thumbnail_key IS NOT NULL`,
+		WHERE id = $1 AND deleted_at IS NULL AND thumbnail_key IS NOT NULL AND uploaded_at IS NOT NULL`,
 		&thumbnailKey, &uploadedAt)
 	if !found {
 		return

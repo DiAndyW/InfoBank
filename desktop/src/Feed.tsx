@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { doubleClickIntervalMs, discardItem, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View, type Target } from "./api";
 import { Attachments } from "./attachments";
+import { copyWholeItem } from "./api";
 import Composer from "./Composer";
 import CaptureDestination from "./CaptureDestination";
 import ConflictDialog from "./ConflictDialog";
@@ -122,14 +123,13 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
   }, [copied]);
 
   function copyItem(it: FeedItem, delay = false) {
-    if (!it.text || asking || answerBusy.current) return;
+    if ((!it.text && !it.attachments.length) || asking || answerBusy.current) return;
     cancelCopy(it.id);
     const version = copyVersion.current;
     const rowVersion = rowVersions.current.get(it.id);
     const current = () => version === copyVersion.current && rowVersion === rowVersions.current.get(it.id);
-    // Keep the clipboard write inside the user's gesture; double-click can still cancel Trash.
-    const written = navigator.clipboard.writeText(it.text).then(() => true, (err) => {
-      if (current()) onError("Couldn't copy the text", err);
+    const written = copyWholeItem(it.id).then(() => true, (err) => {
+      if (current()) onError("Couldn't copy the Item", err);
       return false;
     });
     const finish = async () => {
@@ -324,7 +324,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
               const place = view.kind === "all" || trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
-              const copy = it.text ? [{ label: "Copy text", onSelect: () => view.kind === "tunnel" ? copyItem(it) : navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
+              const copy = view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
               const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
               return (
                 <Fragment key={it.id}>
@@ -354,7 +354,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                     <article
                       style={view.kind === "tunnel" ? { viewTransitionName: `item-${it.id}` } : undefined}
                       data-item={it.id}
-                      onClick={view.kind === "tunnel" && it.text && !it.sync_error ? (e) => {
+                      onClick={view.kind === "tunnel" && !it.sync_error ? (e) => {
                         if (e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
                         copyItem(it, true);
                       } : undefined}

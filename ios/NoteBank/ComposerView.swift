@@ -11,10 +11,9 @@ struct ComposerView: View {
             StagedAttachmentsView(model: model)
             HStack(alignment: .bottom, spacing: 4) {
                 AttachmentPicker(model: model)
-                TextField("", text: $model.text, prompt: Text(model.placeholder).foregroundStyle(palette.inkMuted), axis: .vertical)
-                    .lineLimit(1...6)
-                    .font(.plex(.serif, 17))
-                    .foregroundStyle(palette.ink)
+                ComposerInput(text: $model.text, placeholder: model.placeholder) { provider, type in
+                    model.importPaste(provider, type: type)
+                }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
                     .background(palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20))

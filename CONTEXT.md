@@ -12,6 +12,7 @@ _Avoid_: Note, message, post, entry
 
 **Attachment**:
 A file (image, document, etc.) that belongs to exactly one Item.
+Image thumbnails are separate JPEG previews; the original file keeps its format and bytes.
 _Avoid_: Media, upload, file item
 
 **Link**:
@@ -29,7 +30,7 @@ The set of Items that are neither in the Tunnel nor filed under a Topic. Not a T
 _Avoid_: Uncategorised, default topic
 
 **Tunnel**:
-One built-in place for quick transfer between Devices. Tapping or clicking an Item copies its text; the synced Trash-after-copy setting can then move it to Trash, with Undo. It is separate from the Inbox and Topics.
+One built-in place for quick transfer between Devices. Tapping or clicking an Item copies its text and all Attachments, downloading originals first. Only a complete clipboard write can trigger the synced Trash-after-copy setting, with Undo. Destination apps choose which clipboard representations they accept. It is separate from the Inbox and Topics.
 _Avoid_: Channel, temporary Topic
 
 **Archived Topic**:

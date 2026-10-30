@@ -22,7 +22,7 @@ public struct FeedAttachment: Hashable, Identifiable, Sendable {
 public struct AttachmentError: LocalizedError, Sendable {
     public let message: String
     public var errorDescription: String? { message }
-    init(_ message: String) { self.message = message }
+    public init(_ message: String) { self.message = message }
 }
 
 extension Store {

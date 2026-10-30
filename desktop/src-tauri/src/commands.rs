@@ -12,6 +12,30 @@ fn now_us() -> i64 {
 }
 
 #[tauri::command]
+pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let owner = app
+        .get_webview_window("main")
+        .ok_or("Couldn't access the clipboard window")?
+        .hwnd()
+        .map_err(|_| "Couldn't access the clipboard window")?
+        .0 as usize;
+    let payload = crate::clipboard::prepare(&state, &item_id, now_us()).await?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        #[cfg(target_os = "windows")]
+        let result = crate::clipboard::write(&payload, owner);
+        #[cfg(target_os = "macos")]
+        let result = crate::clipboard::write(&payload, &objc2_app_kit::NSPasteboard::generalPasteboard());
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let result = crate::clipboard::write(&payload);
+        let _ = send.send(result);
+    })
+    .map_err(|_| "Couldn't access the clipboard")?;
+    receive.await.map_err(|_| "Couldn't access the clipboard")?
+}
+
+#[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<settings::Settings, String> {
     settings::get(&state.db.lock().unwrap(), &state.secret)
 }

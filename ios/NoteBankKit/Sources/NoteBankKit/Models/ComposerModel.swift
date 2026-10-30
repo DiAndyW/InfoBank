@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 @MainActor @Observable
 public final class ComposerModel {
@@ -47,6 +48,32 @@ public final class ComposerModel {
     }
 
     public func reportImportError(_ message: String) { error = message }
+
+    @discardableResult
+    public func importPaste(_ provider: NSItemProvider, type: UTType) -> Task<Void, Never> {
+        beginImport()
+        let store = store
+        let suggested = provider.suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = suggested.flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString.lowercased()
+        let filename = (name as NSString).pathExtension.isEmpty ? name + "." + (type.preferredFilenameExtension ?? "bin") : name
+        return Task {
+            defer { endImport() }
+            do {
+                let staged: StagedAttachment = try await withCheckedThrowingContinuation { continuation in
+                    provider.loadFileRepresentation(forTypeIdentifier: type.identifier) { url, error in
+                        guard let url else {
+                            continuation.resume(throwing: error ?? AttachmentError("Couldn't paste the attachment"))
+                            return
+                        }
+                        // The provider's temporary file is valid only until this callback returns.
+                        do { continuation.resume(returning: try store.stageFile(at: url, filename: filename)) }
+                        catch { continuation.resume(throwing: error) }
+                    }
+                }
+                attachments.append(staged)
+            } catch { self.error = "Couldn't paste the attachment: " + error.localizedDescription }
+        }
+    }
 
     public func send() -> Bool {
         guard !isImporting else { return false }

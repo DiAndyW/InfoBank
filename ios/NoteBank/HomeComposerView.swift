@@ -22,16 +22,9 @@ struct HomeComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField(
-                "", text: $model.text,
-                prompt: Text(tunnelOn ? "Send to your other devices…" : "Capture something…").foregroundStyle(palette.inkMuted),
-                axis: .vertical
-            )
-            .accessibilityLabel("Capture")
-            .lineLimit(4...6)
-            .font(.plex(.serif, 17))
-            .lineSpacing(3)
-            .foregroundStyle(palette.ink)
+            ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3) { provider, type in
+                model.importPaste(provider, type: type)
+            }
             StagedAttachmentsView(model: model)
             HStack(spacing: 8) {
                 Toggle("Tunnel", isOn: $tunnelOn)

@@ -71,6 +71,7 @@ export const stageBytes = (filename: string, bytes: Uint8Array) =>
   invoke<Staged>("stage_attachment_bytes", bytes, { headers: { "X-Filename": encodeURIComponent(filename) } });
 export const unstage = (id: string) => invoke<void>("unstage_attachment", { id });
 export const thumbnail = (id: string) => invoke<string>("thumbnail", { id });
+export const copyWholeItem = (itemId: string) => invoke<void>("copy_item", { itemId });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
 export type Before = { capture_time_us: number; id: string };

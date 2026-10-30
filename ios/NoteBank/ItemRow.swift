@@ -56,7 +56,7 @@ struct ItemRow: View {
                         .foregroundStyle(palette.ink)
                 }
                 ForEach(item.attachments) { attachment in
-                    AttachmentView(attachment: attachment)
+                    AttachmentView(attachment: attachment, attachments: item.attachments)
                 }
                 if item.conflict != nil && !inTrash {
                     Button(action: onCommands) { Label("Text conflict", systemImage: "exclamationmark.bubble") }
@@ -122,13 +122,13 @@ struct ItemRow: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .onTapGesture { if copyable && item.text != nil { onCopy() } }
+        .onTapGesture { if copyable { onCopy() } }
         .background(highlighted ? palette.accentSoft : .clear)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
         .onLongPressGesture { onCommands() }
         .accessibilityElement(children: item.attachments.isEmpty ? .combine : .contain)
-        .accessibilityAddTraits(copyable && item.text != nil ? .isButton : [])
+        .accessibilityAddTraits(copyable ? .isButton : [])
         .accessibilityAction(named: "Item actions", onCommands)
-        .accessibilityAction(named: "Copy") { if copyable && item.text != nil { onCopy() } }
+        .accessibilityAction(named: "Copy") { if copyable { onCopy() } }
     }
 }

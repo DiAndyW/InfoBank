@@ -35,7 +35,7 @@ export function useStaging() {
   function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
     const pasted = Array.from(e.clipboardData.files);
     if (pasted.length === 0) return;
-    e.preventDefault();
+    if (!e.clipboardData.getData("text/plain")) e.preventDefault();
     for (const file of pasted) {
       const name = file.name || "Pasted image.png";
       if (file.size > MAX_ATTACHMENT_BYTES) {

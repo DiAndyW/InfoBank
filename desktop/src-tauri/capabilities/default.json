@@ -32,6 +32,7 @@
     "allow-stage-attachment-bytes",
     "allow-unstage-attachment",
     "allow-thumbnail",
+    "allow-copy-item",
     "allow-open-attachment",
     "allow-reveal-attachment",
     "allow-list-items",

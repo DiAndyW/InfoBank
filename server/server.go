@@ -43,8 +43,10 @@ func New(cfg Config) (*Server, error) {
 	api := &syncAPI{db: cfg.DB, now: cfg.Now, files: files}
 	authed.HandleFunc("POST /sync/push", api.push)
 	authed.HandleFunc("GET /sync/pull", api.pull)
-	tokens := uploadTokens{key: []byte(cfg.Secret), now: cfg.Now}
+	tokens := uploadTokens{key: []byte(cfg.Secret), now: cfg.Now, domain: uploadTokenDomain}
+	thumbnailTokens := uploadTokens{key: []byte(cfg.Secret), now: cfg.Now, domain: thumbnailTokenDomain}
 	authed.HandleFunc("POST /attachments/{id}/upload-token", func(w http.ResponseWriter, r *http.Request) { tokens.issue(w, r, api) })
+	authed.HandleFunc("POST /attachments/{id}/thumbnail-upload-token", func(w http.ResponseWriter, r *http.Request) { thumbnailTokens.issue(w, r, api) })
 	authed.HandleFunc("GET /attachments/{id}", api.download)
 	authed.HandleFunc("GET /attachments/{id}/thumbnail", api.thumbnail)
 
@@ -56,7 +58,7 @@ func New(cfg Config) (*Server, error) {
 		w.WriteHeader(http.StatusOK)
 	})
 	limiter := newFailureLimiter(cfg.Now)
-	authorize := func(next http.Handler, scopedUpload bool) http.Handler {
+	authorize := func(next http.Handler, capability *uploadTokens) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r)
 			if limiter.blocked(ip) {
@@ -65,7 +67,7 @@ func New(cfg Config) (*Server, error) {
 			}
 			token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 			tokenHash := sha256.Sum256([]byte(token))
-			if !ok || (subtle.ConstantTimeCompare(tokenHash[:], secretHash[:]) != 1 && !(scopedUpload && tokens.valid(token, r.PathValue("id")))) {
+			if !ok || (subtle.ConstantTimeCompare(tokenHash[:], secretHash[:]) != 1 && !(capability != nil && capability.valid(token, r.PathValue("id")))) {
 				limiter.recordFailure(ip)
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -73,8 +75,9 @@ func New(cfg Config) (*Server, error) {
 			next.ServeHTTP(w, r)
 		})
 	}
-	root.Handle("PUT /attachments/{id}", authorize(http.HandlerFunc(api.upload), true))
-	root.Handle("/", authorize(authed, false))
+	root.Handle("PUT /attachments/{id}", authorize(http.HandlerFunc(api.upload), &tokens))
+	root.Handle("PUT /attachments/{id}/thumbnail", authorize(http.HandlerFunc(api.uploadThumbnail), &thumbnailTokens))
+	root.Handle("/", authorize(authed, nil))
 	return &Server{Handler: root, api: api}, nil
 }
 

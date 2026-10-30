@@ -41,7 +41,7 @@ const picker = () => screen.getByRole("button", { name: "Topic" });
 const count = (calls: Call[], cmd: string) => calls.filter((c) => c.cmd === cmd).length;
 
 async function pasteReceipt() {
-  fireEvent.paste(box(), { clipboardData: { files: [new File(["x"], "receipt.png", { type: "image/png" })] } });
+  fireEvent.paste(box(), { clipboardData: { files: [new File(["x"], "receipt.png", { type: "image/png" })], getData: () => "" } });
   await screen.findByText("receipt.png");
 }
 
@@ -154,7 +154,7 @@ test("a paste still staging when the box hides doesn't turn up next time", async
   let release!: () => void;
   const calls = quickBackend({ staged: [staged], stageGate: new Promise((r) => (release = r)) });
   render(<QuickCapture />);
-  fireEvent.paste(box(), { clipboardData: { files: [new File(["x"], "receipt.png", { type: "image/png" })] } });
+  fireEvent.paste(box(), { clipboardData: { files: [new File(["x"], "receipt.png", { type: "image/png" })], getData: () => "" } });
   await waitFor(() => expect(count(calls, "stage_attachment_bytes")).toBe(1));
   await act(() => emit("quick-capture-hidden"));
   await act(async () => release());
