@@ -46,13 +46,7 @@ struct HomeComposerView: View {
                             Text(chipTitle).lineLimit(1)
                             Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
                         }
-                        .font(.plex(.sansMedium, 14, relativeTo: .callout))
-                        .foregroundStyle(palette.ink)
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 32)
-                        .background(palette.chip, in: Capsule())
-                        .frame(minHeight: 44)
-                        .contentShape(Rectangle())
+                        .chipStyle()
                     }
                     .accessibilityLabel("Destination")
                     .accessibilityValue(chipTitle)

@@ -15,3 +15,10 @@ extension SecretStore {
         return SecretStore(read: { box.withLock { $0 } }, write: { secret in box.withLock { $0 = secret } })
     }
 }
+
+@MainActor
+func waitUntil(_ condition: () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + .seconds(5)
+    while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+    return condition()
+}

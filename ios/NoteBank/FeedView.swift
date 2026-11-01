@@ -23,7 +23,9 @@ struct FeedView: View {
     @State private var model: FeedModel
     @State private var composer: ComposerModel
     @State private var highlighted: String?
+    @State private var visible = false
     @State private var scrollsToNewest = false
+    @State private var pendingReveal: String?
     @State private var title: String
     @State private var copiedID: String?
     @State private var copyTask: Task<Void, Never>?
@@ -72,6 +74,23 @@ struct FeedView: View {
         _composer = State(wrappedValue: ComposerModel(store: services.store, destination: destination, placeholder: placeholder, onCaptured: services.wake))
     }
 
+    private var searchPlace: SearchPlace? {
+        switch place {
+        case .all: .all
+        case .inbox: .inbox
+        case .tunnel: .tunnel
+        case .topic(let id): .topic(id)
+        case .trash: nil
+        }
+    }
+
+    private func revealTarget(_ proxy: ScrollViewProxy) {
+        // A covered Feed of the same Place must not take the target from the one on top.
+        guard visible, let shown = target, shown.place == place else { return }
+        target = nil
+        if model.reveal(shown.itemID) { pendingReveal = shown.itemID }
+    }
+
     private var days: [(start: Date, items: [FeedItem])] {
         var days: [(start: Date, items: [FeedItem])] = []
         for item in model.items {
@@ -86,8 +105,8 @@ struct FeedView: View {
     }
 
     private var loadMore: some View {
-        ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { visible in
-            if visible { model.loadOlder() }
+        ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { shown in
+            if shown { model.loadOlder() }
         }
     }
 
@@ -189,15 +208,19 @@ struct FeedView: View {
                 scrollsToNewest = false
                 withAnimation { proxy.scrollTo(newest, anchor: .bottom) }
             }
-            .onChange(of: foregrounds) { model.reload() }
-            .onChange(of: target, initial: true) { _, shown in
-                guard let shown, shown.place == place else { return }
-                target = nil
-                guard model.items.contains(where: { $0.id == shown.itemID }) else { return }
-                highlighted = shown.itemID
-                withAnimation { proxy.scrollTo(shown.itemID, anchor: .center) } completion: {
+            .onChange(of: pendingReveal) { _, id in
+                guard let id else { return }
+                pendingReveal = nil
+                highlighted = id
+                withAnimation { proxy.scrollTo(id, anchor: .center) } completion: {
                     withAnimation(.easeOut(duration: 1.5)) { highlighted = nil }
                 }
+            }
+            .onChange(of: foregrounds) { model.reload() }
+            .onChange(of: target, initial: true) { revealTarget(proxy) }
+            .onAppear {
+                visible = true
+                revealTarget(proxy)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -287,6 +310,7 @@ struct FeedView: View {
             Button("Not now", role: .cancel) { answer(false, item) }
         }
         .onDisappear {
+            visible = false
             copyTask?.cancel()
             if let notice = notices.current, notice.action != .show { notices.dismiss() }
         }
@@ -308,6 +332,12 @@ struct FeedView: View {
             }
         }
         .toolbar {
+            if let searchPlace {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: Route.search(searchPlace)) { Image(systemName: "magnifyingglass") }
+                        .accessibilityLabel("Search")
+                }
+            }
             if case .topic(let id) = place, model.topicName != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {

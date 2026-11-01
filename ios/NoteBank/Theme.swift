@@ -78,6 +78,23 @@ struct Card: ViewModifier {
     }
 }
 
+struct ChipStyle: ViewModifier {
+    let active: Bool
+    @Environment(\.palette) private var palette
+
+    func body(content: Content) -> some View {
+        content
+            .font(.plex(.sansMedium, 14, relativeTo: .callout))
+            .foregroundStyle(active ? palette.onAccent : palette.ink)
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .background(active ? palette.accent : palette.chip, in: Capsule())
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+    }
+}
+
 extension View {
     func card() -> some View { modifier(Card()) }
+    func chipStyle(active: Bool = false) -> some View { modifier(ChipStyle(active: active)) }
 }

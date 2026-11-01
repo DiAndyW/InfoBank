@@ -49,6 +49,23 @@ public final class FeedModel {
         }
     }
 
+    public func reveal(_ itemID: String) -> Bool {
+        if place != .trash, !items.contains(where: { $0.id == itemID }) {
+            do {
+                if let cursor = try store.cursor(ofItem: itemID, in: place),
+                    items.first.map({ (cursor.captureTimeUs, cursor.id) < ($0.captureTimeUs, $0.id) }) ?? true
+                {
+                    items = try store.items(in: place, from: cursor).reversed()
+                    hasOlder = try !store.items(in: place, before: cursor, limit: 1).isEmpty
+                }
+                loadError = nil
+            } catch {
+                loadError = error.localizedDescription
+            }
+        }
+        return items.contains { $0.id == itemID }
+    }
+
     public func reload() {
         if case .topic(let id) = place {
             let topic = try? store.topic(id)

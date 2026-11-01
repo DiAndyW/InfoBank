@@ -16,12 +16,6 @@ struct ModelTests {
         }
     }
 
-    private func eventually(_ condition: () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
-        return condition()
-    }
-
     @Test func feedLoadsTheNewestPageOldestFirstAndOlderPagesPrepend() throws {
         let (store, _) = try tempStore()
         try seed(store, count: 150)
@@ -50,18 +44,56 @@ struct ModelTests {
         let feed = FeedModel(store: store, place: .all)
 
         let captured = try store.capture(text: "fresh", to: .inbox, nowUs: 5_000)
-        #expect(await eventually { feed.items.last?.id == captured })
+        #expect(await waitUntil { feed.items.last?.id == captured })
         #expect(feed.items.count == 101)
         #expect(feed.items.last?.pending == true)
 
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('mid', 'pulled', 755)") }
-        #expect(await eventually { feed.items.contains { $0.id == "mid" } })
+        #expect(await waitUntil { feed.items.contains { $0.id == "mid" } })
         #expect(feed.items.map(\.id).firstIndex(of: "mid")! == feed.items.map(\.id).firstIndex(of: "i75")! + 1)
 
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('old', 'pulled', 5)") }
         try await store.pool.write { try $0.execute(sql: "UPDATE items SET text = 'edited' WHERE id = 'i150'") }
-        #expect(await eventually { feed.items.first { $0.id == "i150" }?.text == "edited" })
+        #expect(await waitUntil { feed.items.first { $0.id == "i150" }?.text == "edited" })
         #expect(!feed.items.contains { $0.id == "old" })
+    }
+
+    @Test func revealLoadsAnOlderItem() throws {
+        let (store, _) = try tempStore()
+        try seed(store, count: 150)
+        let feed = FeedModel(store: store, place: .inbox)
+        #expect(!feed.items.contains { $0.id == "i1" })
+        #expect(feed.reveal("i30"))
+        #expect(feed.items.map(\.id) == (30...150).map { "i\($0)" })
+        #expect(feed.hasOlder)
+        #expect(feed.reveal("i1"))
+        #expect(feed.items.map(\.id) == (1...150).map { "i\($0)" })
+        #expect(!feed.hasOlder)
+        #expect(feed.reveal("i150"))
+        #expect(feed.items.count == 150)
+    }
+
+    @Test func revealFalseForTrashedOrUnknown() throws {
+        let (store, _) = try tempStore()
+        try seed(store, count: 150)
+        let feed = FeedModel(store: store, place: .all)
+        try store.trash(itemID: "i1", nowUs: 5_000)
+        let before = feed.items.map(\.id)
+        #expect(!feed.reveal("i1"))
+        #expect(!feed.reveal("nope"))
+        #expect(feed.items.map(\.id) == before)
+        #expect(feed.hasOlder)
+    }
+
+    @Test func revealDoesNothingInTrash() throws {
+        let (store, _) = try tempStore()
+        try seed(store, count: 150)
+        try store.pool.write { try $0.execute(sql: "UPDATE items SET deleted_at = 1, purge_at = ?", arguments: [Time.nowUs() + 1_000_000_000_000]) }
+        let feed = FeedModel(store: store, place: .trash)
+        let before = feed.items.map(\.id)
+        #expect(before.count == 100)
+        #expect(!feed.reveal("i1"))
+        #expect(feed.items.map(\.id) == before)
     }
 
     @Test func anItemOlderThanEverythingLoadedMakesOlderAvailable() async throws {
@@ -71,7 +103,7 @@ struct ModelTests {
         #expect(!feed.hasOlder)
 
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('old', 'skewed clock', 5)") }
-        #expect(await eventually { feed.hasOlder })
+        #expect(await waitUntil { feed.hasOlder })
         #expect(feed.items.map(\.id) == ["i1", "i2", "i3"])
         feed.loadOlder()
         #expect(feed.items.map(\.id) == ["old", "i1", "i2", "i3"])
@@ -83,7 +115,7 @@ struct ModelTests {
         let feed = FeedModel(store: store, place: .inbox)
         #expect(feed.items.isEmpty && !feed.hasOlder)
         try seed(store, count: 3)
-        #expect(await eventually { feed.items.count == 3 })
+        #expect(await waitUntil { feed.items.count == 3 })
     }
 
     @Test func discardingARefusedItemRemovesItAndAnythingElseSetsTheError() async throws {
@@ -103,7 +135,7 @@ struct ModelTests {
         let places = PlacesModel(store: store)
         #expect(places.places.allCount == 0)
         _ = try store.capture(text: "one", to: .inbox, nowUs: 1)
-        #expect(await eventually { places.places.inboxCount == 1 })
+        #expect(await waitUntil { places.places.inboxCount == 1 })
     }
 
     @Test func refreshReadsTheStoreAtOnce() throws {
@@ -242,7 +274,7 @@ struct ModelTests {
         settings.secret = "s3cret-s3cret"
 
         let first = Task { await settings.save() }
-        #expect(await eventually { settings.saving })
+        #expect(await waitUntil { settings.saving })
         #expect(!settings.canSave)
         #expect(!(await settings.save()))
         gate.signal()
@@ -292,7 +324,7 @@ extension ModelTests {
         settings.secret = "unsaved"
         let json = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":true}}"#
         _ = try store.applyPull(try JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
-        #expect(await eventually { settings.trashAfterCopy })
+        #expect(await waitUntil { settings.trashAfterCopy })
         #expect(settings.url == "https://draft.example.com")
         #expect(settings.secret == "unsaved")
         #expect(settings.setTrashAfterCopy(false))

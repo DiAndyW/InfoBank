@@ -34,7 +34,7 @@ struct PlacesView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func row(_ place: Place, _ name: String, _ count: Int?) -> some View {
-        NavigationLink(value: place) {
+        NavigationLink(value: Route.place(place)) {
             HStack(spacing: 12) {
                 if symbol(place) != nil {
                     Image(systemName: symbol(place) ?? "").font(.system(size: 17)).foregroundStyle(palette.inkMuted).frame(width: 22).accessibilityHidden(true)
@@ -65,6 +65,10 @@ struct PlacesView: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
+                NavigationLink(value: Route.search(.all)) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 20)).frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Search")
                 Button(action: openSettings) {
                     Image(systemName: "gearshape").font(.system(size: 20)).frame(width: 44, height: 44)
                 }

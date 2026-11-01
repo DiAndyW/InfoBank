@@ -69,6 +69,10 @@ extension Store {
         return try feed(place, after: ("(items.capture_time, items.id) >= (?, ?)", [cursor.captureTimeUs, cursor.id]), limit: -1)
     }
 
+    func cursor(ofItem id: String, in place: Place) throws -> FeedCursor? {
+        try feed(place, after: ("items.id = ?", [id]), limit: 1).first?.cursor
+    }
+
     private func feed(_ place: Place, after cursor: (sql: String, arguments: [any DatabaseValueConvertible])?, limit: Int) throws -> [FeedItem] {
         var conditions = [place == .trash ? "items.deleted_at IS NOT NULL" : "items.deleted_at IS NULL"]
         var arguments: [any DatabaseValueConvertible] = []
@@ -94,33 +98,41 @@ extension Store {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT items.purge_at, items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error, items.in_tunnel,
-                           COALESCE((SELECT json_extract(op, '$.base_rev') FROM outbox WHERE json_extract(op, '$.item_id') = items.id
-                               AND json_extract(op, '$.type') = 'SetText' ORDER BY seq DESC LIMIT 1), items.text_rev) AS edit_base,
-                           (SELECT text FROM conflicts WHERE item_id = items.id) AS conflict_text,
-                           (SELECT mine FROM conflicts WHERE item_id = items.id) AS conflict_mine,
-                           items.sync_error IS NULL AND (EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id AND uploaded = 0)) AS pending
+                    SELECT \(Self.feedColumns)
                     FROM items LEFT JOIN topics ON topics.id = items.topic_id
                     WHERE \(conditions.joined(separator: " AND "))
                     ORDER BY \(place == .trash ? "COALESCE(items.purge_at, 9223372036854775807) ASC, -items.capture_time ASC, items.id ASC" : "items.capture_time DESC, items.id DESC")
                     LIMIT ?
                     """,
                 arguments: StatementArguments(arguments))
-            var attachments: [String: [FeedAttachment]] = [:]
-            for row in try Row.fetchAll(
-                db,
-                sql: "SELECT a.*, NULLIF(u.error, '') AS upload_error FROM attachments a LEFT JOIN attachment_uploads u ON u.attachment_id = a.id WHERE a.item_id IN (SELECT value FROM json_each(?)) ORDER BY a.rowid",
-                arguments: [String(decoding: try JSONEncoder().encode(rows.map { $0["id"] as String }), as: UTF8.self)])
-            {
-                attachments[row["item_id"], default: []].append(Self.feedAttachment(row))
-            }
-            return rows.map { row in
-                FeedItem(
-                    id: row["id"], text: row["text"], captureTimeUs: row["capture_time"], topicID: row["topic_id"],
-                    topicName: row["topic_name"], inTunnel: row["in_tunnel"], purgeAtUs: row["purge_at"], editBase: row["edit_base"],
-                    conflict: (row["conflict_mine"] as Bool?).map { TextConflict(text: row["conflict_text"], mine: $0) }, pending: row["pending"], syncError: row["sync_error"],
-                    attachments: attachments[row["id"]] ?? [])
-            }
+            return try Self.feedItems(db, rows)
+        }
+    }
+
+    static let feedColumns = """
+        items.purge_at, items.id, items.text, items.capture_time, items.topic_id, topics.name AS topic_name, items.sync_error, items.in_tunnel,
+        COALESCE((SELECT json_extract(op, '$.base_rev') FROM outbox WHERE json_extract(op, '$.item_id') = items.id
+            AND json_extract(op, '$.type') = 'SetText' ORDER BY seq DESC LIMIT 1), items.text_rev) AS edit_base,
+        (SELECT text FROM conflicts WHERE item_id = items.id) AS conflict_text,
+        (SELECT mine FROM conflicts WHERE item_id = items.id) AS conflict_mine,
+        items.sync_error IS NULL AND (EXISTS (SELECT 1 FROM outbox WHERE json_extract(op, '$.item_id') = items.id) OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id AND uploaded = 0)) AS pending
+        """
+
+    static func feedItems(_ db: Database, _ rows: [Row]) throws -> [FeedItem] {
+        var attachments: [String: [FeedAttachment]] = [:]
+        for row in try Row.fetchAll(
+            db,
+            sql: "SELECT a.*, NULLIF(u.error, '') AS upload_error FROM attachments a LEFT JOIN attachment_uploads u ON u.attachment_id = a.id WHERE a.item_id IN (SELECT value FROM json_each(?)) ORDER BY a.rowid",
+            arguments: [String(decoding: try JSONEncoder().encode(rows.map { $0["id"] as String }), as: UTF8.self)])
+        {
+            attachments[row["item_id"], default: []].append(Self.feedAttachment(row))
+        }
+        return rows.map { row in
+            FeedItem(
+                id: row["id"], text: row["text"], captureTimeUs: row["capture_time"], topicID: row["topic_id"],
+                topicName: row["topic_name"], inTunnel: row["in_tunnel"], purgeAtUs: row["purge_at"], editBase: row["edit_base"],
+                conflict: (row["conflict_mine"] as Bool?).map { TextConflict(text: row["conflict_text"], mine: $0) }, pending: row["pending"], syncError: row["sync_error"],
+                attachments: attachments[row["id"]] ?? [])
         }
     }
 

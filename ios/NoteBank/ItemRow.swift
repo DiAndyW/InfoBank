@@ -3,6 +3,21 @@ import SwiftUI
 
 extension FeedItem {
     var date: Date { Date(timeIntervalSince1970: Double(captureTimeUs) / 1_000_000) }
+    var placeName: String? { inTunnel ? "Tunnel" : topicID == nil ? "Inbox" : topicName }
+}
+
+func linkified(_ text: String) -> AttributedString {
+    var result = AttributedString()
+    for part in linkify(text) {
+        switch part {
+        case .text(let text): result += AttributedString(text)
+        case .link(let text):
+            var link = AttributedString(text)
+            link.link = URL(string: text)
+            result += link
+        }
+    }
+    return result
 }
 
 struct ItemRow: View {
@@ -19,8 +34,7 @@ struct ItemRow: View {
     @State private var showingReason = false
 
     private var chipTitle: String? {
-        guard showsTopic else { return nil }
-        return item.inTunnel ? "Tunnel" : item.topicID == nil ? "Inbox" : item.topicName
+        showsTopic ? item.placeName : nil
     }
 
     private func reasonText(_ reason: String) -> String {
@@ -32,25 +46,11 @@ struct ItemRow: View {
         return sentence + " It's only on this iPhone."
     }
 
-    private var attributedText: AttributedString {
-        var result = AttributedString()
-        for part in linkify(item.text ?? "") {
-            switch part {
-            case .text(let text): result += AttributedString(text)
-            case .link(let text):
-                var link = AttributedString(text)
-                link.link = URL(string: text)
-                result += link
-            }
-        }
-        return result
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
-                if item.text != nil {
-                    Text(attributedText)
+                if let text = item.text {
+                    Text(linkified(text))
                         .font(.plex(.serif, 17))
                         .lineSpacing(3)
                         .foregroundStyle(palette.ink)

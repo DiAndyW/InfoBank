@@ -34,6 +34,10 @@ struct Services {
     }
 }
 
+enum Route: Hashable {
+    case place(Place), search(SearchPlace)
+}
+
 @main
 struct NoteBankApp: App {
     @UIApplicationDelegateAdaptor(BackgroundTransferDelegate.self) private var appDelegate
@@ -55,7 +59,7 @@ struct RootView: View {
     @AppStorage("theme", store: Theme.store) private var theme = Theme.paper
     @SceneStorage("place") private var savedPlace = ""
     @Environment(\.scenePhase) private var scenePhase
-    @State private var path: [Place] = []
+    @State private var path: [Route] = []
     @State private var places: PlacesModel
     @State private var home: ComposerModel
     @State private var setup: SettingsModel
@@ -72,14 +76,25 @@ struct RootView: View {
         _home = State(wrappedValue: ComposerModel(store: services.store, destination: .inbox, placeholder: "Capture something…", onCaptured: services.wake))
     }
 
-    private func show(_ itemID: String) {
-        services.notices.dismiss()
-        let place: Place = (try? services.store.pool.read { db in
+    private func itemPlace(_ itemID: String) -> Place {
+        (try? services.store.pool.read { db in
             guard let row = try Row.fetchOne(db, sql: "SELECT topic_id, in_tunnel FROM items WHERE id = ? AND deleted_at IS NULL", arguments: [itemID]) else { return Place.inbox }
             if row["in_tunnel"] as Bool { return .tunnel }
             return (row["topic_id"] as String?).map(Place.topic) ?? .inbox
         }) ?? .inbox
-        path = [place]
+    }
+
+    private func show(_ itemID: String) {
+        services.notices.dismiss()
+        let place = itemPlace(itemID)
+        path = [.place(place)]
+        target = ShowTarget(place: place, itemID: itemID)
+    }
+
+    private func openResult(_ itemID: String) {
+        guard case .search = path.last else { return }
+        let place = itemPlace(itemID)
+        path.append(.place(place))
         target = ShowTarget(place: place, itemID: itemID)
     }
 
@@ -116,16 +131,21 @@ struct RootView: View {
                 NavigationStack(path: $path) {
                     PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: home, status: status, notices: services.notices, onShow: show) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
-                        .navigationDestination(for: Place.self) { place in
-                            FeedView(
-                                place: place,
-                                topicName: (places.places.topics + places.archived).first { .topic($0.id) == place }?.name,
-                                services: services,
-                                status: status,
-                                openSettings: { showingSettings = true },
-                                onShow: show,
-                                foregrounds: foregrounds,
-                                target: $target)
+                        .navigationDestination(for: Route.self) { route in
+                            switch route {
+                            case .place(let place):
+                                FeedView(
+                                    place: place,
+                                    topicName: (places.places.topics + places.archived).first { .topic($0.id) == place }?.name,
+                                    services: services,
+                                    status: status,
+                                    openSettings: { showingSettings = true },
+                                    onShow: show,
+                                    foregrounds: foregrounds,
+                                    target: $target)
+                            case .search(let place):
+                                SearchView(store: services.store, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult)
+                            }
                         }
                 }
                 .sheet(isPresented: $showingSettings) { SettingsView(services: services, theme: $theme) }
@@ -151,10 +171,11 @@ struct RootView: View {
             default: []
             }
             restored.removeAll { if case .topic(let id) = $0 { !(places.places.topics + places.archived).contains { $0.id == id } } else { false } }
-            path = restored
+            path = restored.map(Route.place)
         }
         .onChange(of: path) { _, path in
-            savedPlace = switch path.last {
+            let trail = path.compactMap { if case .place(let place) = $0 { place } else { nil } }
+            savedPlace = switch trail.last {
             case .all?: "all"
             case .trash?: "trash"
             case .inbox?: "inbox"
