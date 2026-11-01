@@ -1852,6 +1852,36 @@ test("the place filter lists Inbox, open Topics, then archived ones, and narrows
   await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "inbox" }));
 });
 
+test("a new search starts in the open Place and keeps its filter until the text is cleared", async () => {
+  const calls = backend(configured, { topics: [topic("t", "Taxes")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Taxes" }));
+  const field = screen.getByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "note");
+  expect(await screen.findByRole("button", { name: "Place" })).toHaveTextContent("Taxes");
+  await vi.waitFor(() => expect(searchCalls(calls).length).toBeGreaterThan(0));
+  expect(searchCalls(calls).map((c) => c.args.query.place)).toEqual(searchCalls(calls).map(() => ({ kind: "topic", id: "t" })));
+
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  await userEvent.click(field);
+  expect(screen.getByRole("button", { name: "Place" })).toHaveTextContent("Taxes");
+
+  await userEvent.clear(field);
+  await userEvent.type(field, "note");
+  expect(await screen.findByRole("button", { name: "Place" })).toHaveTextContent("Inbox");
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "inbox" }));
+});
+
+test.each(["All Items", "Trash"])("a search from %s starts Anywhere", async (name) => {
+  const calls = backend(configured, { topics: [topic("t", "Taxes")] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Taxes" }));
+  await userEvent.click(screen.getByRole("button", { name: new RegExp(`^${name}`) }));
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "note");
+  expect(await screen.findByRole("button", { name: "Place" })).toHaveTextContent("Anywhere");
+  await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "all" }));
+});
+
 test("date presets search back from now, and Has files narrows to Items with files", async () => {
   const calls = backend(configured);
   render(<App />);

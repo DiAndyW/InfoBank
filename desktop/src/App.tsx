@@ -287,6 +287,7 @@ export default function App() {
         <SearchResults
           text={searchText}
           topics={topics}
+          startPlace={feed === "home" || feed === "trash" ? "all" : feed}
           hidden={!resultsOpen}
           onOpen={async (it) => {
             const place = it.in_tunnel ? "tunnel" : topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";

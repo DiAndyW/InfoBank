@@ -25,9 +25,9 @@ const midnight = (day: string, plusDays = 0) => {
 const marks = (s: string) =>
   s.split(/([^]*)/).map((part, i) => (part.startsWith("") ? <mark key={i}>{part.slice(1, -1)}</mark> : part));
 
-type Props = { text: string; topics: Topic[]; hidden: boolean; onOpen: (it: SearchItem) => void };
+type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void };
 
-export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
+export default function SearchResults({ text, topics, startPlace, hidden, onOpen }: Props) {
   const [items, setItems] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exhausted, setExhausted] = useState(false);
@@ -35,7 +35,7 @@ export default function SearchResults({ text, topics, hidden, onOpen }: Props) {
   const loading = useRef(false);
   // Answers can arrive out of order; only the latest request may render.
   const latest = useRef(0);
-  const [place, setPlace] = useState("all"); // "all", "inbox", "tunnel", or a Topic id
+  const [place, setPlace] = useState(startPlace); // "all", "inbox", "tunnel", or a Topic id
   const [range, setRange] = useState<Range>("any");
   // Set when a preset is picked, not on every render, so the query stays the same between renders.
   const [presetFrom, setPresetFrom] = useState<number | null>(null);
