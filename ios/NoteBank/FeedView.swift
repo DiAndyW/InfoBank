@@ -14,6 +14,7 @@ struct FeedView: View {
     let openSettings: () -> Void
     let notices: NoticeCenter
     let onShow: (String) -> Void
+    let onSearch: (SearchPlace) -> Void
     let foregrounds: Int
     let wake: () -> Void
     @Binding var target: ShowTarget?
@@ -40,7 +41,7 @@ struct FeedView: View {
 
     init(
         place: Place, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
-        onShow: @escaping (String) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
+        onShow: @escaping (String) -> Void, onSearch: @escaping (SearchPlace) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
     ) {
         self.store = services.store
         self.transfers = services.transfers
@@ -49,6 +50,7 @@ struct FeedView: View {
         self.openSettings = openSettings
         self.notices = services.notices
         self.onShow = onShow
+        self.onSearch = onSearch
         self.foregrounds = foregrounds
         wake = services.wake
         _target = target
@@ -212,8 +214,12 @@ struct FeedView: View {
                 guard let id else { return }
                 pendingReveal = nil
                 highlighted = id
-                withAnimation { proxy.scrollTo(id, anchor: .center) } completion: {
-                    withAnimation(.easeOut(duration: 1.5)) { highlighted = nil }
+                // A scroll sent before the Feed's first layout is dropped, so wait for that layout.
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation { proxy.scrollTo(id, anchor: .center) } completion: {
+                        withAnimation(.easeOut(duration: 1.5)) { highlighted = nil }
+                    }
                 }
             }
             .onChange(of: foregrounds) { model.reload() }
@@ -223,27 +229,30 @@ struct FeedView: View {
                 revealTarget(proxy)
             }
         }
+        .overlay(alignment: .bottom) {
+            if let notice = notices.current {
+                NoticeView(
+                    message: notice.message, actionTitle: notice.actionTitle,
+                    onAction: {
+                        do {
+                            switch notice.action {
+                            case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
+                            case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
+                            case .show: onShow(notice.itemID); return
+                            case .dismiss: notices.dismiss(); return
+                            }
+                            model.reload()
+                            notices.dismiss()
+                            wake()
+                        } catch { actionError = error.localizedDescription }
+                    },
+                    onDismiss: notices.dismiss)
+                    .id(notice.id)
+                    .padding(12)
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
-                if let notice = notices.current {
-                    NoticeView(
-                        message: notice.message, actionTitle: notice.actionTitle,
-                        onAction: {
-                            do {
-                                switch notice.action {
-                                case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
-                                case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
-                                case .show: onShow(notice.itemID); return
-                                case .dismiss: notices.dismiss(); return
-                                }
-                                model.reload()
-                                notices.dismiss()
-                                wake()
-                            } catch { actionError = error.localizedDescription }
-                        },
-                        onDismiss: notices.dismiss)
-                        .id(notice.id)
-                }
                 if place != .all && place != .trash && !model.topicUnavailable {
                     ComposerView(model: composer) {
                         scrollsToNewest = true
@@ -317,6 +326,7 @@ struct FeedView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(palette.surface, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
+        .containerBackground(palette.surface, for: .navigation)
         .alert("Rename Topic", isPresented: $renameTopic) {
             TextField("Topic name", text: $topicNameDraft)
             Button("Cancel", role: .cancel) {}
@@ -334,7 +344,7 @@ struct FeedView: View {
         .toolbar {
             if let searchPlace {
                 ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink(value: Route.search(searchPlace)) { Image(systemName: "magnifyingglass") }
+                    Button { onSearch(searchPlace) } label: { Image(systemName: "magnifyingglass") }
                         .accessibilityLabel("Search")
                 }
             }

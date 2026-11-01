@@ -58,19 +58,19 @@ struct ModelTests {
         #expect(!feed.items.contains { $0.id == "old" })
     }
 
-    @Test func revealLoadsAnOlderItem() throws {
+    @Test func revealLoadsAnOlderItemWithAPageAboveIt() throws {
         let (store, _) = try tempStore()
-        try seed(store, count: 150)
+        try seed(store, count: 300)
         let feed = FeedModel(store: store, place: .inbox)
-        #expect(!feed.items.contains { $0.id == "i1" })
-        #expect(feed.reveal("i30"))
-        #expect(feed.items.map(\.id) == (30...150).map { "i\($0)" })
-        #expect(feed.hasOlder)
-        #expect(feed.reveal("i1"))
-        #expect(feed.items.map(\.id) == (1...150).map { "i\($0)" })
-        #expect(!feed.hasOlder)
+        #expect(!feed.items.contains { $0.id == "i150" })
         #expect(feed.reveal("i150"))
-        #expect(feed.items.count == 150)
+        #expect(feed.items.map(\.id) == (50...300).map { "i\($0)" })
+        #expect(feed.hasOlder)
+        #expect(feed.reveal("i10"))
+        #expect(feed.items.map(\.id) == (1...300).map { "i\($0)" })
+        #expect(!feed.hasOlder)
+        #expect(feed.reveal("i300"))
+        #expect(feed.items.count == 300)
     }
 
     @Test func revealFalseForTrashedOrUnknown() throws {

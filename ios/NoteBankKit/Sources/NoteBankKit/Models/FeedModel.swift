@@ -55,8 +55,10 @@ public final class FeedModel {
                 if let cursor = try store.cursor(ofItem: itemID, in: place),
                     items.first.map({ (cursor.captureTimeUs, cursor.id) < ($0.captureTimeUs, $0.id) }) ?? true
                 {
-                    items = try store.items(in: place, from: cursor).reversed()
-                    hasOlder = try !store.items(in: place, before: cursor, limit: 1).isEmpty
+                    // A page above the target keeps "load older" out of view when the Feed centres it.
+                    let older = try store.items(in: place, before: cursor, limit: Self.pageSize)
+                    items = try older.reversed() + store.items(in: place, from: cursor).reversed()
+                    hasOlder = older.count == Self.pageSize
                 }
                 loadError = nil
             } catch {

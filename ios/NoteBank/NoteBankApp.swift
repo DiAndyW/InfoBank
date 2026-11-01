@@ -68,6 +68,7 @@ struct RootView: View {
     @State private var target: ShowTarget?
     @State private var foregrounds = 0
     @State private var backgroundEpisode = 0
+    @State private var fadedOut = false
 
     init(services: Services) {
         self.services = services
@@ -96,6 +97,23 @@ struct RootView: View {
         let place = itemPlace(itemID)
         path.append(.place(place))
         target = ShowTarget(place: place, itemID: itemID)
+    }
+
+    private func fadeThrough(_ change: @escaping () -> Void) {
+        withAnimation(.easeIn(duration: 0.04)) { fadedOut = true } completion: {
+            withTransaction(\.disablesAnimations, true, change)
+            withAnimation(.easeOut(duration: 0.06)) { fadedOut = false }
+        }
+    }
+
+    private func openSearch(_ place: SearchPlace) {
+        fadeThrough { path.append(.search(place)) }
+    }
+
+    private func closeSearch() {
+        guard case .search = path.last else { return }
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        fadeThrough { _ = path.popLast() }
     }
 
     private func suspendAfterSync() {
@@ -129,7 +147,7 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: home, status: status, notices: services.notices, onShow: show) { showingSettings = true }
+                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: home, status: status, notices: services.notices, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Route.self) { route in
                             switch route {
@@ -141,13 +159,16 @@ struct RootView: View {
                                     status: status,
                                     openSettings: { showingSettings = true },
                                     onShow: show,
+                                    onSearch: openSearch,
                                     foregrounds: foregrounds,
                                     target: $target)
                             case .search(let place):
-                                SearchView(store: services.store, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult)
+                                SearchView(store: services.store, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onCancel: closeSearch)
                             }
                         }
                 }
+                .opacity(fadedOut ? 0 : 1)
+                .background(theme.palette.surfaceSidebar.ignoresSafeArea())
                 .sheet(isPresented: $showingSettings) { SettingsView(services: services, theme: $theme) }
             }
         }
@@ -174,6 +195,7 @@ struct RootView: View {
             path = restored.map(Route.place)
         }
         .onChange(of: path) { _, path in
+            if case .place = path.last { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
             let trail = path.compactMap { if case .place(let place) = $0 { place } else { nil } }
             savedPlace = switch trail.last {
             case .all?: "all"

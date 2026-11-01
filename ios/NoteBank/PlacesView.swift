@@ -29,6 +29,7 @@ struct PlacesView: View {
     let status: SyncStatus
     let notices: NoticeCenter
     let onShow: (String) -> Void
+    let onSearch: () -> Void
     let openSettings: () -> Void
     @Environment(\.palette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -65,7 +66,7 @@ struct PlacesView: View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                NavigationLink(value: Route.search(.all)) {
+                Button(action: onSearch) {
                     Image(systemName: "magnifyingglass").font(.system(size: 20)).frame(width: 44, height: 44)
                 }
                 .accessibilityLabel("Search")
@@ -153,16 +154,16 @@ struct PlacesView: View {
             }
             .scrollDismissesKeyboard(.interactively)
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
-                if let notice = notices.current {
-                    NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: { if notice.action == .dismiss { notices.dismiss() } else { onShow(notice.itemID) } }, onDismiss: notices.dismiss)
-                        .padding(.horizontal, 12)
-                        .id(notice.id)
-                }
+        .overlay(alignment: .bottom) {
+            if let notice = notices.current {
+                NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: { if notice.action == .dismiss { notices.dismiss() } else { onShow(notice.itemID) } }, onDismiss: notices.dismiss)
+                    .padding(.horizontal, 12)
+                    .id(notice.id)
             }
         }
-        .background(palette.surfaceSidebar)
+        .contentShape(.rect)
+        .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+        .containerBackground(palette.surfaceSidebar, for: .navigation)
         .alert(renameID == nil ? "New Topic" : "Rename Topic", isPresented: $naming) {
             TextField("Topic name", text: $name)
             Button("Cancel", role: .cancel) {}

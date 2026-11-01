@@ -10,18 +10,19 @@ struct SearchView: View {
     let topics: [TopicPlace]
     let archived: [TopicPlace]
     let onOpen: (String) -> Void
+    let onCancel: () -> Void
     @State private var model: SearchModel
     @State private var picking: DayEnd?
     @State private var draft = Date()
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
-    @Environment(\.dismiss) private var dismiss
 
-    init(store: Store, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void) {
+    init(store: Store, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         _model = State(wrappedValue: SearchModel(store: store, place: place))
         self.topics = topics
         self.archived = archived
         self.onOpen = onOpen
+        self.onCancel = onCancel
     }
 
     private var placeTitle: String {
@@ -106,7 +107,7 @@ struct SearchView: View {
                 .background(palette.chip, in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(RoundedRectangle(cornerRadius: 10))
                 .onTapGesture { fieldFocused = true }
-                Button("Cancel") { dismiss() }
+                Button("Cancel", action: onCancel)
                     .font(.plex(.sans, 17))
                     .padding(.horizontal, 8)
                     .frame(minHeight: 44)
@@ -187,7 +188,7 @@ struct SearchView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.surfaceSidebar)
+        .containerBackground(palette.surfaceSidebar, for: .navigation)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(item: $picking) { end in
             VStack(spacing: 0) {
