@@ -39,6 +39,22 @@ final class ImageViewerUITests: XCTestCase {
     }
 
     @MainActor
+    func testSwipeDownClosesOnlyWhenNotZoomed() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Open images"].tap()
+        XCTAssertTrue(app.buttons["Close image"].waitForExistence(timeout: 5))
+        let zoom = app.scrollViews.firstMatch
+        zoom.pinch(withScale: 2, velocity: 1)
+        zoom.swipeDown()
+        XCTAssertTrue(app.buttons["Close image"].exists)
+        zoom.doubleTap()
+        zoom.swipeDown()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["Close image"])
+        waitForExpectations(timeout: 5)
+    }
+
+    @MainActor
     func testFailureAndRetry() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--failure"]

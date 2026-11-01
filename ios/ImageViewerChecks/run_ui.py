@@ -61,8 +61,8 @@ with tempfile.TemporaryDirectory(prefix="notebank-gallery-ui-") as temporary:
         result = f"/tmp/notebank-gallery-ui-{time.time_ns()}.xcresult"
         subprocess.run(["xcodebuild", "test", "-project", str(project), "-scheme", "Gallery", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", "/tmp/notebank-gallery-ui-build", "-resultBundlePath", result, "-parallel-testing-enabled", "NO", "-quiet"], check=True)
         summary = json.loads(subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result], text=True))
-        assert summary["totalTestCount"] == 2 and summary["passedTests"] == 2, summary
-        print("2 gallery UI tests passed: real paging, pinch/pan, sharing, close and failure/retry")
+        assert summary["totalTestCount"] == 3 and summary["passedTests"] == 3, summary
+        print("3 gallery UI tests passed: real paging, pinch/pan, sharing, close, swipe-down close and failure/retry")
         print(result)
     finally:
         for identifier in ["app.notebank.gallery-ui", "app.notebank.gallery-ui.tests.xctrunner"]:

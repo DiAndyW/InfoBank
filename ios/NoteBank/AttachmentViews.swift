@@ -12,6 +12,7 @@ struct AttachmentView: View {
     @Environment(\.attachmentTransfers) private var transfers
     @Environment(\.palette) private var palette
     @State private var thumbnail: URL?
+    @State private var thumbnailPending = true
     @State private var preview: URL?
     @State private var showingImage = false
     @State private var loading = false
@@ -45,6 +46,9 @@ struct AttachmentView: View {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 180)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay { if loading { ProgressView().padding(8).background(.regularMaterial, in: Circle()) } }
+                    } else if thumbnailPending && attachment.mimeType.hasPrefix("image/") {
+                        // Reserves the thumbnail's height so rows don't grow after the Feed scrolls to an Item.
+                        RoundedRectangle(cornerRadius: 8).fill(palette.chip).frame(maxWidth: .infinity).frame(height: 180)
                     } else {
                         HStack(spacing: 6) {
                             if loading { ProgressView() } else { Image(systemName: "doc") }
@@ -64,9 +68,14 @@ struct AttachmentView: View {
                 Label(error, systemImage: "exclamationmark.triangle").font(.plex(.sans, 12, relativeTo: .caption)).foregroundStyle(palette.danger)
             }
         }
-        .task(id: attachment) { thumbnail = try? await transfers?.thumbnail(attachment.id) }
+        .task(id: attachment) {
+            thumbnail = try? await transfers?.thumbnail(attachment.id)
+            thumbnailPending = false
+        }
         .quickLookPreview($preview)
-        .fullScreenCover(isPresented: $showingImage) {
+        .fullScreenCover(isPresented: $showingImage, onDismiss: {
+            if thumbnail == nil { Task { thumbnail = try? await transfers?.thumbnail(attachment.id) } }
+        }) {
             if let transfers {
                 ImageViewer(
                     images: (attachments.isEmpty ? [attachment] : attachments)

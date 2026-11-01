@@ -1,7 +1,10 @@
+import CoreGraphics
 import Foundation
 import GRDB
+import ImageIO
 import Testing
 import Synchronization
+import UniformTypeIdentifiers
 @testable import NoteBankKit
 
 struct AttachmentTransferTests {
@@ -83,6 +86,20 @@ extension AttachmentTransferTests {
             await #expect(throws: AttachmentError.self) { try await downloads.open(id) }
             #expect(try store.localFile(id) == nil)
         }
+    }
+
+    @Test func aRefusedDownloadSaysWhatTheServerAnswered() async throws {
+        let server = try await FakeServer { _ in .init(status: 404) }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "file", to: .inbox, nowUs: 1)
+        let id = UUID().uuidString.lowercased()
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'a.jpg', 'image/jpeg', 5, 1, 0)", arguments: [id, item])
+        }
+        let downloads = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        let error = await #expect(throws: AttachmentError.self) { try await downloads.open(id) }
+        #expect(error?.message == "Couldn't download this file (HTTP 404)")
     }
 
     @Test func switchingServersAwayAndBackInvalidatesOldTaskCompletion() throws {
@@ -302,5 +319,36 @@ extension AttachmentTransferTests {
         await #expect(throws: AttachmentError.self) { try await transfers.clipboardFiles([staged.id, UUID().uuidString.lowercased()]) }
         #expect(try store.items(in: .tunnel, before: nil, limit: 10).first?.id == item)
         #expect(try FileManager.default.contentsOfDirectory(atPath: store.directory.appending(path: "clipboard").path).isEmpty)
+    }
+}
+
+extension AttachmentTransferTests {
+    @Test func anOpenedImageGetsItsThumbnailLocallyWhenTheServerHasNone() async throws {
+        let context = try #require(CGContext(data: nil, width: 40, height: 30, bitsPerComponent: 8, bytesPerRow: 160, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(gray: 0.5, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
+        let jpeg = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(jpeg, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try #require(context.makeImage()), nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let photo = jpeg as Data
+        let server = try await FakeServer { request in
+            request.path.hasSuffix("/thumbnail") ? .init(status: 500) : .init(body: photo)
+        }
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
+        let item = try store.capture(text: "photo", to: .inbox, nowUs: Time.nowUs())
+        let id = UUID().uuidString.lowercased()
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'photo.jpg', 'image/jpeg', ?, 1, 1)", arguments: [id, item, photo.count])
+        }
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        _ = try? await transfers.thumbnail(id)
+        #expect(try store.localFile(id, kind: "thumbnail") == nil)
+        _ = try await transfers.open(id)
+        await transfers.release(id)
+        #expect(try await transfers.thumbnail(id) != nil)
+        #expect(try store.localFile(id, kind: "thumbnail") != nil)
+        #expect(server.requests(to: "/attachments/\(id)/thumbnail") == 1)
     }
 }

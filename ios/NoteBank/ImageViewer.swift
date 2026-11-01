@@ -46,7 +46,7 @@ final class ImagePreviewState {
             file = url
             releaseFile = release
         } catch {
-            if generation == current, !Task.isCancelled { self.error = "Couldn't load this image. Try again." }
+            if generation == current, !Task.isCancelled { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this image. Try again." }
         }
     }
 
@@ -104,6 +104,8 @@ private struct ImagePreviewPage: View {
     @State private var state: ImagePreviewState
     @State private var retry = 0
     @State private var sharing = false
+    @State private var zoomed = false
+    @State private var pullDown: CGFloat = 0
     @Environment(\.dismiss) private var dismiss
 
     init(item: ImagePreviewItem, active: Bool, position: Int, count: Int, open: @escaping () async throws -> URL,
@@ -121,10 +123,20 @@ private struct ImagePreviewPage: View {
     var body: some View {
         ZStack {
             if let image = state.image {
-                ZoomableImage(image: image, label: item.filename)
+                ZoomableImage(image: image, label: item.filename) { zoomed = $0 }
             }
             if state.loading { ProgressView().tint(.white).padding(12).background(.black.opacity(0.6), in: Capsule()) }
         }
+        .offset(y: pullDown)
+        .simultaneousGesture(DragGesture(minimumDistance: 20)
+            .onChanged { drag in
+                guard !zoomed, drag.translation.height > abs(drag.translation.width) else { return }
+                pullDown = drag.translation.height
+            }
+            .onEnded { drag in
+                if !zoomed, drag.translation.height > 100, drag.translation.height > abs(drag.translation.width) { dismiss() }
+                else { withAnimation(.spring) { pullDown = 0 } }
+            })
         .safeAreaInset(edge: .top) {
             HStack {
                 Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
@@ -178,13 +190,18 @@ private struct ImageShareSheet: UIViewControllerRepresentable {
 private struct ZoomableImage: UIViewRepresentable {
     let image: UIImage
     let label: String
+    let onZoom: (Bool) -> Void
     func makeUIView(context: Context) -> ZoomingImageView { ZoomingImageView() }
-    func updateUIView(_ view: ZoomingImageView, context: Context) { view.setImage(image, label: label) }
+    func updateUIView(_ view: ZoomingImageView, context: Context) {
+        view.onZoom = onZoom
+        view.setImage(image, label: label)
+    }
 }
 
 final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
     private let imageView = UIImageView()
     private var lastSize = CGSize.zero
+    var onZoom: ((Bool) -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -229,6 +246,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         panGestureRecognizer.isEnabled = zoomScale > 1
+        onZoom?(zoomScale > 1)
     }
 
     @objc private func toggleZoom(_ gesture: UITapGestureRecognizer) {

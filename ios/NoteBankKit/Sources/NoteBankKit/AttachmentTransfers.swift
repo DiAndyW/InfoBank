@@ -330,7 +330,8 @@ extension SyncHTTP {
         do {
             let (bytes, response) = try await session.bytes(for: request, delegate: self)
             defer { bytes.task.cancel() }
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw AttachmentError("Couldn't download this file") }
+            guard let response = response as? HTTPURLResponse else { throw AttachmentError("Couldn't download this file") }
+            guard response.statusCode == 200 else { throw AttachmentError("Couldn't download this file (HTTP \(response.statusCode))") }
             guard response.expectedContentLength <= maximumBytes else { throw AttachmentError("The Server sent more than expected") }
             FileManager.default.createFile(atPath: target.path, contents: nil)
             let handle = try FileHandle(forWritingTo: target)
