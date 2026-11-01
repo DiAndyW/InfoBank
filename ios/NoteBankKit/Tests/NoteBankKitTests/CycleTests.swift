@@ -231,6 +231,25 @@ struct ServerCycleTests {
     }
 }
 
+extension TopicTrashTests {
+    @Test func aNewServerReceivesAnOfflineTopicWithItsItems() async throws {
+        let server = try TestServer()
+        try await server.start()
+        let a = try Device(url: "http://127.0.0.1:9", secret: server.secret)
+        let topic = try a.store.createTopic(name: "Offline", nowUs: t0)
+        let id = try a.capture("kept together", at: t0 + 1, to: .topic(topic))
+
+        try a.store.saveSettings(url: server.url, newSecret: server.secret, secrets: a.secrets)
+        try await a.sync()
+
+        #expect(a.queued.isEmpty)
+        let b = try Device(server)
+        _ = try await b.sync()
+        #expect(try b.store.places().topics.map(\.name) == ["Offline"])
+        #expect(try b.store.items(in: .topic(topic), before: nil, limit: 10).map(\.id) == [id])
+    }
+}
+
 private final class PullSwitch: Sendable {
     let on = Mutex(false)
 }

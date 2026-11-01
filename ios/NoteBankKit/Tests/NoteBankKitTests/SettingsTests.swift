@@ -124,6 +124,20 @@ struct SettingsTests {
         #expect(try store.serverURL() == "https://b.example.com")
     }
 
+    @Test func aNewURLKeepsTopicsCreatedOffline() throws {
+        let (store, _) = try tempStore()
+        let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://a.example.com", newSecret: "s3cret", secrets: secrets)
+        let topic = try store.createTopic(name: "Offline", nowUs: 1)
+        let pending = try store.capture(text: "unsynced", to: .topic(topic), nowUs: 2)
+        try store.pool.write { db in try db.execute(sql: "INSERT INTO topics (id, name) VALUES ('old', 'Old')") }
+
+        try store.saveSettings(url: "https://b.example.com", newSecret: "s3cret", secrets: secrets)
+
+        #expect(try store.places().topics.map(\.name) == ["Offline"])
+        #expect(try store.items(in: .topic(topic), before: nil, limit: 10).map(\.id) == [pending])
+    }
+
     @Test func theSameURLKeepsTheCursor() throws {
         let (store, _) = try tempStore()
         let secrets = SecretStore.memory()

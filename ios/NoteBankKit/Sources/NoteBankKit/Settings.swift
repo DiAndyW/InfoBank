@@ -105,11 +105,12 @@ extension Store {
             try pool.write { db in
                 let isNewServer = try Bool.fetchOne(db, sql: "SELECT server_url IS NOT ? FROM device", arguments: [serverURL])!
                 if isNewServer {
-                    // A cursor and mirror only mean something to the Server they came from; pending Captures go to the new one.
+                    // A cursor and mirror only mean something to the Server they came from; unsynced Captures and Topics go to the new one.
                     try db.execute(sql: """
                         DELETE FROM items WHERE id NOT IN
                             (SELECT json_extract(op, '$.item_id') FROM outbox WHERE json_extract(op, '$.type') = 'CaptureItem');
-                        DELETE FROM topics;
+                        DELETE FROM topics WHERE id NOT IN
+                            (SELECT json_extract(op, '$.topic_id') FROM outbox WHERE json_extract(op, '$.type') = 'CreateTopic');
                         DELETE FROM attachment_uploads;
                         UPDATE device SET transfer_generation = transfer_generation + 1;
                         UPDATE device SET pull_cursor = 0;
