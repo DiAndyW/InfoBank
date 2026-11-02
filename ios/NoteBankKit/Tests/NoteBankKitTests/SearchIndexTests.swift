@@ -41,7 +41,7 @@ struct SearchIndexTests {
             try db.execute(sql: "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES ('f', '2', 'a.pdf', 'application/pdf', 1, 1, 0)")
         }
         try pool.close()
-        let store = try Store(at: file)
+        let store = try Store(at: file, observesSuspension: false)
         #expect(try indexed(store) == [Entry(id: "1", text: "hello", names: ""), Entry(id: "2", text: "", names: "a.pdf")])
     }
 

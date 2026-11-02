@@ -69,6 +69,7 @@ struct RootView: View {
     @State private var foregrounds = 0
     @State private var backgroundEpisode = 0
     @State private var fadedOut = false
+    private let composeRequests = ComposeRequests.shared
 
     init(services: Services) {
         self.services = services
@@ -183,6 +184,10 @@ struct RootView: View {
             for await notices in services.engine.notices { services.notices.post(notices) }
         }
         .task {
+            guard composeRequests.latest == nil else {
+                savedPlace = ""
+                return
+            }
             var restored: [Place] = switch savedPlace {
             case "all": [.all]
             case "trash": [.trash]
@@ -193,6 +198,11 @@ struct RootView: View {
             }
             restored.removeAll { if case .topic(let id) = $0 { !(places.places.topics + places.archived).contains { $0.id == id } } else { false } }
             path = restored.map(Route.place)
+        }
+        .onChange(of: composeRequests.latest, initial: true) { _, request in
+            guard request != nil else { return }
+            path = []
+            showingSettings = false
         }
         .onChange(of: path) { _, path in
             if case .place = path.last { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
@@ -229,6 +239,13 @@ private enum ApplicationServices {
 @MainActor
 private final class BackgroundTransferDelegate: NSObject, UIApplicationDelegate {
     private var shareTransfers: AttachmentTransfers?
+
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        configuration.delegateClass = QuickActionSceneDelegate.self
+        return configuration
+    }
+
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String, completionHandler: @escaping () -> Void) {
         guard case .success(let services) = ApplicationServices.result else { completionHandler(); return }
         let transfers: AttachmentTransfers
@@ -251,6 +268,21 @@ private final class BackgroundTransferDelegate: NSObject, UIApplicationDelegate 
                 completion.finish()
             }
         }
+    }
+}
+
+@MainActor
+private final class QuickActionSceneDelegate: NSObject, UIWindowSceneDelegate {
+    private static let newNote = "app.notebank.new-note"
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        if connectionOptions.shortcutItem?.type == Self.newNote { ComposeRequests.shared.open(.inbox) }
+    }
+
+    func windowScene(_ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+        let isNewNote = shortcutItem.type == Self.newNote
+        if isNewNote { ComposeRequests.shared.open(.inbox) }
+        completionHandler(isNewNote)
     }
 }
 

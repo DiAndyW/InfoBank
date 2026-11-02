@@ -8,14 +8,14 @@ struct StoreTests {
         let (store, file) = try tempStore()
         let applied = { (s: Store) in try s.pool.read { try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations") } }
         #expect(try applied(store) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
-        #expect(try applied(Store(at: file)) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
+        #expect(try applied(Store(at: file, observesSuspension: false)) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
     }
 
     @Test func theDeviceIDIsCreatedOnceAndKept() throws {
         let (store, file) = try tempStore()
         let id = try store.deviceID()
         #expect(id.wholeMatch(of: /[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/) != nil)
-        #expect(try Store(at: file).deviceID() == id)
+        #expect(try Store(at: file, observesSuspension: false).deviceID() == id)
     }
 
     @Test func emptyTextIsRejected() throws {

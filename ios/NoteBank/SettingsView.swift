@@ -52,14 +52,15 @@ struct ServerFields: View {
 struct SettingsView: View {
     @Binding var theme: Theme
     @State private var model: SettingsModel
-    @State private var draftTheme: Theme
+    @State private var saved = false
+    @State private var openedTheme: Theme
     private let wake: () -> Void
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
 
     init(services: Services, theme: Binding<Theme>) {
         _theme = theme
-        _draftTheme = State(initialValue: theme.wrappedValue)
+        _openedTheme = State(initialValue: theme.wrappedValue)
         _model = State(wrappedValue: services.settingsModel())
         wake = services.wake
     }
@@ -107,7 +108,7 @@ struct SettingsView: View {
                     VStack(spacing: 0) {
                         ForEach(Theme.allCases, id: \.self) { option in
                             if option != Theme.allCases.first { Divider().overlay(palette.line) }
-                            Button { draftTheme = option } label: {
+                            Button { theme = option } label: {
                                 HStack(spacing: 10) {
                                     RoundedRectangle(cornerRadius: 4)
                                         .fill(option.palette.surface)
@@ -115,7 +116,7 @@ struct SettingsView: View {
                                         .frame(width: 18, height: 18)
                                     Text(option.title).font(.plex(.sans, 17)).foregroundStyle(palette.ink)
                                     Spacer()
-                                    if option == draftTheme {
+                                    if option == theme {
                                         Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(palette.accent)
                                     }
                                 }
@@ -124,7 +125,7 @@ struct SettingsView: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .accessibilityAddTraits(option == draftTheme ? .isSelected : [])
+                            .accessibilityAddTraits(option == theme ? .isSelected : [])
                         }
                     }
                     .card()
@@ -140,7 +141,7 @@ struct SettingsView: View {
                     Button(model.saving ? "Saving…" : "Save") {
                         Task {
                             if await model.save() {
-                                theme = draftTheme
+                                saved = true
                                 dismiss()
                             }
                         }
@@ -149,5 +150,6 @@ struct SettingsView: View {
                 }
             }
         }
+        .onDisappear { if !saved { theme = openedTheme } }
     }
 }

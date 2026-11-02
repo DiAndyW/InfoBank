@@ -7,6 +7,7 @@ struct ComposerInput: UIViewRepresentable {
     let placeholder: String
     var minimumLines = 1
     var lineSpacing: CGFloat = 0
+    var focusRequest = 0
     let onAttachment: (NSItemProvider, UTType) -> Void
     @Environment(\.palette) private var palette
 
@@ -37,6 +38,10 @@ struct ComposerInput: UIViewRepresentable {
         paragraph.lineSpacing = lineSpacing
         view.typingAttributes = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
         view.setNeedsLayout()
+        if focusRequest != context.coordinator.focusHandled {
+            context.coordinator.focusHandled = focusRequest
+            view.focusWhenInWindow()
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: AttachmentTextView, context: Context) -> CGSize? {
@@ -50,7 +55,11 @@ struct ComposerInput: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ComposerInput
-        init(_ parent: ComposerInput) { self.parent = parent }
+        var focusHandled: Int
+        init(_ parent: ComposerInput) {
+            self.parent = parent
+            focusHandled = parent.focusRequest
+        }
         func textViewDidChange(_ view: UITextView) {
             parent.text = view.text
             view.invalidateIntrinsicContentSize()

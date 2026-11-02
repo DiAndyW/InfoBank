@@ -11,6 +11,17 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to attach to Items you capture.</string>
+	<key>UIApplicationShortcutItems</key>
+	<array>
+		<dict>
+			<key>UIApplicationShortcutItemIconSymbolName</key>
+			<string>square.and.pencil</string>
+			<key>UIApplicationShortcutItemTitle</key>
+			<string>New Note</string>
+			<key>UIApplicationShortcutItemType</key>
+			<string>app.notebank.new-note</string>
+		</dict>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>IBMPlexSans-Regular.ttf</string>

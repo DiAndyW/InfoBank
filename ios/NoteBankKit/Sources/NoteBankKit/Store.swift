@@ -15,7 +15,7 @@ public final class Store: Sendable {
     private let fileSessionID = UUID().uuidString
     private let fileAccess = Mutex(false)
 
-    public init(at file: URL) throws {
+    public init(at file: URL, observesSuspension: Bool = true) throws {
         var directory = file.deletingLastPathComponent()
         self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -28,7 +28,7 @@ public final class Store: Sendable {
 
         var configuration = Configuration()
         configuration.busyMode = .timeout(5)
-        configuration.observesSuspensionNotifications = true
+        configuration.observesSuspensionNotifications = observesSuspension
         configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA foreign_keys = ON") }
         pool = try DatabasePool(path: file.path, configuration: configuration)
 

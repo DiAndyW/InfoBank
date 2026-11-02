@@ -69,7 +69,7 @@ extension AttachmentTests {
     @Test func importedNamesFitServerUTF8LimitAndRelaunchCleansOnlyAbandonedFiles() throws {
         let database = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + "/notebank.db")
         let ids = try { () -> (String, String) in
-            let store = try Store(at: database)
+            let store = try Store(at: database, observesSuspension: false)
             let staged = try store.stageFile(at: source(), filename: String(repeating: "🌱", count: 100) + ".txt")
             #expect(staged.filename.utf8.count <= 255)
             #expect(staged.filename.hasSuffix(".txt"))
@@ -77,7 +77,7 @@ extension AttachmentTests {
             _ = try store.capture(text: "", attachmentIDs: [kept.id], to: .inbox, nowUs: 1)
             return (staged.id, kept.id)
         }()
-        let relaunched = try Store(at: database)
+        let relaunched = try Store(at: database, observesSuspension: false)
         #expect(try relaunched.localFile(ids.0) == nil)
         #expect(try relaunched.localFile(ids.1) != nil)
     }
@@ -103,7 +103,7 @@ extension AttachmentTests {
         let staged = try store.stageFile(at: source())
         let download = store.directory.appending(path: ".dl-active")
         try Data("partial".utf8).write(to: download)
-        let other = try Store(at: database)
+        let other = try Store(at: database, observesSuspension: false)
         #expect(try other.localFile(staged.id) != nil)
         #expect(FileManager.default.fileExists(atPath: download.path))
         _ = try store.capture(text: "", attachmentIDs: [staged.id], to: .inbox, nowUs: 1)
@@ -114,12 +114,12 @@ extension AttachmentTests {
     @Test func deadStoreRegistrationDoesNotKeepAbandonedFilesForever() throws {
         let database = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + "/notebank.db")
         let id = try { () -> String in
-            let store = try Store(at: database)
+            let store = try Store(at: database, observesSuspension: false)
             let file = try store.stageFile(at: source())
             try store.pool.write { try $0.execute(sql: "INSERT INTO file_sessions VALUES ('terminated-process', 2147483647)") }
             return file.id
         }()
-        let store = try Store(at: database)
+        let store = try Store(at: database, observesSuspension: false)
         #expect(try store.localFile(id) == nil)
         #expect(try store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM file_sessions WHERE id = 'terminated-process'") } == 0)
     }

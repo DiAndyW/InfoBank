@@ -6,7 +6,7 @@ func tempStore() throws -> (store: Store, file: URL) {
     let file = FileManager.default.temporaryDirectory
         .appending(path: UUID().uuidString, directoryHint: .isDirectory)
         .appending(path: "notebank.db")
-    return (try Store(at: file), file)
+    return (try Store(at: file, observesSuspension: false), file)
 }
 
 extension SecretStore {

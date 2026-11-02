@@ -6,11 +6,14 @@ struct HomeComposerView: View {
     let topics: [TopicPlace]
     @AppStorage("tunnelSwitch", store: Theme.store) private var tunnelOn = false
     @State private var chip = Destination.inbox
+    @State private var focusRequest = 0
+    @State private var handledRequest: UUID?
+    private let requests = ComposeRequests.shared
     @Environment(\.palette) private var palette
 
     private var chipTitle: String {
-        if case .topic(let id) = chip, let topic = topics.first(where: { $0.id == id }) { return "To \(topic.name)" }
-        return "To Inbox"
+        if case .topic(let id) = chip, let topic = topics.first(where: { $0.id == id }) { return topic.name }
+        return "Inbox"
     }
 
     private func sync() {
@@ -22,7 +25,7 @@ struct HomeComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3) { provider, type in
+            ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3, focusRequest: focusRequest) { provider, type in
                 model.importPaste(provider, type: type)
             }
             StagedAttachmentsView(model: model)
@@ -52,20 +55,22 @@ struct HomeComposerView: View {
                     .accessibilityValue(chipTitle)
                 }
                 Spacer(minLength: 0)
-                AttachmentPicker(model: model)
-                Button {
-                    _ = model.send()
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(model.canSend ? palette.onAccent : palette.lineStrong)
-                        .frame(width: 40, height: 40)
-                        .background(model.canSend ? palette.accent : palette.chip, in: Circle())
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
+                HStack(spacing: 0) {
+                    AttachmentPicker(model: model)
+                    Button {
+                        _ = model.send()
+                    } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(model.canSend ? palette.onAccent : palette.lineStrong)
+                            .frame(width: 40, height: 40)
+                            .background(model.canSend ? palette.accent : palette.chip, in: Circle())
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(!model.canSend)
+                    .accessibilityLabel("Send")
                 }
-                .disabled(!model.canSend)
-                .accessibilityLabel("Send")
             }
             if let error = model.error {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -82,5 +87,19 @@ struct HomeComposerView: View {
         .onChange(of: tunnelOn) { sync() }
         .onChange(of: chip) { sync() }
         .onChange(of: topics) { sync() }
+        .onChange(of: requests.latest, initial: true) { _, request in
+            guard let request, request.id != handledRequest else { return }
+            handledRequest = request.id
+            switch request.place {
+            case .tunnel: tunnelOn = true
+            case .topic(let id):
+                tunnelOn = false
+                chip = .topic(id)
+            case .inbox:
+                tunnelOn = false
+                chip = .inbox
+            }
+            focusRequest += 1
+        }
     }
 }

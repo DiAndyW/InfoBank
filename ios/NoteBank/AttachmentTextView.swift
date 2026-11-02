@@ -20,6 +20,24 @@ final class AttachmentTextView: UITextView, UITextPasteDelegate {
         addSubview(placeholderLabel)
     }
 
+    private var focusPending = false
+
+    func focusWhenInWindow() {
+        focusPending = true
+        focusIfPending()
+    }
+
+    private func focusIfPending() {
+        guard focusPending, window != nil else { return }
+        focusPending = false
+        becomeFirstResponder()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        focusIfPending()
+    }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layoutSubviews() {
