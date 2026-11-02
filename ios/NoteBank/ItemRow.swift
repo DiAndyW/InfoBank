@@ -2,7 +2,6 @@ import NoteBankKit
 import SwiftUI
 
 extension FeedItem {
-    var date: Date { Date(timeIntervalSince1970: Double(captureTimeUs) / 1_000_000) }
     var placeName: String? { inTunnel ? "Tunnel" : topicID == nil ? "Inbox" : topicName }
 }
 
@@ -29,6 +28,7 @@ struct ItemRow: View {
     let onCopy: () -> Void
     let onCommands: () -> Void
     var inTrash = false
+    var showsTime = true
 
     @Environment(\.palette) private var palette
     @State private var showingReason = false
@@ -110,11 +110,14 @@ struct ItemRow: View {
                         .foregroundStyle(palette.inkMuted)
                         .accessibilityLabel("Not synced yet")
                 }
-                Text(item.date.formatted(date: .omitted, time: .shortened))
-                    .font(.plex(.mono, 12, relativeTo: .caption))
-                    .foregroundStyle(palette.inkMuted)
-                    .lineLimit(1)
-                    .fixedSize()
+                if !inTrash {
+                    Text(item.date.formatted(date: .omitted, time: .shortened))
+                        .font(.plex(.mono, 12, relativeTo: .caption))
+                        // Clear, not hidden, so the row keeps its width and VoiceOver still reads the time.
+                        .foregroundStyle(showsTime ? palette.inkMuted : .clear)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             }
             .frame(minHeight: 25, alignment: .trailing)

@@ -390,6 +390,24 @@ func TestBlankTopicNameIsRejected(t *testing.T) {
 	}
 }
 
+func TestBuiltInBlankAndControlTopicNamesAreRejected(t *testing.T) {
+	e := newSyncEnv(t)
+	renamed := uuid.NewString()
+	e.push(phoneID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": renamed, "name": "Gym"})
+	for _, name := range []string{"inbox", " TUNNEL ", "Trash", "all items", "Anywhere", "New Topic", "new topic…", "New Topic...", "\u200b", " \u2060\ufeff ", "a\nb", "tab\there"} {
+		create := e.push(phoneID, op{"type": "CreateTopic", "at": e.at(1), "topic_id": uuid.NewString(), "name": name})
+		rename := e.push(phoneID, op{"type": "RenameTopic", "at": e.at(1), "topic_id": renamed, "name": name})
+		if create[0].Reason != "invalid" || rename[0].Reason != "invalid" {
+			t.Errorf("%q: create %+v, rename %+v; want both rejected invalid", name, create[0], rename[0])
+		}
+	}
+	for _, name := range []string{"Inbox ideas", "New Topics", "Mom's recipes; DROP TABLE topics", "Ünïcode"} {
+		if res := e.push(phoneID, op{"type": "CreateTopic", "at": e.at(2), "topic_id": uuid.NewString(), "name": name}); res[0].Status != "accepted" {
+			t.Errorf("%q = %+v, want accepted", name, res[0])
+		}
+	}
+}
+
 func topicOf(it pulledItem) string {
 	if it.TopicID == nil {
 		return "Inbox"

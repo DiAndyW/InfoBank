@@ -96,7 +96,7 @@ struct PlacesView: View {
             .padding(.bottom, 12)
             ScrollView {
                 VStack(spacing: 0) {
-                    HomeComposerView(model: composer, topics: places.topics).padding(.bottom, 20)
+                    HomeComposerView(model: composer, store: store, topics: places.topics, wake: wake).padding(.bottom, 20)
                     VStack(spacing: 0) {
                         row(.all, "All Items", places.allCount)
                         Divider().overlay(palette.line)

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEve
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { doubleClickIntervalMs, discardItem, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View, type Target } from "./api";
+import { doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View, type Target } from "./api";
 import { Attachments } from "./attachments";
 import { copyWholeItem } from "./api";
 import Composer from "./Composer";
@@ -10,6 +10,7 @@ import CaptureDestination from "./CaptureDestination";
 import ConflictDialog from "./ConflictDialog";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
+import NewTopicDialog from "./NewTopicDialog";
 import { Icon } from "./icons";
 import ItemEditor, { type EditorHandle } from "./ItemEditor";
 import { linkify } from "./links";
@@ -20,9 +21,10 @@ const HIGHLIGHT_MS = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DRAG_START_PX = 4;
 
-function daysLeft(purgeAtUs: number) {
+function daysRemaining(purgeAtUs: number | null) {
+  if (purgeAtUs === null) return "Waiting for sync";
   const days = Math.max(1, Math.ceil((purgeAtUs / 1000 - Date.now()) / DAY_MS));
-  return days === 1 ? "1 day left" : `${days} days left`;
+  return days === 1 ? "1 day remaining" : `${days} days remaining`;
 }
 
 type Props = {
@@ -36,7 +38,7 @@ type Props = {
   onError: (title: string, err: unknown) => void;
   onTrashed: (id: string, copied?: boolean) => void;
   onRestored: (item: FeedItem) => void;
-  onMove: (item: FeedItem, target: Target) => void;
+  onMove: (item: FeedItem, target: Target, newTopicName?: string) => void;
   onDragStart: (item: FeedItem, x: number, y: number) => void;
   highlight: string | null;
   onHighlightDone: () => void;
@@ -95,6 +97,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
   const rowVersions = useRef(new Map<string, number>());
   const copyVersion = useRef(0);
   const answerBusy = useRef(false);
+  const [naming, setNaming] = useState<FeedItem | null>(null);
 
   function cancelCopy(itemID?: string) {
     if (itemID !== undefined) {
@@ -203,7 +206,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
     try {
       for (let i = 0; i < pageCount; i++) {
         const last = all[all.length - 1];
-        page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id } : null);
+        page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id, purge_at_us: last.purge_at_us } : null);
         all = all.concat(page);
         if (page.length === 0) break;
       }
@@ -325,16 +328,18 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
               const topic = topics.find((t) => t.id === it.topic_id);
               const place = view.kind === "all" || trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
               const copy = view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
-              const newDay = !prev || new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString();
+              const heading = trash
+                ? daysRemaining(it.purge_at_us)
+                : time.toDateString() === today
+                  ? "Today"
+                  : time.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+              const newDay = !prev || (trash ? daysRemaining(prev.purge_at_us) !== heading : new Date(prev.capture_time_us / 1000).toDateString() !== time.toDateString());
+              const sameMinute = !newDay && Math.floor(prev.capture_time_us / 60e6) === Math.floor(it.capture_time_us / 60e6);
               return (
                 <Fragment key={it.id}>
                   {newDay && (
                     <div className="nb-day" role="separator">
-                      <span>
-                        {time.toDateString() === today
-                          ? "Today"
-                          : time.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
-                      </span>
+                      <span>{heading}</span>
                     </div>
                   )}
                   {editing?.id === it.id ? (
@@ -414,7 +419,6 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             <span className="nb-chip-label">{place}</span>
                           </span>
                         )}
-                        {trash && it.purge_at_us !== null && <span className="nb-days">{daysLeft(it.purge_at_us)}</span>}
                         {it.sync_error && (
                           <span className="nb-mark is-danger" title={refusal(it.sync_error)}>
                             <Icon name="alert" size={12} />
@@ -433,7 +437,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             <Icon name="pending" label="Not synced yet" />
                           </span>
                         )}
-                        <time className="nb-item-time">{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>
+                        {!trash && <time className={sameMinute ? "nb-item-time nb-reveal" : "nb-item-time"}>{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
                         {trash ? (
                           <button className="nb-btn nb-btn-quiet" onClick={() => restoreItem(it.id).then(() => onRestored(it), (e) => onError("Couldn't restore the Item", e))}>
                             <Icon name="restore" />
@@ -447,14 +451,21 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             entries={it.sync_error ? [...copy, { label: "Discard…", onSelect: () => setDiscarding(it) }] : [
                               { label: "Edit", onSelect: () => open(it) },
                               {
-                                label: "Move to…",
-                                submenu: targets.map((t) => ({
-                                  label: t.name,
-                                  checked: (it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") === t.id,
-                                  onSelect: () => {
-                                    if ((it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") !== t.id) onMove(it, t.target);
+                                label: "Move to",
+                                submenu: [
+                                  {
+                                    filter: "Find a place",
+                                    choices: targets.map((t) => ({
+                                      label: t.name,
+                                      checked: (it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") === t.id,
+                                      onSelect: () => {
+                                        if ((it.in_tunnel ? "tunnel" : it.topic_id ?? "inbox") !== t.id) onMove(it, t.target);
+                                      },
+                                    })),
                                   },
-                                })),
+                                  { separator: true },
+                                  { label: "New Topic…", onSelect: () => setNaming(it) },
+                                ],
                               },
                               ...copy,
                               { separator: true },
@@ -500,6 +511,14 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
             <button type="button" className="nb-btn nb-btn-secondary" disabled={answering} autoFocus onClick={() => answerCopy(false)}>Not now</button>
             <button type="button" className="nb-btn nb-btn-primary" disabled={answering} onClick={() => answerCopy(true)}>Turn on</button>
           </>} />
+      )}
+      {naming && (
+        <NewTopicDialog onClose={() => setNaming(null)}
+          onCreated={(topic) => {
+            setNaming(null);
+            const here = itemTarget(naming);
+            if (here.kind !== "topic" || here.id !== topic.id) onMove(naming, { kind: "topic", id: topic.id }, topic.name);
+          }} />
       )}
       {discarding && (
         <Dialog

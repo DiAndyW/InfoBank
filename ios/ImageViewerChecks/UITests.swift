@@ -55,6 +55,26 @@ final class ImageViewerUITests: XCTestCase {
     }
 
     @MainActor
+    func testVideoPlaysInTheViewerPagesToImagesAndSwipesDownToClose() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Open video"].tap()
+        let share = app.buttons["Share video"]
+        XCTAssertTrue(share.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["clip.mp4"].exists)
+        let loaded = NSPredicate(format: "isEnabled == true")
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: share)], timeout: 10), .completed, "The video never loaded")
+        app.swipeLeft()
+        XCTAssertTrue(app.buttons["Close image"].waitForExistence(timeout: 5))
+        app.swipeRight()
+        XCTAssertTrue(app.buttons["Close video"].waitForExistence(timeout: 5))
+        XCTAssertEqual(XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: loaded, object: share)], timeout: 10), .completed, "The video didn't reload after paging back")
+        app.swipeDown()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["Close video"])
+        waitForExpectations(timeout: 5)
+    }
+
+    @MainActor
     func testFailureAndRetry() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--failure"]

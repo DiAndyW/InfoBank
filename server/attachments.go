@@ -185,7 +185,7 @@ func (a *syncAPI) uploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	case removed:
 		w.WriteHeader(http.StatusGone)
 		return
-	case !strings.HasPrefix(mimeType, "image/"):
+	case !strings.HasPrefix(mimeType, "image/") && !strings.HasPrefix(mimeType, "video/"):
 		w.WriteHeader(http.StatusUnsupportedMediaType)
 		return
 	}

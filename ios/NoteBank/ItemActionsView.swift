@@ -14,6 +14,7 @@ struct ItemActionsView: View {
     @State private var topics: [TopicPlace] = []
     @State private var error: String?
     @State private var discard = false
+    @State private var naming = false
     @State private var imports: ComposerModel?
     @State private var removed: Set<String> = []
 
@@ -103,6 +104,7 @@ struct ItemActionsView: View {
                         destination("Inbox", .inbox)
                         destination("Tunnel", .tunnel)
                         Section("Topics") {
+                            Button("New Topic…", systemImage: "plus") { naming = true }
                             ForEach(topics) { topic in destination(topic.name, .topic(topic.id)) }
                         }
                     }
@@ -154,6 +156,11 @@ struct ItemActionsView: View {
         .onDisappear { discardImports() }
         .presentationDetents(page == .commands ? [.medium, .large] : [.large])
         .presentationDragIndicator(.visible)
+        .newTopicDialog(isPresented: $naming) { name in
+            try? store.pickerTopicProblem(named: name)
+        } create: { name in
+            move(.topic(try store.pickerTopic(named: name, nowUs: Time.nowUs())))
+        }
         .alert("Discard this Item?", isPresented: $discard) {
             Button("Cancel", role: .cancel) {}
             Button("Discard", role: .destructive) { run { try store.discard(itemID: item.id); onChanged(false, false) } }

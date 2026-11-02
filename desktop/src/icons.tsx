@@ -19,6 +19,7 @@ const PATHS = {
       <path d="M2.5 12l3.75-3.75L9 11l2-2 2.5 2.5" />
     </>
   ),
+  play: <path d="M5.5 3.5v9l7-4.5z" fill="currentColor" />,
   check: <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />,
   x: <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />,
   "chevron-right": <path d="M6 3.5 10.5 8 6 12.5" />,

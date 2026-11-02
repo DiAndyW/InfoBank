@@ -42,6 +42,11 @@ extension Store {
         return (result.isEmpty ? "file" : result) + suffix
     }
 
+    private static func overLimit(_ name: String) -> AttachmentError {
+        let isVideo = UTType(filenameExtension: (name as NSString).pathExtension)?.conforms(to: .movie) == true
+        return AttachmentError("\(name) is over 100 MB" + (isVideo ? ". Trim the video and try again." : ""))
+    }
+
     func recoverAttachmentFiles(_ db: Database) throws {
         // A second live Store may be importing files; startup recovery runs only without one.
         try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM staged_files)")
@@ -60,8 +65,8 @@ extension Store {
     public func stageFile(at source: URL, filename: String? = nil) throws -> StagedAttachment {
         let values = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
         guard values.isRegularFile == true else { throw AttachmentError("Choose a file") }
-        guard Int64(values.fileSize ?? 0) <= Self.maxAttachmentBytes else { throw AttachmentError("\(source.lastPathComponent) is over 100 MB") }
         let name = Self.safeAttachmentName(filename ?? source.lastPathComponent)
+        guard Int64(values.fileSize ?? 0) <= Self.maxAttachmentBytes else { throw Self.overLimit(name) }
         let id = UUID().uuidString.lowercased()
         let relative = "files/\(id)/\(name)"
         let target = directory.appending(path: relative)
@@ -74,7 +79,7 @@ extension Store {
             var size: Int64 = 0
             while let chunk = try input.read(upToCount: 64 * 1024), !chunk.isEmpty {
                 size += Int64(chunk.count)
-                guard size <= Self.maxAttachmentBytes else { throw AttachmentError("\(name) is over 100 MB") }
+                guard size <= Self.maxAttachmentBytes else { throw Self.overLimit(name) }
                 try output.write(contentsOf: chunk)
             }
             try output.synchronize()

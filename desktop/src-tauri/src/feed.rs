@@ -79,6 +79,7 @@ pub enum Target {
 pub struct Before {
     pub capture_time_us: i64,
     pub id: String,
+    pub purge_at_us: Option<i64>,
 }
 
 const GONE: &str = "That Item no longer exists";
@@ -324,7 +325,9 @@ pub(crate) const EDIT_BASE: &str = "COALESCE(
 const IN_TRASH: &str = "deleted_at IS NOT NULL AND (purge_at IS NULL OR purge_at > ?1)
     AND (text IS NOT NULL OR EXISTS (SELECT 1 FROM attachments WHERE item_id = items.id))";
 
-/// Newest first, at most PAGE_SIZE. `before` continues from the last Item of the previous page.
+const PURGE_ORDER: &str = "CASE ?2 WHEN 'trash' THEN COALESCE(purge_at, 9223372036854775807) ELSE 0 END";
+
+/// Newest first (Trash: latest purge first), at most PAGE_SIZE. `before` continues from the last Item of the previous page.
 pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_us: i64) -> rusqlite::Result<Vec<FeedItem>> {
     let (kind, topic) = match view {
         View::All => ("all", None),
@@ -340,13 +343,14 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
                ELSE deleted_at IS NULL
                     AND CASE ?2 WHEN 'all' THEN 1 WHEN 'inbox' THEN topic_id IS NULL AND in_tunnel = 0
                          WHEN 'tunnel' THEN in_tunnel = 1 ELSE topic_id = ?3 END END
-           AND (?4 IS NULL OR (capture_time, id) < (?4, ?5))
-         ORDER BY capture_time DESC, id DESC
+           AND (?4 IS NULL OR ({PURGE_ORDER}, capture_time, id) < (?7, ?4, ?5))
+         ORDER BY {PURGE_ORDER} DESC, capture_time DESC, id DESC
          LIMIT ?6"
     ))?;
+    let purge_key = before.map(|b| if kind == "trash" { b.purge_at_us.unwrap_or(i64::MAX) } else { 0 });
     let mut items: Vec<FeedItem> = stmt
         .query_map(
-            (now_us, kind, topic, before.map(|b| b.capture_time_us), before.map(|b| b.id.as_str()), PAGE_SIZE),
+            (now_us, kind, topic, before.map(|b| b.capture_time_us), before.map(|b| b.id.as_str()), PAGE_SIZE, purge_key),
             |r| {
                 let (sync_error, conflict) = feedback(r, 7)?;
                 Ok(FeedItem {
@@ -484,7 +488,7 @@ mod tests {
         let first = list_items(&conn, &View::All, None, 0).unwrap();
         assert_eq!(first.len(), PAGE_SIZE as usize);
         let last = first.last().unwrap();
-        let before = Before { capture_time_us: last.capture_time_us, id: last.id.clone() };
+        let before = Before { capture_time_us: last.capture_time_us, id: last.id.clone(), purge_at_us: None };
         let second = list_items(&conn, &View::All, Some(&before), 0).unwrap();
 
         let mut all: Vec<String> = first.into_iter().chain(second).map(|i| i.id).collect();
@@ -492,6 +496,28 @@ mod tests {
         all.sort();
         all.dedup();
         assert_eq!(all.len(), PAGE_SIZE as usize + 1, "an Item was repeated");
+    }
+
+    #[test]
+    fn trash_pages_latest_purge_first_whatever_the_capture_order() {
+        let (_d, conn) = fresh();
+        for i in 0..=PAGE_SIZE {
+            conn.execute(
+                "INSERT INTO items (id, text, capture_time, deleted_at, purge_at) VALUES (?1, 'x', ?2, 1, ?3)",
+                (format!("{i:03}"), i, if i == 7 { None } else { Some(5000 + (i * 37) % 11) }),
+            )
+            .unwrap();
+        }
+        let first = list_items(&conn, &View::Trash, None, 0).unwrap();
+        assert_eq!(first.len(), PAGE_SIZE as usize);
+        let last = first.last().unwrap();
+        let before = Before { capture_time_us: last.capture_time_us, id: last.id.clone(), purge_at_us: last.purge_at_us };
+        let second = list_items(&conn, &View::Trash, Some(&before), 0).unwrap();
+
+        let all: Vec<FeedItem> = first.into_iter().chain(second).collect();
+        assert_eq!(all.len(), PAGE_SIZE as usize + 1);
+        let keys: Vec<_> = all.iter().map(|i| (i.purge_at_us.unwrap_or(i64::MAX), i.capture_time_us)).collect();
+        assert!(keys.windows(2).all(|w| w[0] > w[1]), "not latest purge first: {keys:?}");
     }
 
     #[test]
@@ -793,8 +819,8 @@ mod tests {
         )
         .unwrap();
         let trash = list_items(&conn, &View::Trash, None, 1000).unwrap();
-        assert_eq!(trash.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["files", "unsynced", "counting"]);
-        assert_eq!(trash.iter().map(|i| i.purge_at_us).collect::<Vec<_>>(), [Some(2000), None, Some(1001)]);
+        assert_eq!(trash.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["unsynced", "files", "counting"]);
+        assert_eq!(trash.iter().map(|i| i.purge_at_us).collect::<Vec<_>>(), [None, Some(2000), Some(1001)]);
         assert_eq!(nav_counts(&conn, 1000).unwrap(), Counts { inbox: 1, tunnel: 0, trash: 3 });
     }
 

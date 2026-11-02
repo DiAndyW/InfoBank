@@ -176,6 +176,7 @@ struct RootView: View {
         .environment(\.palette, theme.palette)
         .preferredColorScheme(theme.colorScheme)
         .tint(theme.palette.accent)
+        .backgroundStyle(theme.palette.surfaceRaised)
         .task {
             await services.engine.start()
             for await status in services.engine.status { self.status = status }

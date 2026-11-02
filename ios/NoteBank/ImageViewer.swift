@@ -1,18 +1,22 @@
+import AVKit
 import ImageIO
 import SwiftUI
 
 @MainActor @Observable
 final class ImagePreviewState {
     private let thumbnail: UIImage?
+    private let isVideo: Bool
     private var generation = UUID()
     private var releaseFile: (() -> Void)?
     var image: UIImage?
     private(set) var file: URL?
+    private(set) var player: AVPlayer?
     private(set) var loading = false
     private(set) var error: String?
 
-    init(thumbnail: UIImage?) {
+    init(thumbnail: UIImage?, isVideo: Bool = false) {
         self.thumbnail = thumbnail
+        self.isVideo = isVideo
         image = thumbnail
     }
 
@@ -25,6 +29,13 @@ final class ImagePreviewState {
         do {
             let url = try await open()
             guard generation == current, !Task.isCancelled else { release(); return }
+            if isVideo {
+                file = url
+                releaseFile = release
+                player = AVPlayer(url: url)
+                player?.play()
+                return
+            }
             // Bound decoded memory while preserving orientation; sharing still uses the original.
             let decoded = await Task.detached(priority: .userInitiated) {
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -46,12 +57,14 @@ final class ImagePreviewState {
             file = url
             releaseFile = release
         } catch {
-            if generation == current, !Task.isCancelled { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this image. Try again." }
+            if generation == current, !Task.isCancelled { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this \(isVideo ? "video" : "image"). Try again." }
         }
     }
 
     func close() {
         generation = UUID()
+        player?.pause()
+        player = nil
         releaseFile?()
         releaseFile = nil
         file = nil
@@ -64,6 +77,7 @@ struct ImagePreviewItem: Identifiable {
     let id: String
     let filename: String
     var thumbnail: UIImage?
+    var isVideo = false
 }
 
 struct ImageViewer: View {
@@ -117,12 +131,15 @@ private struct ImagePreviewPage: View {
         self.open = open
         self.thumbnail = thumbnail
         self.release = release
-        _state = State(initialValue: ImagePreviewState(thumbnail: item.thumbnail))
+        _state = State(initialValue: ImagePreviewState(thumbnail: item.thumbnail, isVideo: item.isVideo))
     }
 
     var body: some View {
+        let kind = item.isVideo ? "video" : "image"
         ZStack {
-            if let image = state.image {
+            if let player = state.player {
+                VideoPlayer(player: player)
+            } else if let image = state.image {
                 ZoomableImage(image: image, label: item.filename) { zoomed = $0 }
             }
             if state.loading { ProgressView().tint(.white).padding(12).background(.black.opacity(0.6), in: Capsule()) }
@@ -140,7 +157,7 @@ private struct ImagePreviewPage: View {
         .safeAreaInset(edge: .top) {
             HStack {
                 Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Close image")
+                    .accessibilityLabel("Close \(kind)")
                     .keyboardShortcut(.cancelAction)
                 VStack(spacing: 2) {
                     Text(item.filename).lineLimit(1)
@@ -150,7 +167,7 @@ private struct ImagePreviewPage: View {
                 Button { sharing = true } label: {
                     Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Share image")
+                .accessibilityLabel("Share \(kind)")
                 .disabled(state.file == nil)
             }
             .padding(.horizontal, 8)

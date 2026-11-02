@@ -44,7 +44,7 @@ public final class ShareCaptureModel {
     public func save() -> String? {
         if let savedItemID { return savedItemID }
         guard canSave else { return nil }
-        let text = [sharedText, extraText].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
+        let text = [sharedText, extraText].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n")
         do {
             let id = try store.capture(text: text, attachmentIDs: attachments.map(\.id), to: destination, nowUs: Time.nowUs())
             savedItemID = id
@@ -52,6 +52,16 @@ public final class ShareCaptureModel {
             error = nil
             return id
         } catch { self.error = error.localizedDescription; return nil }
+    }
+
+    public func newTopicProblem(named name: String) -> String? {
+        try? store.pickerTopicProblem(named: name)
+    }
+
+    public func chooseNewTopic(named name: String) throws {
+        let id = try store.pickerTopic(named: name, nowUs: Time.nowUs())
+        topics = try store.places().topics
+        destination = .topic(id)
     }
 
     public func cancel() {
@@ -76,7 +86,16 @@ func pushSharedCapture(_ itemID: String, store: Store, secrets: SecretStore) asy
     guard let op = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any], let opID = op["id"] as? String else {
         throw SyncFailure.failed("Couldn't read the saved Capture")
     }
-    let body = try JSONSerialization.data(withJSONObject: ["device_id": store.deviceID(), "ops": [op]])
+    // Pushing the Capture alone would send it to a Topic the Server hasn't heard of yet.
+    var ops = [op]
+    var createID: String?
+    if let topicID = op["topic_id"] as? String, let createJSON = try await store.pool.read({ db in
+        try String.fetchOne(db, sql: "SELECT op FROM outbox WHERE json_extract(op, '$.type') = 'CreateTopic' AND json_extract(op, '$.topic_id') = ?", arguments: [topicID])
+    }), let create = try JSONSerialization.jsonObject(with: Data(createJSON.utf8)) as? [String: Any] {
+        ops.insert(create, at: 0)
+        createID = create["id"] as? String
+    }
+    let body = try JSONSerialization.data(withJSONObject: ["device_id": store.deviceID(), "ops": ops])
     let answer = try await SyncHTTP.live.send(server, path: "/sync/push", secret: secret, body: body, timeoutSeconds: 8)
     struct Response: Decodable {
         struct Result: Decodable {
@@ -87,10 +106,13 @@ func pushSharedCapture(_ itemID: String, store: Store, secrets: SecretStore) asy
         let results: [Result]
     }
     let response = try JSONDecoder().decode(Response.self, from: answer)
-    guard response.results.count == 1, let result = response.results.first, result.op_id == opID,
+    guard response.results.count == ops.count, Set(response.results.map(\.op_id)) == Set(ops.compactMap { $0["id"] as? String }),
+          let result = response.results.first(where: { $0.op_id == opID }),
           result.status == "accepted" || result.status == "rejected" || (result.status == "changed" && result.reason == "sent_to_inbox") else {
         throw SyncFailure.failed("Couldn't confirm the Capture")
     }
+    // Anything but "accepted" stays queued so the next cycle gets the Server's stored answer and tells the user.
+    let sentCreateID = response.results.contains { $0.op_id == createID && $0.status == "accepted" } ? createID : nil
     try await store.pool.write { db in
         guard try String.fetchOne(db, sql: "SELECT server_url FROM device") == server,
               try Int64.fetchOne(db, sql: "SELECT transfer_generation FROM device") == generation else {
@@ -101,7 +123,7 @@ func pushSharedCapture(_ itemID: String, store: Store, secrets: SecretStore) asy
         } else if result.status == "changed" {
             try db.execute(sql: "UPDATE items SET topic_id = NULL WHERE id = ?", arguments: [itemID])
         }
-        try db.execute(sql: "DELETE FROM outbox WHERE json_extract(op, '$.id') = ?", arguments: [opID])
+        try db.execute(sql: "DELETE FROM outbox WHERE json_extract(op, '$.id') IN (?, ?)", arguments: [opID, sentCreateID])
     }
     guard result.status != "rejected" else { throw ShareCaptureFailure.refused }
     return result.status == "changed"

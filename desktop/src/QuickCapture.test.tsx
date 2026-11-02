@@ -14,11 +14,21 @@ type Call = { cmd: string; args: any };
 
 function quickBackend(opts: { topics?: () => Topic[]; captureError?: string; captureGate?: Promise<void>; staged?: Staged[]; stageGate?: Promise<void> } = {}) {
   const calls: Call[] = [];
+  const created: Topic[] = [];
   mockWindows("quick-capture");
   mockIPC(
     async (cmd, args) => {
       calls.push({ cmd, args });
-      if (cmd === "list_topics") return opts.topics?.() ?? [];
+      const { name } = (args ?? {}) as { name: string };
+      if (cmd === "list_topics") return [...(opts.topics?.() ?? []), ...created];
+      if (cmd === "picker_topic") {
+        const same = [...(opts.topics?.() ?? []), ...created].find((t) => t.name.toLowerCase() === name.trim().toLowerCase());
+        if (same?.archived) throw "An archived Topic has that name";
+        if (same) return same;
+        created.push(topic("new", name.trim()));
+        await emit("items-changed");
+        return created[0];
+      }
       if (cmd === "capture") {
         await opts.captureGate;
         if (opts.captureError) throw opts.captureError;
@@ -104,6 +114,74 @@ test("opening the Topic picker doesn't send the draft", async () => {
   await choose("Gym");
   expect(count(calls, "capture")).toBe(0);
   expect(box()).toHaveValue("draft");
+});
+
+test("the Topic picker filters as you type and Enter picks the first match", async () => {
+  quickBackend({ topics: () => [topic("t2", "Work"), topic("t1", "Gym"), topic("t3", "Woodwork")] });
+  render(<QuickCapture />);
+  await userEvent.click(picker());
+  const filter = screen.getByRole("searchbox", { name: "Find or create a Topic" });
+  expect(filter).toHaveFocus();
+  await userEvent.type(filter, "wo");
+  expect(screen.getAllByRole("menuitemradio").map((i) => i.textContent)).toEqual(["Woodwork", "Work"]);
+  expect(screen.getByRole("menuitem", { name: "Create “wo”" })).toBeInTheDocument();
+  await userEvent.type(filter, "{Enter}");
+  expect(picker()).toHaveTextContent("Woodwork");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+});
+
+test("New Topic… sits below the scrolling list, so it shows however many Topics there are", async () => {
+  quickBackend({ topics: () => Array.from({ length: 30 }, (_, i) => topic(`t${i}`, `Topic ${i}`)) });
+  render(<QuickCapture />);
+  await userEvent.click(picker());
+  const list = screen.getByRole("menuitemradio", { name: "Topic 0" }).parentElement!;
+  expect(list).toContainElement(screen.getByRole("menuitemradio", { name: "Topic 29" }));
+  expect(list).not.toContainElement(screen.getByRole("menuitem", { name: "New Topic…" }));
+});
+
+test("New Topic… opens the New Topic dialog, which makes the Topic and returns to the draft; Escape closes only the dialog", async () => {
+  const calls = quickBackend({ topics: () => [topic("t1", "Gym")] });
+  render(<QuickCapture />);
+  await userEvent.type(box(), "tile ideas");
+  await userEvent.click(picker());
+  await userEvent.click(screen.getByRole("menuitem", { name: "New Topic…" }));
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  let name = screen.getByRole("textbox", { name: "Topic name" });
+  expect(name).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(count(calls, "dismiss_quick_capture")).toBe(0);
+  expect(box()).toHaveFocus();
+  await userEvent.click(picker());
+  await userEvent.click(screen.getByRole("menuitem", { name: "New Topic…" }));
+  name = screen.getByRole("textbox", { name: "Topic name" });
+  await userEvent.type(name, "Mosaic{Enter}");
+  await waitFor(() => expect(picker()).toHaveTextContent("Mosaic"));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(calls.filter((c) => c.cmd === "picker_topic").map((c) => c.args)).toEqual([{ name: "Mosaic" }]);
+  expect(count(calls, "capture")).toBe(0);
+  expect(box()).toHaveFocus();
+  await userEvent.type(box(), "{Enter}");
+  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args).toEqual({ text: "tile ideas", attachmentIds: [], target: { kind: "topic", id: "new" } }));
+});
+
+test("Escape steps back one level at a time; an archived name is refused in place", async () => {
+  const calls = quickBackend({ topics: () => [topic("o", "Old", true)] });
+  render(<QuickCapture />);
+  await userEvent.click(picker());
+  const filter = screen.getByRole("searchbox", { name: "Find or create a Topic" });
+  await userEvent.type(filter, "old{Enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("An archived Topic has that name");
+  expect(filter).toHaveValue("old");
+  await userEvent.type(filter, "{Escape}");
+  expect(filter).toHaveValue("");
+  expect(screen.getByRole("menu", { name: "Topic" })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(picker()).toHaveTextContent("Inbox");
+  fireEvent.keyDown(box(), { key: "Escape", keyCode: 229 });
+  fireEvent.keyDown(box(), { key: "Escape", isComposing: true });
+  expect(count(calls, "capture") + count(calls, "dismiss_quick_capture")).toBe(0);
 });
 
 test("Escape dismisses without clearing; hiding then unstages, clears and goes back to the Inbox", async () => {

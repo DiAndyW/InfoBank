@@ -6,6 +6,7 @@ import UIKit
 final class ShareViewController: UIViewController {
     private var importTask: Task<Void, Never>?
     private var model: ShareCaptureModel?
+    private var finished = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -21,7 +22,9 @@ final class ShareViewController: UIViewController {
             // Disable Save before the first render, including text supplied by the host.
             model.beginImport()
             let view = ShareComposer(model: model, store: store, secrets: secrets, cancel: { [weak self] in self?.cancel() }, finish: { [weak self] in
-                self?.extensionContext?.completeRequest(returningItems: nil)
+                guard let self, !self.finished else { return }
+                self.finished = true
+                self.extensionContext?.completeRequest(returningItems: nil)
             })
             embed(UIHostingController(rootView: view))
             importTask = Task {
@@ -69,6 +72,7 @@ private struct ShareComposer: View {
     @State private var saving = false
     @State private var savedMessage: String?
     @State private var deliveryTask: Task<Void, Never>?
+    @State private var naming = false
 
     var body: some View {
         NavigationStack {
@@ -112,10 +116,21 @@ private struct ShareComposer: View {
                         Section {
                             Toggle("Tunnel", isOn: $tunnelOn)
                             if !tunnelOn {
-                                Picker("Save to", selection: $model.destination) {
-                                    Text("Inbox").tag(Destination.inbox)
-                                    ForEach(model.topics) { topic in
-                                        Text(topic.name).tag(Destination.topic(topic.id))
+                                LabeledContent("Save to") {
+                                    Menu {
+                                        Button("New Topic…", systemImage: "plus") { naming = true }
+                                        Picker("Save to", selection: $model.destination) {
+                                            Text("Inbox").tag(Destination.inbox)
+                                            ForEach(model.topics) { topic in
+                                                Text(topic.name).tag(Destination.topic(topic.id))
+                                            }
+                                        }
+                                        .pickerStyle(.inline)
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Text(model.topics.first { .topic($0.id) == model.destination }?.name ?? "Inbox").lineLimit(1)
+                                            Image(systemName: "chevron.up.chevron.down").imageScale(.small)
+                                        }
                                     }
                                 }
                             }
@@ -143,6 +158,7 @@ private struct ShareComposer: View {
                 }
             }
         }
+        .newTopicDialog(isPresented: $naming, problem: model.newTopicProblem(named:), create: model.chooseNewTopic(named:))
         .interactiveDismissDisabled(saving)
         .onDisappear { deliveryTask?.cancel() }
     }
@@ -163,6 +179,8 @@ private struct ShareComposer: View {
             switch result {
             case .sent:
                 savedMessage = ""
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                finish()
             case .sentToInbox:
                 savedMessage = "Saved to Inbox because the selected Topic is no longer available"
             case .refused:

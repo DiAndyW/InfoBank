@@ -8,13 +8,16 @@ import UniformTypeIdentifiers
 private struct PickedPhoto: Transferable {
     let url: URL
     static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(importedContentType: .image) { received in
-            let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let target = directory.appending(path: received.file.lastPathComponent)
-            try FileManager.default.copyItem(at: received.file, to: target)
-            return PickedPhoto(url: target)
-        }
+        FileRepresentation(importedContentType: .image, importing: copy)
+        FileRepresentation(importedContentType: .movie, importing: copy)
+    }
+
+    @Sendable private static func copy(_ received: ReceivedTransferredFile) throws -> PickedPhoto {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = directory.appending(path: received.file.lastPathComponent)
+        try FileManager.default.copyItem(at: received.file, to: target)
+        return PickedPhoto(url: target)
     }
 }
 
@@ -48,7 +51,7 @@ struct AttachmentPicker: View {
         }
         .accessibilityLabel("Attach files")
         .disabled(model.isImporting)
-        .photosPicker(isPresented: $showPhotos, selection: $photos, matching: .images, preferredItemEncoding: .current)
+        .photosPicker(isPresented: $showPhotos, selection: $photos, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
         .onChange(of: photos) { _, selected in
             guard !selected.isEmpty else { return }
             model.beginImport()
@@ -59,7 +62,7 @@ struct AttachmentPicker: View {
                         guard let imported = try await photo.loadTransferable(type: PickedPhoto.self) else { throw CocoaError(.fileReadUnknown) }
                         await model.importFile(imported.url)
                         try? FileManager.default.removeItem(at: imported.url.deletingLastPathComponent())
-                    } catch { model.reportImportError("Couldn't import the selected photo") }
+                    } catch { model.reportImportError("Couldn't import the selected photo or video") }
                 }
                 photos = []
             }

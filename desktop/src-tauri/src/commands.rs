@@ -220,6 +220,13 @@ pub async fn create_topic(app: AppHandle, state: State<'_, AppState>, name: Stri
 }
 
 #[tauri::command]
+pub async fn picker_topic(app: AppHandle, state: State<'_, AppState>, name: String) -> Result<topics::Topic, String> {
+    let topic = topics::picker_topic(&state.db.lock().unwrap(), &name, now_us())?;
+    changed(&app, &state);
+    Ok(topic)
+}
+
+#[tauri::command]
 pub async fn rename_topic(app: AppHandle, state: State<'_, AppState>, id: String, name: String) -> Result<(), String> {
     topics::rename(&state.db.lock().unwrap(), &id, &name, now_us())?;
     changed(&app, &state);

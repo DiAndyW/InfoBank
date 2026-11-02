@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -19,9 +20,27 @@ type topic struct {
 	archiveStamp stamp
 }
 
+// The apps show these as built-in places and actions; Topics with the same names would be confusing.
+var builtInNames = map[string]bool{"inbox": true, "tunnel": true, "trash": true, "all items": true, "anywhere": true, "new topic": true}
+
+func topicName(raw string) (string, bool) {
+	name := strings.TrimSpace(raw)
+	visible := false
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+		if !unicode.IsSpace(r) && !unicode.Is(unicode.Cf, r) {
+			visible = true
+		}
+	}
+	base := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(name, "…"), "..."))
+	return name, visible && storable(name, maxTopicNameBytes) && !builtInNames[strings.ToLower(base)]
+}
+
 func (b *batch) createTopic(o pushOp, s stamp) (opResult, error) {
-	name := strings.TrimSpace(o.Name)
-	if o.TopicID == nil || *o.TopicID == uuid.Nil || !storable(name, maxTopicNameBytes) {
+	name, ok := topicName(o.Name)
+	if o.TopicID == nil || *o.TopicID == uuid.Nil || !ok {
 		return rejected("invalid"), nil
 	}
 	if tp, err := b.loadTopic(*o.TopicID); tp != nil || err != nil {
@@ -56,8 +75,8 @@ func (b *batch) changeTopic(o pushOp, s stamp) (opResult, error) {
 	res := accepted()
 	switch o.Type {
 	case "RenameTopic":
-		name := strings.TrimSpace(o.Name)
-		if !storable(name, maxTopicNameBytes) {
+		name, ok := topicName(o.Name)
+		if !ok {
 			return rejected("invalid"), nil
 		}
 		if !s.beats(tp.nameStamp) {

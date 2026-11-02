@@ -129,7 +129,8 @@ struct SearchView: View {
                                 }
                             }
                         }
-                    } label: { chip(placeTitle, trailing: "chevron.down", active: model.place != .all) }
+                    } label: { PlaceChipLabel(title: placeTitle, active: model.place != .all) }
+                        .containerRelativeFrame(.horizontal) { width, _ in width * 0.3 }
                         .accessibilityLabel("Place")
                         .accessibilityValue(placeTitle)
                     Menu {

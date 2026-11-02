@@ -64,11 +64,11 @@ export default function App() {
   const [dragging, setDragging] = useState<{ item: FeedItem; x: number; y: number } | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
 
-  const move = (it: FeedItem, target: Target) =>
+  const move = (it: FeedItem, target: Target, newTopicName?: string) =>
     moveItem(it.id, target).then(
       () => {
-        const place = topics.find((t) => target.kind === "topic" && t.id === target.id);
-        show(target.kind === "tunnel" ? "Moved to the Tunnel" : place ? `Moved to ${place.name}` : "Moved to the Inbox", {
+        const place = topics.find((t) => target.kind === "topic" && t.id === target.id)?.name ?? newTopicName;
+        show(target.kind === "tunnel" ? "Moved to the Tunnel" : place ? `Moved to ${place}` : "Moved to the Inbox", {
           label: "Undo",
           onAction: () => moveItem(it.id, itemTarget(it)).then(() => setHighlight(it.id), (e) => showError("Couldn't move the Item back", e)),
         });

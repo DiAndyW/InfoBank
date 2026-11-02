@@ -108,6 +108,14 @@ struct Checks: View {
         bounded.close()
         results.append("large images decode within 4096 pixels while retaining the original for sharing")
 
+        let video = ImagePreviewState(thumbnail: image, isVideo: true)
+        var videoReleases = 0
+        await video.load(open: { corrupt }, release: { videoReleases += 1 })
+        assert(video.file == corrupt && video.player != nil && video.error == nil && video.image === image)
+        video.close(); video.close()
+        assert(video.player == nil && video.file == nil && videoReleases == 1)
+        results.append("a video is handed to a player without image decoding and released once on close")
+
         let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("result.json")
         try! JSONSerialization.data(withJSONObject: results).write(to: output)
     }

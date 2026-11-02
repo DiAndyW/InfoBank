@@ -3,11 +3,15 @@ import SwiftUI
 
 struct HomeComposerView: View {
     @Bindable var model: ComposerModel
+    let store: Store
     let topics: [TopicPlace]
+    let wake: () -> Void
     @AppStorage("tunnelSwitch", store: Theme.store) private var tunnelOn = false
     @State private var chip = Destination.inbox
     @State private var focusRequest = 0
     @State private var handledRequest: UUID?
+    @State private var naming = false
+    @State private var awaitedTopic: String?
     private let requests = ComposeRequests.shared
     @Environment(\.palette) private var palette
 
@@ -23,6 +27,10 @@ struct HomeComposerView: View {
         if tunnelOn { model.destination = .tunnel }
     }
 
+    private func use(newTopic id: String) {
+        if topics.contains(where: { $0.id == id }) { chip = .topic(id) } else { awaitedTopic = id }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3, focusRequest: focusRequest) { provider, type in
@@ -36,25 +44,25 @@ struct HomeComposerView: View {
                     .frame(minHeight: 44)
                 Text("Tunnel")
                     .font(.plex(.sansMedium, 14, relativeTo: .callout))
+                    .fixedSize()
                     .foregroundStyle(palette.ink)
                     .accessibilityHidden(true)
                 if !tunnelOn {
                     Menu {
+                        Button("New Topic…", systemImage: "plus") { naming = true }
+                        Divider()
                         Button("Inbox") { chip = .inbox }
                         ForEach(topics) { topic in
                             Button(topic.name) { chip = .topic(topic.id) }
                         }
                     } label: {
-                        HStack(spacing: 6) {
-                            Text(chipTitle).lineLimit(1)
-                            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
-                        }
-                        .chipStyle()
+                        PlaceChipLabel(title: chipTitle)
                     }
                     .accessibilityLabel("Destination")
                     .accessibilityValue(chipTitle)
+                } else {
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
                 HStack(spacing: 0) {
                     AttachmentPicker(model: model)
                     Button {
@@ -86,7 +94,19 @@ struct HomeComposerView: View {
         .onAppear(perform: sync)
         .onChange(of: tunnelOn) { sync() }
         .onChange(of: chip) { sync() }
-        .onChange(of: topics) { sync() }
+        .onChange(of: topics) {
+            if let id = awaitedTopic, topics.contains(where: { $0.id == id }) {
+                awaitedTopic = nil
+                chip = .topic(id)
+            }
+            sync()
+        }
+        .newTopicDialog(isPresented: $naming) { name in
+            try? store.pickerTopicProblem(named: name)
+        } create: { name in
+            use(newTopic: try store.pickerTopic(named: name, nowUs: Time.nowUs()))
+            wake()
+        }
         .onChange(of: requests.latest, initial: true) { _, request in
             guard let request, request.id != handledRequest else { return }
             handledRequest = request.id

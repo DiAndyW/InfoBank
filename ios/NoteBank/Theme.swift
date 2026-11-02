@@ -94,6 +94,21 @@ struct ChipStyle: ViewModifier {
     }
 }
 
+// Fills the width it's given, so the name never sizes the chip (on iOS 27 a Menu label sized by its text keeps a stale width).
+struct PlaceChipLabel: View {
+    let title: String
+    var active = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .chipStyle(active: active)
+    }
+}
+
 extension View {
     func card() -> some View { modifier(Card()) }
     func chipStyle(active: Bool = false) -> some View { modifier(ChipStyle(active: active)) }

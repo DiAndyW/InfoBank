@@ -16,6 +16,7 @@ function Attachment({ a }: { a: FeedAttachment }) {
   const [note, setNote] = useState<string | null>(null);
   const [refused, setRefused] = useState(false);
   const image = !a.runnable && (a.has_thumbnail || a.mime_type.startsWith("image/"));
+  const video = a.mime_type.startsWith("video/");
 
   useEffect(() => {
     if (!image) return;
@@ -61,9 +62,16 @@ function Attachment({ a }: { a: FeedAttachment }) {
     );
   }
   return image ? (
-    <button type="button" className="nb-thumb" onClick={open} aria-label={`Open ${a.filename}`}>
+    <button type="button" className="nb-thumb" onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
       {src ? (
-        <img src={src} alt={a.filename} onError={() => setSrc(null)} />
+        <>
+          <img src={src} alt={a.filename} onError={() => setSrc(null)} />
+          {video && (
+            <span className="nb-thumb-play">
+              <Icon name="play" size={20} />
+            </span>
+          )}
+        </>
       ) : (
         <span className="nb-thumb-ph">
           <Icon name="image" />

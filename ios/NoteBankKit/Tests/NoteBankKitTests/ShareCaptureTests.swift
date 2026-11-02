@@ -47,7 +47,7 @@ struct ShareCaptureTests {
         model.endImport()
         let id = try #require(model.save())
         #expect(model.save() == id)
-        #expect(try store.items(in: .inbox, before: nil, limit: 10).first?.text == "first\n\nhttps://example.com\n\nmy comment")
+        #expect(try store.items(in: .inbox, before: nil, limit: 10).first?.text == "first\n\nhttps://example.com\nmy comment")
         #expect(try store.items(in: .inbox, before: nil, limit: 10).count == 1)
     }
 

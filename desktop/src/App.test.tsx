@@ -97,6 +97,16 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
         return null;
       }
       if (cmd === "create_topic") return { id: "new", name: (args as { name: string }).name.trim(), archived: false, item_count: 0 };
+      if (cmd === "picker_topic") {
+        const name = (args as { name: string }).name.trim();
+        const same = (opts.topics ?? []).find((t) => t.name.toLowerCase() === name.toLowerCase());
+        if (same?.archived) throw "An archived Topic has that name";
+        if (same) return same;
+        const created = { id: "new", name, archived: false, item_count: 0 };
+        opts.topics = [...(opts.topics ?? []), created];
+        await emit("items-changed");
+        return created;
+      }
       if (["rename_topic", "archive_topic", "unarchive_topic", "delete_topic", "move_item"].includes(cmd)) return null;
       if (cmd === "plugin:opener|open_url") return null;
     },
@@ -301,6 +311,37 @@ test("Items show oldest at the top, with day dividers and a pending marker", asy
   expect(within(articles[0]).queryByLabelText("Not synced yet")).not.toBeInTheDocument();
 });
 
+const atSecond = (y: number, mo: number, d: number, h: number, mi: number, s: number) => new Date(y, mo - 1, d, h, mi, s).getTime() * 1000;
+
+test("an Item captured in the same minute as the one above keeps its time only for hover and screen readers", async () => {
+  backend(configured, {
+    items: () => [
+      feedItem("4", "next day", atSecond(2026, 10, 15, 9, 41, 20)),
+      feedItem("3", "next minute", atSecond(2026, 10, 14, 9, 42, 0)),
+      feedItem("2", "same minute", atSecond(2026, 10, 14, 9, 41, 59)),
+      feedItem("1", "first", atSecond(2026, 10, 14, 9, 41, 5)),
+    ],
+  });
+  const { container } = render(<App />);
+  await screen.findByText("next day");
+  const times = [...container.querySelectorAll<HTMLElement>(".nb-feed-scroll time")];
+  expect(times.map((t) => t.classList.contains("nb-reveal"))).toEqual([false, true, false, false]);
+  expect(times.every((t) => t.textContent)).toBe(true);
+});
+
+test("Trash shows every Item's time", async () => {
+  backend(configured, {
+    items: () => [
+      { ...feedItem("2", "same minute", atSecond(2026, 10, 14, 9, 41, 59)), purge_at_us: Date.now() * 1000 },
+      { ...feedItem("1", "first", atSecond(2026, 10, 14, 9, 41, 5)), purge_at_us: Date.now() * 1000 },
+    ],
+  });
+  localStorage.setItem("place", "trash");
+  const { container } = render(<App />);
+  await screen.findByText("same minute");
+  expect(container.querySelectorAll(".nb-feed-scroll time.nb-reveal")).toHaveLength(0);
+});
+
 test("a link opens in the browser", async () => {
   const calls = backend(configured, {
     items: () => [feedItem("1", "read https://example.com/x.", at(2026, 10, 14, 9, 41))],
@@ -345,7 +386,7 @@ test("scrolling to the top loads older Items", async () => {
   await vi.waitFor(() =>
     expect(calls).toContainEqual({
       cmd: "list_items",
-      args: { view: { kind: "all" }, before: { capture_time_us: at(2026, 10, 14, 9, 41), id: "1" } },
+      args: { view: { kind: "all" }, before: { capture_time_us: at(2026, 10, 14, 9, 41), id: "1", purge_at_us: null } },
     }),
   );
 });
@@ -551,6 +592,31 @@ test("an image with a thumbnail shows it from local storage", async () => {
   expect(img).toHaveAttribute("src", expect.stringContaining("asset://localhost/"));
 });
 
+test("a video with a poster shows it with a play badge and opens in the default app", async () => {
+  const clip: FeedAttachment = { ...photo, id: "a4", filename: "clip.mov", mime_type: "video/quicktime", size_bytes: 40_000_000 };
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [clip])],
+    thumbnail: "/data/thumbnails/a4.jpg",
+  });
+  render(<App />);
+  expect(await screen.findByRole("img", { name: "clip.mov" })).toHaveAttribute("src", expect.stringContaining("asset://localhost/"));
+  const button = screen.getByRole("button", { name: "Play clip.mov" });
+  expect(button.querySelector(".nb-thumb-play")).not.toBeNull();
+  await userEvent.click(button);
+  expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: "a4" } });
+});
+
+test("a video without a poster stays a file chip", async () => {
+  const clip: FeedAttachment = { ...report, id: "a4", filename: "clip.mov", mime_type: "video/quicktime", size_bytes: 40_000_000 };
+  const calls = backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [clip])] });
+  render(<App />);
+  const chip = await screen.findByRole("button", { name: "Open clip.mov" });
+  expect(chip).toHaveClass("nb-file");
+  expect(screen.getByText("38.1 MB")).toBeInTheDocument();
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  expect(calls.some((c) => c.cmd === "thumbnail")).toBe(false);
+});
+
 test("a stored theme that isn't one falls back to Warm paper", async () => {
   localStorage.setItem("theme", "toString");
   backend(configured);
@@ -742,6 +808,18 @@ test("Rename edits a Topic's name in place", async () => {
 
 const filed = (id: string, text: string, topic_id: string | null): FeedItem => ({ ...feedItem(id, text, at(2026, 10, 14, 9, 41)), topic_id });
 
+test("a submenu that would run past the bottom of the window opens upward instead", async () => {
+  backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    return { top: 500, bottom: this.classList.contains("nb-submenu") ? window.innerHeight + 80 : 540, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+  });
+  await userEvent.hover(screen.getByRole("menuitem", { name: "Move to" }));
+  expect(screen.getByRole("menu", { name: "Move to" })).toHaveClass("up");
+  rect.mockRestore();
+});
+
 test("Move to… lists the Inbox and open Topics, with the current place ticked", async () => {
   const calls = backend(configured, {
     topics: [topic("g", "Gym"), topic("w", "Work"), topic("o", "Old", { archived: true })],
@@ -750,8 +828,8 @@ test("Move to… lists the Inbox and open Topics, with the current place ticked"
   render(<App />);
   const article = await screen.findByRole("article");
   await userEvent.click(within(article).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
-  const targets = within(screen.getByRole("menu", { name: "Move to…" })).getAllByRole("menuitemradio");
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
+  const targets = within(screen.getByRole("menu", { name: "Move to" })).getAllByRole("menuitemradio");
   expect(targets.map((t) => [t.textContent?.replace(" ✓", ""), t.getAttribute("aria-checked")])).toEqual([
     ["Inbox", "true"],
     ["Tunnel", "false"],
@@ -762,11 +840,27 @@ test("Move to… lists the Inbox and open Topics, with the current place ticked"
   expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", target: { kind: "topic", id: "g" } } });
 });
 
+test("Move to filters its places as you type and keeps New Topic… below the list", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym"), topic("w", "Work")], items: () => [filed("1", "squat 100", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.keyboard("{ArrowDown}{ArrowRight}");
+  const filter = screen.getByRole("searchbox", { name: "Find a place" });
+  expect(filter).toHaveFocus();
+  await userEvent.type(filter, "w");
+  expect(within(screen.getByRole("menu", { name: "Move to" })).getAllByRole("menuitemradio").map((t) => t.textContent)).toEqual(["Work"]);
+  expect(screen.getByRole("menuitem", { name: "New Topic…" })).toBeInTheDocument();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(screen.getByRole("menuitemradio", { name: "Work" })).toHaveFocus();
+  await userEvent.keyboard("{Enter}");
+  expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", target: { kind: "topic", id: "w" } } });
+});
+
 test("moving an Item to where it is does nothing", async () => {
   const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Inbox" }));
   expect(calls.some((c) => c.cmd === "move_item")).toBe(false);
 });
@@ -795,7 +889,7 @@ test("Move to… also says where the Item went", async () => {
   backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
   expect(await screen.findByText("Moved to Gym")).toBeInTheDocument();
 });
@@ -847,7 +941,7 @@ test("a failed move is shown in a dialog", async () => {
   });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
   expect(await screen.findByRole("alertdialog", { name: "Couldn't move the Item" })).toHaveTextContent("That Topic is archived");
 });
@@ -1003,7 +1097,7 @@ test("closing the Error dialog returns focus to what opened it", async () => {
   backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)], failing: { move_item: "That Topic is archived" } });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
   await userEvent.click(await screen.findByRole("button", { name: "OK" }));
   expect(screen.getByRole("button", { name: "Item actions" })).toHaveFocus();
@@ -1188,12 +1282,14 @@ test("arrow keys move through a menu and open and close its submenu", async () =
   await userEvent.keyboard("{Home}");
   expect(screen.getByRole("menuitem", { name: "Edit" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}{ArrowRight}");
+  expect(screen.getByRole("searchbox", { name: "Find a place" })).toHaveFocus();
+  await userEvent.keyboard("{ArrowDown}");
   expect(screen.getByRole("menuitemradio", { name: "Inbox" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   expect(screen.getByRole("menuitemradio", { name: "Gym" })).toHaveFocus();
   await userEvent.keyboard("{ArrowLeft}");
   expect(screen.queryByRole("menuitemradio", { name: "Gym" })).not.toBeInTheDocument();
-  expect(screen.getByRole("menuitem", { name: "Move to…" })).toHaveFocus();
+  expect(screen.getByRole("menuitem", { name: "Move to" })).toHaveFocus();
 });
 
 test("Copy text puts the Item's text on the clipboard", async () => {
@@ -1281,12 +1377,12 @@ const trashOf = async (text: string, user: { click: (el: Element) => Promise<voi
   await user.click(screen.getByRole("menuitem", { name: "Move to Trash" }));
 };
 
-test("the Item menu is Edit, Move to…, Copy text, then Move to Trash in red after a separator", async () => {
+test("the Item menu is Edit, Move to, Copy text, then Move to Trash in red after a separator", async () => {
   backend(configured, { items: () => [filed("1", "squat 100", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
   const menu = screen.getByRole("menu", { name: "Item actions" });
-  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Edit", "Move to…", "Copy text", "Move to Trash"]);
+  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Edit", "Move to", "Copy text", "Move to Trash"]);
   expect(within(menu).getByRole("separator")).toBeInTheDocument();
   expect(within(menu).getByRole("menuitem", { name: "Move to Trash" })).toHaveClass("is-danger");
 });
@@ -1594,23 +1690,24 @@ const inTrash = (it: FeedItem, daysLeft: number | null): FeedItem => ({
 });
 const rowOf = (text: string) => screen.getByText(text).closest("article") as HTMLElement;
 
-test("Trash lists deleted Items with where Restore puts them and days left, with no menu or editing", async () => {
+test("Trash groups deleted Items under days remaining, soonest first, with where Restore puts them and no menu or editing", async () => {
   const calls = backend(configured, {
     topics: [topic("g", "Gym")],
     items: ({ view }) =>
       view.kind === "trash"
-        ? [inTrash(filed("1", "old shoe sizes", "g"), 15), inTrash(filed("2", "deadlift", null), 1), { ...inTrash(filed("3", "just now", null), null), pending: true }]
+        ? [{ ...inTrash(filed("3", "just now", null), null), pending: true }, inTrash(filed("1", "old shoe sizes", "g"), 15), inTrash(filed("4", "socks", null), 15), inTrash(filed("2", "deadlift", null), 1)]
         : [],
   });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
   await screen.findByText("old shoe sizes");
+  expect(screen.getAllByRole("separator").map((s) => s.textContent)).toEqual(["1 day remaining", "15 days remaining", "Waiting for sync"]);
+  expect(screen.getAllByRole("article").map((a) => a.querySelector(".nb-item-text")?.textContent)).toEqual(["deadlift", "socks", "old shoe sizes", "just now"]);
   expect(within(rowOf("old shoe sizes")).getByText("Gym")).toBeInTheDocument();
-  expect(within(rowOf("old shoe sizes")).getByText("15 days left")).toBeInTheDocument();
   expect(within(rowOf("deadlift")).getByText("Inbox")).toBeInTheDocument();
-  expect(within(rowOf("deadlift")).getByText("1 day left")).toBeInTheDocument();
-  expect(within(rowOf("just now")).queryByText(/left$/)).not.toBeInTheDocument();
+  expect(within(rowOf("deadlift")).queryByText(/left$/)).not.toBeInTheDocument();
   expect(within(rowOf("just now")).getByLabelText("Not synced yet")).toBeInTheDocument();
+  expect(rowOf("old shoe sizes").querySelector("time")).toBeNull();
   expect(screen.queryByRole("button", { name: "Item actions" })).not.toBeInTheDocument();
   await userEvent.dblClick(screen.getByText("deadlift"));
   expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
@@ -2031,46 +2128,52 @@ test("a submenu opened by hovering closes when the pointer leaves it", async () 
   render(<App />);
   await screen.findByText("hello");
   await userEvent.click(screen.getByRole("button", { name: "Item actions" }));
-  const moveTo = screen.getByRole("menuitem", { name: "Move to…" });
+  const moveTo = screen.getByRole("menuitem", { name: "Move to" });
   await userEvent.hover(moveTo);
-  expect(screen.getByRole("menu", { name: "Move to…" })).toBeInTheDocument();
+  expect(screen.getByRole("menu", { name: "Move to" })).toBeInTheDocument();
   await userEvent.unhover(moveTo);
-  expect(screen.queryByRole("menu", { name: "Move to…" })).not.toBeInTheDocument();
+  await vi.waitFor(() => expect(screen.queryByRole("menu", { name: "Move to" })).not.toBeInTheDocument());
   expect(screen.getByRole("menu", { name: "Item actions" })).toBeInTheDocument();
 });
 
-test("moving from Move to… toward its submenu keeps it open; straying outside that path or stopping short closes it", async () => {
+test("heading toward the Move to submenu keeps it open even across other rows; pausing or backing off closes it", async () => {
   backend(configured, { topics: [topic("t", "Taxes")], items: () => [feedItem("1", "hello", at(2026, 10, 14, 9, 41))] });
   render(<App />);
   await screen.findByText("hello");
   await userEvent.click(screen.getByRole("button", { name: "Item actions" }));
-  const moveTo = screen.getByRole("menuitem", { name: "Move to…" });
+  const moveTo = screen.getByRole("menuitem", { name: "Move to" });
   const open = async () => {
     await userEvent.hover(moveTo);
-    const sub = screen.getByRole("menu", { name: "Move to…" });
-    // The submenu opens to the left: its near edge is x = 100, from y = 0 to 200.
+    const sub = screen.getByRole("menu", { name: "Move to" });
+    // Opened upward and to the left: near edge x = 100, bottom just 5 px below the Move to row.
     vi.spyOn(sub, "getBoundingClientRect").mockReturnValue({ left: 0, right: 100, top: 0, bottom: 200, x: 0, y: 0, width: 100, height: 200, toJSON: () => ({}) });
   };
-  const subOpen = () => screen.queryByRole("menu", { name: "Move to…" }) !== null;
+  const subOpen = () => screen.queryByRole("menu", { name: "Move to" }) !== null;
   const wrap = moveTo.parentElement!;
+  const copyText = screen.getByRole("menuitem", { name: "Copy text" });
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   await open();
-  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
-  fireEvent.mouseMove(document, { clientX: 105, clientY: 60 });
+  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+  fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
+  await pause(250);
+  fireEvent.mouseMove(copyText, { clientX: 150, clientY: 210 });
+  await pause(250);
   expect(subOpen()).toBe(true);
-  await userEvent.hover(within(screen.getByRole("menu", { name: "Move to…" })).getByRole("menuitemradio", { name: "Taxes" }));
-  await new Promise((r) => setTimeout(r, 500));
+  await userEvent.hover(within(screen.getByRole("menu", { name: "Move to" })).getByRole("menuitemradio", { name: "Taxes" }));
+  await pause(500);
   expect(subOpen()).toBe(true);
 
   await open();
-  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
-  fireEvent.mouseMove(document, { clientX: 120, clientY: 60 });
-  expect(subOpen()).toBe(false);
-
-  await open();
-  fireEvent.mouseLeave(wrap, { clientX: 110, clientY: 10, relatedTarget: document.body });
-  fireEvent.mouseMove(document, { clientX: 105, clientY: 60 });
+  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+  fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
   await vi.waitFor(() => expect(subOpen()).toBe(false));
+
+  await open();
+  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+  fireEvent.mouseMove(copyText, { clientX: 248, clientY: 205 });
+  fireEvent.mouseMove(copyText, { clientX: 251, clientY: 215 });
+  expect(subOpen()).toBe(false);
 });
 
 const openSettings = async () => userEvent.click(await screen.findByRole("button", { name: "Settings" }));
@@ -2543,7 +2646,7 @@ test("Move to Tunnel and Undo preserve the original place", async () => {
   const calls = backend(configured, { items: () => [filed("1", "move this", "g")], topics: [topic("g", "Gym")] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
-  await userEvent.click(screen.getByRole("menuitem", { name: "Move to…" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Tunnel" }));
   expect(await screen.findByText("Moved to the Tunnel")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -2699,6 +2802,108 @@ test("Home and Topic feeds share the unsent draft but Topic capture stays fixed"
   expect(calls).toContainEqual({ cmd: "capture", args: { text: "keep draft", attachmentIds: [], target: { kind: "topic", id: "g" } } });
   await userEvent.click(screen.getByRole("button", { name: "Home" }));
   expect(screen.getByRole("switch", { name: "Tunnel" })).toBeInTheDocument();
+});
+
+test("typing a new name in the destination offers Create, which picks the new Topic without sending the draft", async () => {
+  const calls = backend(configured);
+  localStorage.removeItem("place");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "tile ideas");
+  await userEvent.click(screen.getByRole("button", { name: "Topic" }));
+  await userEvent.type(screen.getByRole("searchbox", { name: "Find or create a Topic" }), "Mosaic");
+  expect(screen.getByRole("menuitem", { name: "Create “Mosaic”" })).toBeInTheDocument();
+  await userEvent.keyboard("{Enter}");
+  expect(calls).toContainEqual({ cmd: "picker_topic", args: { name: "Mosaic" } });
+  expect(calls.some((c) => c.cmd === "capture" || c.cmd === "create_topic")).toBe(false);
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Mosaic"));
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(box).toHaveFocus();
+  await userEvent.type(box, "{Enter}");
+  expect(calls).toContainEqual({ cmd: "capture", args: { text: "tile ideas", attachmentIds: [], target: { kind: "topic", id: "new" } } });
+});
+
+test("typing an open Topic's name offers no Create, and Enter picks that Topic", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")] });
+  localStorage.removeItem("place");
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Topic" }));
+  await userEvent.type(screen.getByRole("searchbox", { name: "Find or create a Topic" }), "gym");
+  expect(screen.queryByRole("menuitem", { name: /^Create/ })).not.toBeInTheDocument();
+  await userEvent.keyboard("{Enter}");
+  expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Gym");
+  expect(calls.some((c) => c.cmd === "picker_topic")).toBe(false);
+});
+
+test("Create with an archived Topic's name shows the error and keeps the name; Escape clears it, then closes the menu", async () => {
+  const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })] });
+  localStorage.removeItem("place");
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Topic" }));
+  const filter = screen.getByRole("searchbox", { name: "Find or create a Topic" });
+  await userEvent.type(filter, "old");
+  await userEvent.click(screen.getByRole("menuitem", { name: "Create “old”" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("An archived Topic has that name");
+  expect(filter).toHaveValue("old");
+  await userEvent.type(filter, "{Escape}");
+  expect(filter).toHaveValue("");
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("menuitem", { name: "New Topic…" })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Inbox");
+  expect(calls.filter((c) => c.cmd === "picker_topic")).toHaveLength(1);
+});
+
+test("the composer's New Topic… opens the same dialog as Move to, and a refused name stays in it", async () => {
+  const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })] });
+  localStorage.removeItem("place");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "tile ideas");
+  await userEvent.click(screen.getByRole("button", { name: "Topic" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "New Topic…" }));
+  const dialog = screen.getByRole("dialog", { name: "New Topic" });
+  await userEvent.type(within(dialog).getByRole("textbox", { name: "Topic name" }), "old{Enter}");
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("An archived Topic has that name");
+  await userEvent.clear(within(dialog).getByRole("textbox", { name: "Topic name" }));
+  await userEvent.type(within(dialog).getByRole("textbox", { name: "Topic name" }), "Mosaic");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Mosaic"));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("tile ideas");
+  expect(calls.some((c) => c.cmd === "capture")).toBe(false);
+});
+
+test("Move to… ends with New Topic…, which creates the Topic and moves the Item into it", async () => {
+  const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "tile ideas", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
+  const create = screen.getByRole("menuitem", { name: "New Topic…" });
+  expect(screen.getByRole("menu", { name: "Move to" }).lastElementChild).toBe(create);
+  await userEvent.click(create);
+  const dialog = await screen.findByRole("dialog", { name: "New Topic" });
+  await userEvent.type(within(dialog).getByRole("textbox", { name: "Topic name" }), "Mosaic{Enter}");
+  await vi.waitFor(() => expect(moves(calls)).toEqual([{ itemId: "1", target: { kind: "topic", id: "new" } }]));
+  expect(calls).toContainEqual({ cmd: "picker_topic", args: { name: "Mosaic" } });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(await screen.findByText("Moved to Mosaic")).toBeInTheDocument();
+});
+
+test("Move to… New Topic… with an archived Topic's name keeps the dialog open and moves nothing", async () => {
+  const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })], items: () => [filed("1", "x", null)] });
+  render(<App />);
+  await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "New Topic…" }));
+  await userEvent.type(await screen.findByRole("textbox", { name: "Topic name" }), "OLD{Enter}");
+  expect(await screen.findByRole("alert")).toHaveTextContent("An archived Topic has that name");
+  expect(screen.getByRole("dialog", { name: "New Topic" })).toBeInTheDocument();
+  expect(moves(calls)).toEqual([]);
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });
 
 test("Home drops a now-archived destination without discarding the draft", async () => {

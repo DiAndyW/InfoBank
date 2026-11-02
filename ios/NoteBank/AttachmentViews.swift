@@ -20,11 +20,13 @@ struct AttachmentView: View {
     @State private var pinned = false
     @State private var visible = false
 
+    private var isVideo: Bool { attachment.mimeType.hasPrefix("video/") }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button {
                 guard !loading, let transfers else { return }
-                if attachment.mimeType.hasPrefix("image/") {
+                if attachment.mimeType.hasPrefix("image/") || isVideo {
                     showingImage = true
                     return
                 }
@@ -45,8 +47,15 @@ struct AttachmentView: View {
                     if let thumbnail, let image = UIImage(contentsOfFile: thumbnail.path) {
                         Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 180)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay { if loading { ProgressView().padding(8).background(.regularMaterial, in: Circle()) } }
-                    } else if thumbnailPending && attachment.mimeType.hasPrefix("image/") {
+                            .overlay {
+                                if loading { ProgressView().padding(8).background(.regularMaterial, in: Circle()) }
+                                else if isVideo {
+                                    Image(systemName: "play.circle.fill").font(.largeTitle)
+                                        .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.55))
+                                        .shadow(radius: 2)
+                                }
+                            }
+                    } else if thumbnailPending && (attachment.mimeType.hasPrefix("image/") || isVideo) {
                         // Reserves the thumbnail's height so rows don't grow after the Feed scrolls to an Item.
                         RoundedRectangle(cornerRadius: 8).fill(palette.chip).frame(maxWidth: .infinity).frame(height: 180)
                     } else {
@@ -63,7 +72,7 @@ struct AttachmentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open \(attachment.filename)")
+            .accessibilityLabel("\(isVideo ? "Play" : "Open") \(attachment.filename)")
             if let error = error ?? attachment.uploadError {
                 Label(error, systemImage: "exclamationmark.triangle").font(.plex(.sans, 12, relativeTo: .caption)).foregroundStyle(palette.danger)
             }
@@ -79,10 +88,11 @@ struct AttachmentView: View {
             if let transfers {
                 ImageViewer(
                     images: (attachments.isEmpty ? [attachment] : attachments)
-                        .filter { $0.mimeType.hasPrefix("image/") }
+                        .filter { $0.mimeType.hasPrefix("image/") || $0.mimeType.hasPrefix("video/") }
                         .map { image in
                             ImagePreviewItem(id: image.id, filename: image.filename,
-                                             thumbnail: image.id == attachment.id ? thumbnail.flatMap { UIImage(contentsOfFile: $0.path) } : nil)
+                                             thumbnail: image.id == attachment.id ? thumbnail.flatMap { UIImage(contentsOfFile: $0.path) } : nil,
+                                             isVideo: image.mimeType.hasPrefix("video/"))
                         },
                     selectedID: attachment.id,
                     open: { try await transfers.open($0) },

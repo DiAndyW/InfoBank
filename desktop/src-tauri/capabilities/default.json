@@ -24,6 +24,7 @@
     "allow-restore-item",
     "allow-nav-counts",
     "allow-create-topic",
+    "allow-picker-topic",
     "allow-rename-topic",
     "allow-archive-topic",
     "allow-unarchive-topic",

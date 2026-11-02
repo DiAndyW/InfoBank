@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import GRDB
 import ImageIO
@@ -131,7 +132,7 @@ public actor AttachmentTransfers {
                 waitingForRetry = true
                 continue
             }
-            if attachment.mimeType.hasPrefix("image/") { _ = try? await thumbnail(attachment.id) }
+            if attachment.mimeType.hasPrefix("image/") || attachment.mimeType.hasPrefix("video/") { _ = try? await thumbnail(attachment.id) }
             let data = try await SyncHTTP.live.send(serverURL, path: "/attachments/\(attachment.id)/upload-token", secret: secret, body: Data("{}".utf8))
             struct Capability: Decodable { let token: String }
             guard let token = try? JSONDecoder().decode(Capability.self, from: data).token, !token.isEmpty else { throw AttachmentError("Couldn't authorize the upload") }
@@ -158,7 +159,7 @@ public actor AttachmentTransfers {
         let candidates = try? await store.pool.read { db in
             try String.fetchAll(db, sql: """
                 SELECT a.id FROM attachments a JOIN items i ON i.id = a.item_id
-                WHERE a.uploaded = 1 AND a.has_thumbnail = 0 AND a.mime_type LIKE 'image/%'
+                WHERE a.uploaded = 1 AND a.has_thumbnail = 0 AND (a.mime_type LIKE 'image/%' OR a.mime_type LIKE 'video/%')
                   AND i.deleted_at IS NULL AND i.sync_error IS NULL
                   AND EXISTS(SELECT 1 FROM cached_files c WHERE c.attachment_id = a.id)
                 ORDER BY a.rowid
@@ -246,13 +247,22 @@ public actor AttachmentTransfers {
         guard UUID(uuidString: id) != nil else { throw AttachmentError("Unknown attachment") }
         if let cached = try store.localFile(id, kind: "thumbnail") { return cached }
         guard let attachment = try store.attachment(id) else { return nil }
-        if attachment.mimeType.hasPrefix("image/"), let local = try store.localFile(id) {
+        if let local = try store.localFile(id) {
+            var preview: CGImage?
+            if attachment.mimeType.hasPrefix("image/") {
+                preview = CGImageSourceCreateWithURL(local as CFURL, nil).flatMap {
+                    CGImageSourceCreateThumbnailAtIndex($0, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 400, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+                }
+            } else if attachment.mimeType.hasPrefix("video/") {
+                let generator = AVAssetImageGenerator(asset: AVURLAsset(url: local))
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 400, height: 400)
+                preview = try? await generator.image(at: CMTime(seconds: 0.1, preferredTimescale: 600)).image
+            }
             let target = store.directory.appending(path: "thumbnails/\(id).jpg")
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if let source = CGImageSourceCreateWithURL(local as CFURL, nil),
-               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 400, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary),
-               let output = CGImageDestinationCreateWithURL(target as CFURL, UTType.jpeg.identifier as CFString, 1, nil) {
-                CGImageDestinationAddImage(output, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
+            if let preview, let output = CGImageDestinationCreateWithURL(target as CFURL, UTType.jpeg.identifier as CFString, 1, nil) {
+                CGImageDestinationAddImage(output, preview, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
                 if CGImageDestinationFinalize(output) {
                     try saveCache(id: id, kind: "thumbnail", relative: "thumbnails/\(id).jpg", size: Int64(target.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0))
                     return target

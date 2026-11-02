@@ -93,19 +93,6 @@ struct FeedView: View {
         if model.reveal(shown.itemID) { pendingReveal = shown.itemID }
     }
 
-    private var days: [(start: Date, items: [FeedItem])] {
-        var days: [(start: Date, items: [FeedItem])] = []
-        for item in model.items {
-            let start = Calendar.current.startOfDay(for: item.date)
-            if days.last?.start == start {
-                days[days.count - 1].items.append(item)
-            } else {
-                days.append((start, [item]))
-            }
-        }
-        return days
-    }
-
     private var loadMore: some View {
         ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { shown in
             if shown { model.loadOlder() }
@@ -120,10 +107,10 @@ struct FeedView: View {
         }.padding(.top, 14).padding(.bottom, 6).accessibilityAddTraits(.isHeader)
     }
 
-    private func itemRow(_ item: FeedItem) -> some View {
+    private func itemRow(_ item: FeedItem, showsTime: Bool = true) -> some View {
         ItemRow(item: item, showsTopic: place == .all || place == .trash, highlighted: highlighted == item.id,
                 copyable: place == .tunnel, copied: copiedID == item.id,
-                onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash)
+                onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
             .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
@@ -185,9 +172,9 @@ struct FeedView: View {
                             }
                         }
                     } else {
-                        ForEach(days, id: \.start) { day in
+                        ForEach(FeedDay.group(model.items)) { day in
                             sectionHeader(Calendar.current.isDateInToday(day.start) ? "Today" : day.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
-                            ForEach(day.items) { item in itemRow(item) }
+                            ForEach(day.rows) { row in itemRow(row.item, showsTime: row.showsTime) }
                         }
                     }
                     if model.hasOlder && place == .trash { loadMore }

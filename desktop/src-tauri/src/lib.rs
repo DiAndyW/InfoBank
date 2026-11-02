@@ -189,6 +189,7 @@ pub fn run() {
             commands::restore_item,
             commands::nav_counts,
             commands::create_topic,
+            commands::picker_topic,
             commands::rename_topic,
             commands::archive_topic,
             commands::unarchive_topic,
@@ -244,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_is_declared_and_allowed_for_the_main_window_and_the_quick_window_gets_six() {
+    fn every_command_is_declared_and_allowed_for_the_main_window_and_the_quick_window_gets_seven() {
         let handler = names(include_str!("lib.rs"), "generate_handler![", "]", "");
         let declared = names(include_str!("../build.rs"), "commands(&[", "]", "");
         // The permissions array closes at two-space indent; the opener entry has an inner `]`.
@@ -261,6 +262,7 @@ mod tests {
             "list_topics",
             "listen",
             "pick_files",
+            "picker_topic",
             "stage_attachment_bytes",
             "unlisten",
             "unstage_attachment",

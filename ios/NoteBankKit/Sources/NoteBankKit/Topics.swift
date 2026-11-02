@@ -4,11 +4,27 @@ import GRDB
 public enum TopicKeep { case all, none, only(Set<String>) }
 
 extension Store {
-    private func checkedTopicName(_ db: Database, _ name: String, excluding id: String) throws -> String {
+    private static let builtInTopicNames: Set<String> = ["inbox", "tunnel", "trash", "all items", "anywhere", "new topic"]
+
+    private func validTopicName(_ name: String) throws -> String {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name.utf8.count <= 200, !name.utf8.contains(0) else {
-            throw AttachmentError("Enter a Topic name of 1–200 bytes without null characters")
+        if name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
+            throw AttachmentError("A Topic name can't contain line breaks, tabs or other control characters")
         }
+        if name.unicodeScalars.allSatisfy({ $0.properties.isWhitespace || $0.properties.generalCategory == .format }) {
+            throw AttachmentError("Give the Topic a name")
+        }
+        guard name.utf8.count <= 200 else { throw AttachmentError("That name is too long (200 bytes max)") }
+        var base = name
+        if base.hasSuffix("…") { base.removeLast() }
+        if base.hasSuffix("...") { base.removeLast(3) }
+        base = base.trimmingCharacters(in: .whitespaces)
+        if Self.builtInTopicNames.contains(base.lowercased()) { throw AttachmentError("“\(base)” is a built-in name. Pick another.") }
+        return name
+    }
+
+    private func checkedTopicName(_ db: Database, _ name: String, excluding id: String) throws -> String {
+        let name = try validTopicName(name)
         let names = try String.fetchAll(db, sql: "SELECT name FROM topics WHERE deleted_at IS NULL AND id <> ?", arguments: [id])
         guard !names.contains(where: { $0.lowercased() == name.lowercased() }) else { throw AttachmentError("A Topic with that name already exists") }
         return name
@@ -18,6 +34,38 @@ extension Store {
         try pool.write { db in
             let id = UUID().uuidString.lowercased()
             let name = try checkedTopicName(db, name, excluding: id)
+            try db.execute(sql: "INSERT INTO topics(id,name) VALUES (?,?)", arguments: [id,name])
+            try queue(db, "CreateTopic", nowUs: nowUs, ["topic_id":id,"name":name])
+            return id
+        }
+    }
+
+    /// For Topic pickers: an open Topic with this name is reused; an archived one is refused.
+    private func pickerMatch(_ db: Database, _ name: String) throws -> (name: String, openID: String?) {
+        let name = try validTopicName(name)
+        let same = try Row.fetchAll(db, sql: "SELECT id, name, archived_at IS NOT NULL AS archived FROM topics WHERE deleted_at IS NULL")
+            .filter { ($0["name"] as String).lowercased() == name.lowercased() }
+        if let open = same.first(where: { !($0["archived"] as Bool) }) { return (name, open["id"]) }
+        guard same.isEmpty else { throw AttachmentError("An archived Topic has that name. Unarchive it in Places or pick another name.") }
+        return (name, nil)
+    }
+
+    public func pickerTopicProblem(named name: String) throws -> String? {
+        try pool.read { db in
+            do {
+                _ = try pickerMatch(db, name)
+                return nil
+            } catch let error as AttachmentError {
+                return error.message
+            }
+        }
+    }
+
+    public func pickerTopic(named name: String, nowUs: Int64) throws -> String {
+        try pool.write { db in
+            let (name, openID) = try pickerMatch(db, name)
+            if let openID { return openID }
+            let id = UUID().uuidString.lowercased()
             try db.execute(sql: "INSERT INTO topics(id,name) VALUES (?,?)", arguments: [id,name])
             try queue(db, "CreateTopic", nowUs: nowUs, ["topic_id":id,"name":name])
             return id

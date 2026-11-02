@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(first.len() as i64, crate::feed::PAGE_SIZE);
         assert_eq!(first[0].item.id, format!("{:03}", crate::feed::PAGE_SIZE));
         let last = first.last().unwrap();
-        let before = crate::feed::Before { capture_time_us: last.item.capture_time_us, id: last.item.id.clone() };
+        let before = crate::feed::Before { capture_time_us: last.item.capture_time_us, id: last.item.id.clone(), purge_at_us: None };
         assert_eq!(ids(&search(&conn, &query("same"), Some(&before)).unwrap()), ["000"]);
     }
 

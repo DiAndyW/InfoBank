@@ -55,6 +55,27 @@ func TestDeviceJPEGPreviewPublishesWithoutChangingHEICOriginal(t *testing.T) {
 	}
 }
 
+func TestDeviceJPEGPosterBecomesAVideoThumbnail(t *testing.T) {
+	e := newSyncEnv(t)
+	original := []byte("QuickTime movie the Server cannot decode")
+	item, id := e.captureFile("clip.mov", "video/quicktime", original)
+	if e.upload(id, original) != 204 {
+		t.Fatal("original upload failed")
+	}
+	if rec := e.send("PUT", "/attachments/"+id+"/thumbnail", bytes.NewReader(jpegPreview(t, 600, 300)), "Content-Type", "image/jpeg", "Authorization", "Bearer "+thumbnailToken(t, e, id)); rec.Code != 204 {
+		t.Fatalf("poster upload = %d %s", rec.Code, rec.Body)
+	}
+	if !e.item(item).Attachments[0].HasThumbnail {
+		t.Fatal("poster was not published")
+	}
+	if size := thumbnailSize(t, e.send("GET", "/attachments/"+id+"/thumbnail", nil)); size != image.Pt(400, 200) {
+		t.Fatalf("size = %v", size)
+	}
+	if rec := e.send("GET", "/attachments/"+id, nil); rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), original) {
+		t.Fatal("original changed")
+	}
+}
+
 func TestPreviewBeforeOriginalDoesNotMarkOriginalUploadedAndRetryIsIdempotent(t *testing.T) {
 	e := newSyncEnv(t)
 	item, id := e.captureFile("photo.heic", "image/heic", []byte("original"))
@@ -111,13 +132,16 @@ func TestPreviewUploadValidatesUntrustedContent(t *testing.T) {
 	}
 }
 
-func TestPreviewRequiresLiveImageMetadata(t *testing.T) {
+func TestPreviewRequiresLiveImageOrVideoMetadata(t *testing.T) {
 	e := newSyncEnv(t)
 	body := jpegPreview(t, 2, 2)
-	_, id := e.captureFile("document.txt", "text/plain", []byte("original"))
-	if code := e.send("PUT", "/attachments/"+id+"/thumbnail", bytes.NewReader(body), "Content-Type", "image/jpeg").Code; code != 415 {
-		t.Fatalf("nonimage = %d", code)
+	for _, mime := range []string{"text/plain", "application/pdf"} {
+		_, other := e.captureFile("document", mime, []byte("original"))
+		if code := e.send("PUT", "/attachments/"+other+"/thumbnail", bytes.NewReader(body), "Content-Type", "image/jpeg").Code; code != 415 {
+			t.Fatalf("%s = %d", mime, code)
+		}
 	}
+	_, id := e.captureFile("photo.heic", "image/heic", []byte("original"))
 	if _, err := e.h.api.db.Exec(t.Context(), "UPDATE attachments SET deleted_at = now() WHERE id = $1", id); err != nil {
 		t.Fatal(err)
 	}

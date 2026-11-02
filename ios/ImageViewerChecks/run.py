@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix="notebank-image-viewer-checks-") as temp
         while not result.exists() and time.monotonic() < deadline:
             time.sleep(0.2)
         checks = json.loads(result.read_text())
-        assert len(checks) == 9, checks
+        assert len(checks) == 10, checks
         print(f"{len(checks)} native image viewer checks passed")
         for check in checks:
             print("- " + check)

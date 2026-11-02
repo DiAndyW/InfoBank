@@ -91,6 +91,11 @@
 			path = QuickCapture;
 			sourceTree = "<group>";
 		};
+		A10000000000000000000031 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
 		B10000000000000000000004 /* NoteBankShare */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -144,6 +149,7 @@
 				B10000000000000000000004 /* NoteBankShare */,
 				C10000000000000000000004 /* NoteBankControls */,
 				A10000000000000000000030 /* QuickCapture */,
+				A10000000000000000000031 /* Shared */,
 				A10000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -179,6 +185,7 @@
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000004 /* NoteBank */,
 				A10000000000000000000030 /* QuickCapture */,
+				A10000000000000000000031 /* Shared */,
 			);
 			name = NoteBank;
 			packageProductDependencies = (
@@ -201,6 +208,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
+				A10000000000000000000031 /* Shared */,
 				B10000000000000000000004 /* NoteBankShare */,
 			);
 			name = NoteBankShare;

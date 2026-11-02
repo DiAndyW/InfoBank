@@ -14,6 +14,7 @@ export const saveSettings = (serverUrl: string, secret: string | null) =>
   invoke<void>("save_settings", { serverUrl, secret });
 export const listTopics = () => invoke<Topic[]>("list_topics");
 export const createTopic = (name: string) => invoke<Topic>("create_topic", { name });
+export const pickerTopic = (name: string) => invoke<Topic>("picker_topic", { name });
 export const renameTopic = (id: string, name: string) => invoke<void>("rename_topic", { id, name });
 export const archiveTopic = (id: string) => invoke<void>("archive_topic", { id });
 export const unarchiveTopic = (id: string) => invoke<void>("unarchive_topic", { id });
@@ -74,7 +75,7 @@ export const thumbnail = (id: string) => invoke<string>("thumbnail", { id });
 export const copyWholeItem = (itemId: string) => invoke<void>("copy_item", { itemId });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
-export type Before = { capture_time_us: number; id: string };
+export type Before = { capture_time_us: number; id: string; purge_at_us?: number | null };
 // Nested keys aren't renamed by Tauri, so `before` and `query` keep Rust's snake_case.
 export const listItems = (view: View, before: Before | null) => invoke<FeedItem[]>("list_items", { view, before });
 export type Place = { kind: "all" } | Target;

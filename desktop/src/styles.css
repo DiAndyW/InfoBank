@@ -96,6 +96,7 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 /* ⋯ shows on hover, keyboard focus, the selected row and while its menu is open; the count gives way to it */
 .nb-reveal { opacity: 0; }
 :is(.nb-topic, .nb-item):is(:hover, :focus-within, .is-selected, .is-open) .nb-reveal { opacity: 1; }
+:is(.nb-topic, .nb-item):is(:hover, :focus-within, .is-selected, .is-open) .nb-item-time.nb-reveal { opacity: 0.6; }
 .nb-topic .nb-menu-root { position: absolute; right: 2px; top: 2px; }
 .nb-topic .nb-count { padding-right: var(--space-1); }
 .nb-topic:is(:hover, :focus-within, .is-selected, .is-open) .nb-count { visibility: hidden; }
@@ -137,7 +138,6 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-mark.is-warn { background: var(--warn-soft); color: var(--warn); cursor: pointer; }
 .nb-mark.is-warn:hover { box-shadow: inset 0 0 0 1px var(--warn); }
 .nb-pending { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--ink-muted); }
-.nb-days { font: 400 12px/16px var(--font-mono); color: var(--ink-muted); white-space: nowrap; padding: 0 var(--space-1); }
 
 /* Edit an Item (inline) */
 .nb-item.is-editing { grid-template-columns: minmax(0, 1fr); padding-right: 0; }
@@ -160,6 +160,7 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 /* Attachments */
 .nb-thumb { display: block; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--chip); overflow: hidden; cursor: pointer; max-width: 240px; }
 .nb-thumb img { display: block; max-height: var(--thumb-height); max-width: 240px; }
+.nb-thumb-play { position: absolute; inset: 0; margin: auto; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: rgb(0 0 0 / .55); color: #fff; pointer-events: none; }
 .nb-thumb-ph { display: flex; align-items: center; gap: var(--space-2); height: 96px; width: 160px; box-sizing: border-box; padding: 0 var(--space-3); color: var(--ink-muted); font: 400 12px/16px var(--font-sans); overflow: hidden; }
 .nb-file { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; box-sizing: border-box; min-height: 40px; padding: var(--space-1) var(--space-2) var(--space-1) var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--chip); color: var(--ink); text-align: left; font: 400 14px/20px var(--font-sans); cursor: pointer; }
 .nb-file .nb-icon { color: var(--ink-muted); }
@@ -197,7 +198,7 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-quick .nb-composer { max-width: none; padding: 0; }
 .nb-quick .nb-composer-box { box-shadow: none; }
 .nb-quick .nb-composer-box:focus-within { box-shadow: none; }
-.nb-quick .nb-menu { max-height: 260px; overflow-y: auto; }
+.nb-quick .nb-menu-scroll { max-height: 128px; }
 .nb-archived-bar { max-width: none; margin: 0 var(--space-4) var(--space-4); box-sizing: border-box; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4); background: var(--surface-sidebar); border: 1px solid var(--line); border-radius: var(--radius-lg); color: var(--ink); }
 .nb-archived-bar > .nb-icon { color: var(--ink-muted); }
 .nb-archived-bar > span { flex: 1; }
@@ -216,7 +217,11 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-menu-sub { color: var(--ink-muted); }
 .nb-menu-sep { height: 1px; margin: var(--space-1) var(--space-2); background: var(--line); }
 .nb-submenu { position: absolute; right: calc(100% + 4px); top: -5px; z-index: 2; max-height: 50vh; overflow-y: auto; }
-.nb-menu-popup.above .nb-submenu { top: auto; bottom: -5px; }
+.nb-menu-popup.above .nb-submenu, .nb-submenu.up { top: auto; bottom: -5px; }
+.nb-submenu:has(.nb-menu-scroll) { max-height: none; overflow: visible; }
+.nb-menu .nb-menu-filter { height: 28px; margin: 0 0 var(--space-1); }
+.nb-menu-filter input::-webkit-search-cancel-button { display: none; }
+.nb-menu-scroll { max-height: 224px; overflow-y: auto; }
 
 /* Dialogs */
 .nb-scrim { position: fixed; z-index: 20; inset: 0; background: var(--scrim); display: grid; place-items: center; padding: var(--space-4); }

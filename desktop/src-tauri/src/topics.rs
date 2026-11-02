@@ -46,17 +46,37 @@ pub fn require_open(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_name(conn: &Connection, name: &str, own_id: &str) -> Result<String, String> {
+// The apps show these as built-in places and actions; the Server refuses them too.
+const BUILT_IN_NAMES: [&str; 6] = ["inbox", "tunnel", "trash", "all items", "anywhere", "new topic"];
+
+// Unicode's format characters (category Cf): invisible, so a name made only of them looks blank.
+fn is_format(c: char) -> bool {
+    matches!(c as u32, 0xAD | 0x600..=0x605 | 0x61C | 0x6DD | 0x70F | 0x890..=0x891 | 0x8E2 | 0x180E | 0x200B..=0x200F
+        | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD
+        | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F)
+}
+
+fn valid_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
-    if name.is_empty() {
+    if name.chars().any(char::is_control) {
+        return Err("A Topic name can't contain line breaks, tabs or other control characters".into());
+    }
+    if name.chars().all(|c| c.is_whitespace() || is_format(c)) {
         return Err("Give the Topic a name".into());
     }
     if name.len() > MAX_TOPIC_NAME_BYTES {
         return Err("That name is too long (200 bytes max)".into());
     }
-    if name.contains('\0') {
-        return Err("That name contains a character that can't be saved".into());
+    let base = name.strip_suffix('…').unwrap_or(name);
+    let base = base.strip_suffix("...").unwrap_or(base).trim();
+    if BUILT_IN_NAMES.contains(&base.to_lowercase().as_str()) {
+        return Err(format!("“{base}” is a built-in name. Pick another."));
     }
+    Ok(name)
+}
+
+fn checked_name(conn: &Connection, name: &str, own_id: &str) -> Result<String, String> {
+    let name = valid_name(name)?;
     let mut stmt = conn.prepare("SELECT name FROM topics WHERE deleted_at IS NULL AND id <> ?1").map_err(|e| e.to_string())?;
     let taken = stmt
         .query_map([own_id], |r| r.get::<_, String>(0))
@@ -81,6 +101,17 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
     let name = checked_name(conn, name, &id)?;
     queue_one(conn, Op::CreateTopic { topic_id: id.clone(), name: name.clone() }, now_us)?;
     Ok(Topic { id, name, archived: false, item_count: 0 })
+}
+
+/// For Topic pickers: an open Topic with this name is reused; an archived one is refused.
+pub fn picker_topic(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, String> {
+    let lowered = valid_name(name)?.to_lowercase();
+    let same: Vec<Topic> =
+        list(conn).map_err(|e| e.to_string())?.into_iter().filter(|t| t.name.to_lowercase() == lowered).collect();
+    if same.is_empty() {
+        return create(conn, name, now_us);
+    }
+    same.into_iter().find(|t| !t.archived).ok_or_else(|| "An archived Topic has that name".into())
 }
 
 pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<(), String> {
@@ -187,6 +218,61 @@ mod tests {
         );
         create(&conn, &"x".repeat(MAX_TOPIC_NAME_BYTES), 5).unwrap();
         create(&conn, "gone", 5).unwrap(); // a deleted Topic's name is free
+    }
+
+    #[test]
+    fn picker_topic_creates_a_topic_when_nothing_matches() {
+        let (_d, conn) = fresh();
+        let t = picker_topic(&conn, "  Mosaic \n", 5).unwrap();
+        assert_eq!((t.name.as_str(), t.archived, t.item_count), ("Mosaic", false, 0));
+        assert!(list(&conn).unwrap().contains(&t));
+        let ops = outbox(&conn);
+        assert_eq!(ops.len(), 1);
+        assert_eq!((ops[0]["type"].as_str(), ops[0]["topic_id"].as_str()), (Some("CreateTopic"), Some(t.id.as_str())));
+    }
+
+    #[test]
+    fn picker_topic_reuses_an_open_topic_without_queueing_anything() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, topic_id, text, capture_time) VALUES ('1', 't', 'x', 1)", []).unwrap();
+        for name in ["gym", " GYM ", "Gym"] {
+            let t = picker_topic(&conn, name, 5).unwrap();
+            assert_eq!((t.id.as_str(), t.name.as_str(), t.archived, t.item_count), ("t", "Gym", false, 1));
+        }
+        assert_eq!(picker_topic(&conn, "ÉCOLE", 5).unwrap().id, "e");
+        assert!(outbox(&conn).is_empty());
+    }
+
+    #[test]
+    fn picker_topic_refuses_an_archived_topics_name_and_bad_names_and_writes_nothing() {
+        let (_d, conn) = fresh();
+        assert_eq!(picker_topic(&conn, "old", 5).unwrap_err(), "An archived Topic has that name");
+        for name in ["", "   ", "a\0b", "x".repeat(MAX_TOPIC_NAME_BYTES + 1).as_str()] {
+            assert!(picker_topic(&conn, name, 5).is_err(), "accepted {name:.20?}");
+        }
+        assert!(outbox(&conn).is_empty());
+        picker_topic(&conn, "gone", 5).unwrap(); // a deleted Topic's name is free
+    }
+
+    #[test]
+    fn built_in_blank_and_control_names_are_refused_everywhere_and_queue_nothing() {
+        let (_d, conn) = fresh();
+        for name in ["inbox", " TUNNEL ", "Trash", "all items", "Anywhere", "New Topic", "new topic…", "New Topic...", "\u{200b}", " \u{2060}\u{feff} ", "a\nb", "tab\there"] {
+            assert!(create(&conn, name, 5).is_err(), "create accepted {name:?}");
+            assert!(rename(&conn, "t", name, 5).is_err(), "rename accepted {name:?}");
+            assert!(picker_topic(&conn, name, 5).is_err(), "picker accepted {name:?}");
+        }
+        assert_eq!(create(&conn, "Inbox", 5).unwrap_err(), "“Inbox” is a built-in name. Pick another.");
+        assert!(outbox(&conn).is_empty());
+        for name in ["Inbox ideas", "New Topics", "Mom's recipes; DROP TABLE topics"] {
+            create(&conn, name, 5).unwrap();
+        }
+    }
+
+    #[test]
+    fn create_still_refuses_a_name_that_exists() {
+        let (_d, conn) = fresh();
+        assert_eq!(create(&conn, "gym", 5).unwrap_err(), "A Topic named \"Gym\" already exists");
     }
 
     #[test]

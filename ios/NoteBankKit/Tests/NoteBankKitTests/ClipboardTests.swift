@@ -44,6 +44,14 @@ struct ClipboardTests {
         #expect(items[1][UTType.fileURL.identifier] == nil)
     }
 
+    @Test func videosCopyAsTheirOriginalFileOnly() throws {
+        let source = try AttachmentTests().source(Data([9, 8, 7]), name: "clip.mov")
+        defer { try? FileManager.default.removeItem(at: source) }
+        let items = try ItemClipboard.contents(text: nil, attachments: [(file: source, mimeType: "video/quicktime")])
+        #expect(items.count == 1 && Set(items[0].keys) == [UTType.quickTimeMovie.identifier])
+        #expect(items[0][UTType.quickTimeMovie.identifier] as? Data == Data([9, 8, 7]))
+    }
+
     @Test func mixedItemPreservesTextAndOriginalBytesWithoutAdvertisingPrivateURLs() throws {
         let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
