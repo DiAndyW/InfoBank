@@ -26,11 +26,15 @@ func newFailureLimiter(now func() time.Time) *failureLimiter {
 	return &failureLimiter{now: now, windows: map[string]failureWindow{}}
 }
 
-func (l *failureLimiter) blocked(ip string) bool {
+func (l *failureLimiter) blockedFor(ip string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	now := l.now()
 	w, ok := l.windows[ip]
-	return ok && w.failures >= maxAuthFailures && !w.expired(l.now())
+	if !ok || w.failures < maxAuthFailures || w.expired(now) {
+		return 0
+	}
+	return w.start.Add(authFailureWindow).Sub(now)
 }
 
 func (l *failureLimiter) recordFailure(ip string) {

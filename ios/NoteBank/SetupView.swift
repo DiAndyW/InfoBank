@@ -39,5 +39,6 @@ struct SetupView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
         .background(palette.surfaceSidebar)
+        .discardAlert(model)
     }
 }

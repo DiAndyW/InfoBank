@@ -47,7 +47,7 @@ func label(text: String?, firstFilename: String?) -> String {
 public final class SyncHTTP: NSObject, Sendable, URLSessionTaskDelegate {
     public static let live = SyncHTTP()
 
-    private static let timeoutSeconds: TimeInterval = 30
+    static let timeoutSeconds: TimeInterval = 30
     let session: URLSession
 
     private override init() {

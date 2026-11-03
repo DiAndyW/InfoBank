@@ -35,6 +35,10 @@ func TestShortSecretIsRefused(t *testing.T) {
 
 // request sends method+path from remoteAddr, with a bearer token when secret != "".
 func request(h http.Handler, method, path, remoteAddr, secret string, header ...string) int {
+	return requestRecorded(h, method, path, remoteAddr, secret, header...).Code
+}
+
+func requestRecorded(h http.Handler, method, path, remoteAddr, secret string, header ...string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	req.RemoteAddr = remoteAddr
 	if secret != "" {
@@ -45,7 +49,7 @@ func request(h http.Handler, method, path, remoteAddr, secret string, header ...
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	return rec.Code
+	return rec
 }
 
 func TestHealthNeedsNoSecret(t *testing.T) {
@@ -101,6 +105,25 @@ func TestRepeatedFailuresBlockTheIPUntilTheWindowEnds(t *testing.T) {
 	clock.Advance(1 * time.Minute)
 	if got := request(h, "GET", "/auth/check", attacker, testSecret); got != http.StatusNoContent {
 		t.Fatalf("correct secret 15m later = %d, want 204", got)
+	}
+}
+
+func TestABlockedIPIsToldWhenToRetry(t *testing.T) {
+	h, clock := newTestServer(t)
+	attacker := "203.0.113.9:5000"
+	for range 10 {
+		request(h, "GET", "/auth/check", attacker, "guess")
+	}
+	if got := requestRecorded(h, "GET", "/auth/check", attacker, testSecret).Header().Get("Retry-After"); got != "900" {
+		t.Fatalf("Retry-After when blocked = %q, want 900", got)
+	}
+	clock.Advance(61 * time.Second)
+	if got := requestRecorded(h, "GET", "/auth/check", attacker, testSecret).Header().Get("Retry-After"); got != "839" {
+		t.Fatalf("Retry-After 61s later = %q, want 839", got)
+	}
+	clock.Advance(500 * time.Millisecond)
+	if got := requestRecorded(h, "GET", "/auth/check", attacker, testSecret).Header().Get("Retry-After"); got != "839" {
+		t.Fatalf("Retry-After with 838.5s left = %q, want 839 (rounded up)", got)
 	}
 }
 

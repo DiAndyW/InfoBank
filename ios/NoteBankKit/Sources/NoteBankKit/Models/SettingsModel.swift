@@ -14,9 +14,11 @@ public final class SettingsModel {
     public private(set) var needsSetup = true
     public private(set) var saving = false
     public private(set) var error: String?
+    public private(set) var stranded: SettingsError?
 
     private let store: Store
     private let secrets: SecretStore
+    private let check: ServerCheck
     private let onSaved: @MainActor () -> Void
 
     public var canSave: Bool {
@@ -24,9 +26,10 @@ public final class SettingsModel {
             && (!needsSetup || !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
-    public init(store: Store, secrets: SecretStore, onSaved: @escaping @MainActor () -> Void) {
+    public init(store: Store, secrets: SecretStore, check: ServerCheck, onSaved: @escaping @MainActor () -> Void) {
         self.store = store
         self.secrets = secrets
+        self.check = check
         self.onSaved = onSaved
         load()
         refreshTrashAfterCopy()
@@ -42,14 +45,23 @@ public final class SettingsModel {
         needsSetup = url.isEmpty || (keychainReadable && !hasSecret)
     }
 
-    public func save() async -> Bool {
+    public func save(confirmed: Stranded = Stranded()) async -> Bool {
         guard canSave else { return false }
         saving = true
         defer { saving = false }
-        let (store, secrets, url) = (store, secrets, url)
+        stranded = nil
+        error = nil
+        let (store, secrets, check, url) = (store, secrets, check, url)
         let newSecret = secret.isEmpty ? nil : secret
         do {
-            try await Task.detached { try store.saveSettings(url: url, newSecret: newSecret, secrets: secrets) }.value
+            let serverURL = try Store.normalizedServerURL(url)
+            if let typed = newSecret?.trimmingCharacters(in: .whitespacesAndNewlines), !typed.isEmpty {
+                try await check.run(serverURL, typed)
+            }
+            try await Task.detached { try store.saveSettings(url: url, newSecret: newSecret, secrets: secrets, confirmed: confirmed) }.value
+        } catch let refusal as SettingsError where refusal.stranded != nil {
+            stranded = refusal
+            return false
         } catch {
             self.error = error.localizedDescription
             return false
@@ -62,6 +74,8 @@ public final class SettingsModel {
         onSaved()
         return true
     }
+
+    public func cancelDiscard() { stranded = nil }
 
     @discardableResult
     public func setTrashAfterCopy(_ on: Bool) -> Bool {

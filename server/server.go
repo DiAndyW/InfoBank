@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,7 +63,8 @@ func New(cfg Config) (*Server, error) {
 	authorize := func(next http.Handler, capability *uploadTokens) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := clientIP(r)
-			if limiter.blocked(ip) {
+			if d := limiter.blockedFor(ip); d > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(d.Seconds()))))
 				w.WriteHeader(http.StatusTooManyRequests)
 				return
 			}

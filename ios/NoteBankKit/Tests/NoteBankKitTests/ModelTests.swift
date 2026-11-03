@@ -208,7 +208,7 @@ struct ModelTests {
     @Test func firstLaunchNeedsBothFieldsToSave() async throws {
         let (store, _) = try tempStore()
         let saved = Mutex(0)
-        let settings = SettingsModel(store: store, secrets: .memory(), onSaved: { saved.withLock { $0 += 1 } })
+        let settings = SettingsModel(store: store, secrets: .memory(), check: .accepting, onSaved: { saved.withLock { $0 += 1 } })
         #expect(settings.needsSetup && !settings.hasSecret && !settings.canSave)
         settings.url = "https://notes.example.com"
         #expect(!settings.canSave)
@@ -234,7 +234,7 @@ struct ModelTests {
         let (store, _) = try tempStore()
         let secrets = SecretStore.memory()
         try store.saveSettings(url: "https://notes.example.com/", newSecret: "s3cret-s3cret", secrets: secrets)
-        let settings = SettingsModel(store: store, secrets: secrets, onSaved: {})
+        let settings = SettingsModel(store: store, secrets: secrets, check: .accepting, onSaved: {})
         #expect(settings.url == "https://notes.example.com")
         #expect(settings.hasSecret && !settings.needsSetup)
     }
@@ -242,7 +242,7 @@ struct ModelTests {
     @Test func aSavedURLWithoutASecretNeedsSetupWithTheURLFilledIn() async throws {
         let (store, _) = try tempStore()
         try store.saveSettings(url: "https://notes.example.com", newSecret: "s3cret-s3cret", secrets: .memory())
-        let settings = SettingsModel(store: store, secrets: .memory(), onSaved: {})
+        let settings = SettingsModel(store: store, secrets: .memory(), check: .accepting, onSaved: {})
         #expect(settings.needsSetup && !settings.hasSecret)
         #expect(settings.url == "https://notes.example.com")
         #expect(!settings.canSave)
@@ -256,7 +256,7 @@ struct ModelTests {
         let (store, _) = try tempStore()
         try store.saveSettings(url: "https://notes.example.com", newSecret: "s3cret-s3cret", secrets: .memory())
         let locked = SecretStore(read: { throw KeychainError(status: errSecInteractionNotAllowed) }, write: { _ in })
-        let settings = SettingsModel(store: store, secrets: locked, onSaved: {})
+        let settings = SettingsModel(store: store, secrets: locked, check: .accepting, onSaved: {})
         #expect(!settings.needsSetup)
         #expect(settings.error?.hasPrefix("Couldn't read the keychain") == true)
     }
@@ -269,7 +269,7 @@ struct ModelTests {
             writes.withLock { $0 += 1 }
             _ = gate.wait(timeout: .now() + 3)
         })
-        let settings = SettingsModel(store: store, secrets: secrets, onSaved: {})
+        let settings = SettingsModel(store: store, secrets: secrets, check: .accepting, onSaved: {})
         settings.url = "https://notes.example.com"
         settings.secret = "s3cret-s3cret"
 
@@ -285,7 +285,7 @@ struct ModelTests {
 
     @Test func aFailedSaveKeepsTheSecretAndShowsTheError() async throws {
         let (store, _) = try tempStore()
-        let settings = SettingsModel(store: store, secrets: .memory(), onSaved: {})
+        let settings = SettingsModel(store: store, secrets: .memory(), check: .accepting, onSaved: {})
         settings.url = "http://notes.example.com"
         settings.secret = "s3cret-s3cret"
         #expect(!(await settings.save()))
@@ -319,7 +319,7 @@ extension ModelTests {
         let store = try tempStore().store
         let secrets = SecretStore.memory()
         try store.saveSettings(url: "https://notes.example.com", newSecret: "secret", secrets: secrets)
-        let settings = SettingsModel(store: store, secrets: secrets, onSaved: {})
+        let settings = SettingsModel(store: store, secrets: secrets, check: .accepting, onSaved: {})
         settings.url = "https://draft.example.com"
         settings.secret = "unsaved"
         let json = #"{"items":[],"topics":[],"tombstones":[],"cursor":0,"has_more":false,"settings":{"trash_after_copy":true}}"#
@@ -331,5 +331,93 @@ extension ModelTests {
         _ = try store.applyPull(try JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
         #expect(try store.trashAfterCopy() == false)
         #expect(!settings.trashAfterCopy)
+    }
+}
+
+@MainActor final class Saves { var count = 0 }
+
+extension ModelTests {
+    private func connectedToA() throws -> (settings: SettingsModel, store: Store, secrets: SecretStore, saved: Saves) {
+        let (store, _) = try tempStore()
+        let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://a.example.com", newSecret: "s3cret", secrets: secrets)
+        try store.pool.write { db in
+            try db.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('pulled', 'x', 1)")
+            try db.execute(sql: "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES ('f1', 'pulled', 'f.png', 'image/png', 1, 0, 0)")
+        }
+        let saved = Saves()
+        let settings = SettingsModel(store: store, secrets: secrets, check: .accepting, onSaved: { saved.count += 1 })
+        settings.url = "https://b.example.com"
+        settings.secret = "other-s3cret"
+        return (settings, store, secrets, saved)
+    }
+
+    @Test func aStrandedRefusalAsksInsteadOfShowingAnError() async throws {
+        let (settings, _, _, saved) = try connectedToA()
+        #expect(!(await settings.save()))
+        #expect(settings.stranded?.stranded == Stranded(changes: 0, files: 1))
+        #expect(settings.error == nil)
+        #expect(settings.url == "https://b.example.com" && settings.secret == "other-s3cret")
+        #expect(saved.count == 0)
+        settings.cancelDiscard()
+        #expect(settings.stranded == nil)
+    }
+
+    @Test func anErrorFromAnEarlierAttemptIsGoneWhenTheDiscardAlertAppears() async throws {
+        let (store, _) = try tempStore()
+        let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://a.example.com", newSecret: "s3cret", secrets: secrets)
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('pulled', 'x', 1)")
+            try db.execute(sql: "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES ('f1', 'pulled', 'f.png', 'image/png', 1, 0, 0)")
+        }
+        let calls = Mutex(0)
+        let flaky = ServerCheck(run: { _, _ throws(SettingsError) in
+            if calls.withLock({ $0 += 1; return $0 }) == 1 { throw SettingsError(message: "Couldn't reach the Server.") }
+        })
+        let settings = SettingsModel(store: store, secrets: secrets, check: flaky, onSaved: {})
+        settings.url = "https://b.example.com"
+        settings.secret = "other-s3cret"
+        #expect(!(await settings.save()))
+        #expect(settings.error == "Couldn't reach the Server.")
+        #expect(!(await settings.save()))
+        #expect(settings.stranded != nil)
+        #expect(settings.error == nil)
+    }
+
+    @Test func switchAnywaySavesWithTheConfirmedCounts() async throws {
+        let (settings, store, _, saved) = try connectedToA()
+        _ = await settings.save()
+        #expect(await settings.save(confirmed: settings.stranded!.stranded!))
+        #expect(settings.stranded == nil)
+        #expect(saved.count == 1)
+        #expect(try store.serverURL() == "https://b.example.com")
+    }
+
+    @Test func aRejectedSecretShowsTheMessageAndChangesNothing() async throws {
+        let (store, _) = try tempStore()
+        let secrets = SecretStore.memory()
+        let rejecting = ServerCheck(run: { _, _ throws(SettingsError) in throw SettingsError(message: "The Server rejected this secret.") })
+        let settings = SettingsModel(store: store, secrets: secrets, check: rejecting, onSaved: {})
+        settings.url = "https://notes.example.com"
+        settings.secret = "wrong-s3cret"
+        #expect(!(await settings.save()))
+        #expect(settings.error == "The Server rejected this secret.")
+        #expect(try secrets.read() == nil)
+        #expect(try store.serverURL() == nil)
+    }
+
+    @Test func noCheckWhenNoSecretIsTyped() async throws {
+        let (store, _) = try tempStore()
+        let secrets = SecretStore.memory()
+        try store.saveSettings(url: "https://notes.example.com", newSecret: "s3cret-s3cret", secrets: secrets)
+        let calls = Mutex(0)
+        let counting = ServerCheck(run: { _, _ in calls.withLock { $0 += 1 } })
+        let settings = SettingsModel(store: store, secrets: secrets, check: counting, onSaved: {})
+        #expect(await settings.save())
+        #expect(calls.withLock { $0 } == 0)
+        settings.secret = "new-s3cret"
+        #expect(await settings.save())
+        #expect(calls.withLock { $0 } == 1)
     }
 }

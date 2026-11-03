@@ -22,3 +22,7 @@ func waitUntil(_ condition: () -> Bool) async -> Bool {
     while !condition(), ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
     return condition()
 }
+
+extension ServerCheck {
+    static let accepting = ServerCheck(run: { _, _ in })
+}

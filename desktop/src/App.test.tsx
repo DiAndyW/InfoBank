@@ -11,7 +11,8 @@ type Options = {
   trashAfterCopy?: boolean | null;
   doubleClickIntervalMs?: number;
   pulledTrashAfterCopy?: () => boolean | null;
-  saveError?: string;
+  // A function runs per save_settings call (0-based): it may throw or wait.
+  saveError?: unknown;
   captureError?: string;
   items?: (args: any) => FeedItem[] | Promise<FeedItem[]>;
   status?: SyncStatus;
@@ -61,7 +62,9 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (["trash_item", "restore_item", "discard_item"].includes(cmd)) return null;
       if (cmd === "resolve_conflict") return { trashed: false };
       if (cmd === "save_settings") {
-        if (opts.saveError) throw opts.saveError;
+        const call = calls.filter((c) => c.cmd === "save_settings").length - 1;
+        if (typeof opts.saveError === "function") await opts.saveError(call);
+        else if (opts.saveError) throw opts.saveError;
         return null;
       }
       if (cmd === "capture") {
@@ -190,8 +193,114 @@ test("saving without retyping the secret keeps it", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(calls).toContainEqual({
     cmd: "save_settings",
-    args: { serverUrl: "https://notes.example.com", secret: null },
+    args: { serverUrl: "https://notes.example.com", secret: null, confirmed: null },
   });
+});
+
+const stranded = {
+  changes: 2,
+  files: 1,
+  message: "2 changes and 1 file haven't reached the current Server yet. Switching discards this work for good.",
+};
+
+async function switchServer() {
+  await userEvent.click(await screen.findByRole("button", { name: "Settings" }));
+  await userEvent.clear(screen.getByLabelText("Server URL"));
+  await userEvent.type(screen.getByLabelText("Server URL"), "https://other.example.com");
+  await userEvent.type(screen.getByLabelText("Secret"), "s3cret");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+}
+
+test("a switch that would strand work asks first", async () => {
+  backend(configured, { saveError: stranded });
+  render(<App />);
+  await switchServer();
+  const dialog = await screen.findByRole("alertdialog", { name: "Discard unsent work?" });
+  expect(dialog).toHaveTextContent(stranded.message);
+  expect(dialog).toHaveTextContent("To keep it, reconnect to the current Server and let it sync first.");
+  expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+});
+
+test("Switch anyway resubmits with the confirmed counts", async () => {
+  const calls = backend(configured, { saveError: stranded });
+  render(<App />);
+  await switchServer();
+  await userEvent.click(await screen.findByRole("button", { name: "Switch anyway" }));
+  const saves = calls.filter((c) => c.cmd === "save_settings");
+  expect(saves).toHaveLength(2);
+  expect(saves[1].args).toEqual({
+    serverUrl: "https://other.example.com",
+    secret: "s3cret",
+    confirmed: { changes: 2, files: 1 },
+  });
+});
+
+test("Switch anyway closes Settings once the confirmed save succeeds", async () => {
+  backend(configured, { saveError: (call: number) => { if (call === 0) throw stranded; } });
+  render(<App />);
+  await switchServer();
+  await userEvent.click(await screen.findByRole("button", { name: "Switch anyway" }));
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+});
+
+test("Cancel in the discard dialog keeps what was typed", async () => {
+  const calls = backend(configured, { saveError: stranded });
+  render(<App />);
+  await switchServer();
+  const dialog = await screen.findByRole("alertdialog");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Server URL")).toHaveValue("https://other.example.com");
+  expect(screen.getByLabelText("Secret")).toHaveValue("s3cret");
+  expect(calls.filter((c) => c.cmd === "save_settings")).toHaveLength(1);
+});
+
+test("a check error shows in the red line", async () => {
+  backend(configured, { saveError: "The Server rejected this secret." });
+  render(<App />);
+  await switchServer();
+  expect(await screen.findByRole("alert")).toHaveTextContent("The Server rejected this secret.");
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+test("an error from an earlier attempt is gone when the discard dialog appears", async () => {
+  backend(configured, {
+    saveError: (call: number) => {
+      throw call === 0 ? "Couldn't reach the Server." : stranded;
+    },
+  });
+  render(<App />);
+  await switchServer();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't reach the Server.");
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByRole("alertdialog");
+  expect(screen.queryByText("Couldn't reach the Server.")).not.toBeInTheDocument();
+});
+
+test("a thrown Error shows in the red line, not the discard dialog", async () => {
+  backend(configured, { saveError: new Error("boom") });
+  render(<App />);
+  await switchServer();
+  expect(await screen.findByRole("alert")).toHaveTextContent("boom");
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+});
+
+test("submitting again while Switch anyway is saving saves once more only", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const calls = backend(configured, {
+    saveError: async (call: number) => {
+      if (call === 0) throw stranded;
+      await gate;
+    },
+  });
+  render(<App />);
+  await switchServer();
+  await userEvent.click(await screen.findByRole("button", { name: "Switch anyway" }));
+  fireEvent.submit(screen.getByLabelText("Server URL").closest("form")!);
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+  expect(calls.filter((c) => c.cmd === "save_settings")).toHaveLength(2);
 });
 
 test("a save error is shown inline", async () => {

@@ -1,6 +1,6 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { trashAfterCopy, setTrashAfterCopy, autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Settings as SettingsData } from "./api";
+import { trashAfterCopy, setTrashAfterCopy, autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Stranded, type Settings as SettingsData } from "./api";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
 import Menu from "./Menu";
@@ -37,6 +37,7 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
   const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [stranded, setStranded] = useState<(Stranded & { message: string }) | null>(null);
   const busy = useRef(false);
   const showSaving = useShownAfterDelay(saving);
   const formId = useId();
@@ -99,17 +100,18 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
   }
   const incomplete = !onCancel && (url.trim() === "" || (secret === "" && !initial.has_secret));
 
-  async function submit(e: FormEvent) {
-    e.preventDefault();
+  async function submit(confirmed?: Stranded) {
     if (busy.current) return;
     busy.current = true;
     setSaving(true);
+    setError(null);
     try {
-      await saveSettings(url, secret === "" ? null : secret);
+      await saveSettings(url, secret === "" ? null : secret, confirmed);
       setSecret("");
       onSaved();
     } catch (err) {
-      setError(String(err));
+      if (typeof err === "object" && err !== null && "changes" in err) setStranded(err as Stranded & { message: string });
+      else setError(String(err));
     } finally {
       busy.current = false;
       setSaving(false);
@@ -140,7 +142,7 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
   const shown = recording ? "Press a shortcut… (Esc cancels)" : formatShortcut(hotkey.shortcut);
 
   const form = (
-    <form id={formId} className="nb-settings-fields" onSubmit={submit}>
+    <form id={formId} className="nb-settings-fields" onSubmit={(e) => { e.preventDefault(); submit(); }}>
       <label className="nb-field">
         <span className="nb-field-label">Server URL</span>
         <input className="nb-input" autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://notes.example.com" />
@@ -248,11 +250,42 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
     </>
   );
 
+  const discard = stranded && (
+    <Dialog
+      alert
+      title="Discard unsent work?"
+      onClose={() => setStranded(null)}
+      actions={
+        <>
+          <button type="button" className="nb-btn nb-btn-secondary" onClick={() => setStranded(null)}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="nb-btn nb-btn-danger"
+            onClick={() => {
+              setStranded(null);
+              submit({ changes: stranded.changes, files: stranded.files });
+            }}
+          >
+            Switch anyway
+          </button>
+        </>
+      }
+    >
+      <p>{stranded.message}</p>
+      <p className="nb-dialog-hint">To keep it, reconnect to the current Server and let it sync first.</p>
+    </Dialog>
+  );
+
   if (onCancel) {
     return (
-      <Dialog title="Settings" className="nb-settings" onClose={() => saving || onCancel()} actions={actions}>
-        {form}
-      </Dialog>
+      <>
+        <Dialog title="Settings" className="nb-settings" onClose={() => saving || onCancel()} actions={actions}>
+          {form}
+        </Dialog>
+        {discard}
+      </>
     );
   }
   return (
@@ -262,6 +295,7 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
         {form}
         <div className="nb-dialog-actions">{actions}</div>
       </div>
+      {discard}
     </div>
   );
 }

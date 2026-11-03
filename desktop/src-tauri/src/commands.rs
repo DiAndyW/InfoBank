@@ -46,8 +46,14 @@ fn changed(app: &AppHandle, state: &AppState) {
 }
 
 #[tauri::command]
-pub async fn save_settings(app: AppHandle, state: State<'_, AppState>, server_url: String, secret: Option<String>) -> Result<(), String> {
-    settings::save(&state.db.lock().unwrap(), &state.secret, &server_url, secret.as_deref())?;
+pub async fn save_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    server_url: String,
+    secret: Option<String>,
+    confirmed: Option<settings::Stranded>,
+) -> Result<(), settings::SaveError> {
+    settings::save_checked(&state.db, &state.secret, &state.http, &server_url, secret.as_deref(), confirmed.unwrap_or_default()).await?;
     state.settings_saved.notify_one();
     changed(&app, &state);
     Ok(())

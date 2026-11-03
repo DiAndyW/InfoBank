@@ -142,7 +142,7 @@ pub fn outcome(result: &Result<bool, SyncError>, failures: u32) -> (&'static str
     }
 }
 
-const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 // 100 MB transfers get no total limit, only IDLE_TIMEOUT; reqwest's read_timeout would also cap sending an upload's body.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
@@ -222,6 +222,10 @@ pub fn server_access(state: &AppState) -> Result<(String, String), SyncError> {
     }
 }
 
+pub(crate) fn same_server(conn: &Connection, url: &str) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT COALESCE(server_url = ?1, 0) FROM device", [url], |r| r.get(0))
+}
+
 pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
     let (url, token) = server_access(state)?;
     let device_id: String =
@@ -246,6 +250,9 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
         let mut notices = Vec::new();
         {
             let conn = state.db.lock().unwrap();
+            if !same_server(&conn, &url).map_err(failed)? {
+                return Ok(changed);
+            }
             let tx = conn.unchecked_transaction().map_err(failed)?;
             for r in &res.results {
                 let Some(op) = ops.iter().find(|o| o["id"] == r.op_id.as_str()) else { continue };
@@ -369,7 +376,12 @@ async fn pull(state: &AppState, url: &str, token: &str) -> Result<bool, SyncErro
             state.db.lock().unwrap().query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).map_err(failed)?;
         let res = send(state.http.get(format!("{url}/sync/pull?cursor={cursor}")).timeout(HTTP_TIMEOUT), token).await?;
         let page: Page = res.json().await.map_err(failed)?;
-        changed |= apply_pull(&state.db.lock().unwrap(), &page).map_err(failed)?;
+        let conn = state.db.lock().unwrap();
+        if !same_server(&conn, url).map_err(failed)? {
+            return Ok(changed);
+        }
+        changed |= apply_pull(&conn, &page).map_err(failed)?;
+        drop(conn);
         if !page.has_more {
             return Ok(changed);
         }
@@ -441,7 +453,11 @@ pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<
         match res.status() {
             // 410: removed on the Server, so it needs nothing more and the local file can be evicted.
             reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::GONE => {
-                state.db.lock().unwrap().execute("UPDATE attachments SET uploaded = 1 WHERE id = ?1", [&id]).map_err(failed)?;
+                let conn = state.db.lock().unwrap();
+                if !same_server(&conn, url).map_err(failed)? {
+                    return Ok(finished);
+                }
+                conn.execute("UPDATE attachments SET uploaded = 1 WHERE id = ?1", [&id]).map_err(failed)?;
                 finished = true;
             }
             reqwest::StatusCode::NOT_FOUND => {}
@@ -754,7 +770,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod server_tests {
+pub(crate) mod server_tests {
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::sync::OnceLock;
@@ -802,17 +818,17 @@ mod server_tests {
     }
 
     /// A real Server on its own database and port. It isn't running until `start`.
-    struct TestServer {
+    pub(crate) struct TestServer {
         db_name: String,
         port: u16,
-        url: String,
-        secret: String,
+        pub(crate) url: String,
+        pub(crate) secret: String,
         attachments: tempfile::TempDir,
         child: Option<Child>,
     }
 
     impl TestServer {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let db_name = format!("notebank_desktop_test_{}", uuid::Uuid::new_v4().simple());
             assert!(psql(&format!("CREATE DATABASE {db_name}")), "create test database (is Postgres running?)");
             let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
@@ -826,7 +842,7 @@ mod server_tests {
             }
         }
 
-        fn start(&mut self) {
+        pub(crate) fn start(&mut self) {
             let mut db_url = url::Url::parse(&admin_url()).unwrap();
             db_url.set_path(&format!("/{}", self.db_name));
             let child = Command::new(server_binary())
@@ -1274,6 +1290,73 @@ mod server_tests {
         let started = std::time::Instant::now();
         assert_eq!(upload_pending(&a, &url, "s").await, Ok(true));
         assert!(started.elapsed() > IDLE_TIMEOUT, "the upload was too fast to prove anything");
+    }
+
+    /// A stand-in Server that, on its one request, has the Settings switch to another Server before it answers.
+    fn switch_then_reply(listener: std::net::TcpListener, db: PathBuf, body: String) {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0; 1];
+                s.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap().to_lowercase();
+            let len: usize = head.split("content-length: ").nth(1).map_or(0, |v| v.split("\r\n").next().unwrap().parse().unwrap());
+            s.read_exact(&mut vec![0; len]).unwrap();
+            let conn = rusqlite::Connection::open(db).unwrap();
+            conn.execute("UPDATE device SET server_url = 'https://b.example.com'", []).unwrap();
+            let status = if body.is_empty() { "204 No Content" } else { "200 OK" };
+            let reply = format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            s.write_all(reply.as_bytes()).unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn a_pull_that_lands_after_a_switch_changes_nothing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let a = device_at(&url, "s");
+        let page = serde_json::json!({"items": [{"id": "i", "topic_id": null, "text": "from A", "capture_time": "2025-10-09T08:53:20Z",
+            "deleted_at": null, "purge_at": null, "text_rev": 0, "attachments": []}],
+            "topics": [], "tombstones": [], "cursor": 5, "settings": {"trash_after_copy": null}, "has_more": true});
+        switch_then_reply(listener, a._dir.path().join("notebank.db"), page.to_string());
+
+        assert_eq!(pull(&a, &url, "s").await, Ok(false));
+        assert_eq!(count(&a, "items"), 0);
+        let cursor: i64 = a.db.lock().unwrap().query_row("SELECT pull_cursor FROM device", [], |r| r.get(0)).unwrap();
+        assert_eq!(cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn push_results_after_a_switch_keep_the_outbox() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let a = device_at(&url, "s");
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, T0).unwrap();
+        let op_id: String = a.db.lock().unwrap().query_row("SELECT json_extract(op, '$.id') FROM outbox", [], |r| r.get(0)).unwrap();
+        let results = serde_json::json!({"results": [{"op_id": op_id, "status": "rejected", "reason": "invalid"}]});
+        switch_then_reply(listener, a._dir.path().join("notebank.db"), results.to_string());
+
+        assert_eq!(sync(&a).await, Ok(false));
+        assert_eq!(count(&a, "outbox"), 1);
+        let refused: bool = a.db.lock().unwrap().query_row("SELECT sync_error IS NOT NULL FROM items", [], |r| r.get(0)).unwrap();
+        assert!(!refused);
+    }
+
+    #[tokio::test]
+    async fn an_upload_finishing_after_a_switch_stays_pending() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let a = device_at(&url, "s");
+        let id = crate::files::stage_bytes(&a.dir, "note.bin", b"data").unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        switch_then_reply(listener, a._dir.path().join("notebank.db"), String::new());
+
+        assert_eq!(upload_pending(&a, &url, "s").await, Ok(false));
+        assert!(!flag(&a, "uploaded", &id));
     }
 
     /// A stand-in Server that reads one request's headers, sends `reply`, then goes silent.

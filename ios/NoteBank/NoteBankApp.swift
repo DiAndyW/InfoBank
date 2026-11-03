@@ -30,7 +30,7 @@ struct Services {
     func wake() { Task { [engine] in await engine.wake() } }
 
     func settingsModel() -> SettingsModel {
-        SettingsModel(store: store, secrets: secrets) { [engine] in Task { await engine.settingsSaved() } }
+        SettingsModel(store: store, secrets: secrets, check: .live) { [engine] in Task { await engine.settingsSaved() } }
     }
 }
 

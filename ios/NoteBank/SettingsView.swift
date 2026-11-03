@@ -49,6 +49,23 @@ struct ServerFields: View {
     }
 }
 
+extension View {
+    func discardAlert(_ model: SettingsModel, onSwitched: @escaping () -> Void = {}) -> some View {
+        alert(
+            "Discard unsent work?",
+            isPresented: Binding(get: { model.stranded != nil }, set: { if !$0 { model.cancelDiscard() } }),
+            presenting: model.stranded
+        ) { refusal in
+            Button("Cancel", role: .cancel) {}
+            Button("Switch Anyway", role: .destructive) {
+                Task { if let confirmed = refusal.stranded, await model.save(confirmed: confirmed) { onSwitched() } }
+            }
+        } message: { refusal in
+            Text(refusal.message + "\n\nTo keep it, reconnect to the current Server and let it sync first.")
+        }
+    }
+}
+
 struct SettingsView: View {
     @Binding var theme: Theme
     @State private var model: SettingsModel
@@ -149,6 +166,10 @@ struct SettingsView: View {
                     .disabled(!model.canSave)
                 }
             }
+        }
+        .discardAlert(model) {
+            saved = true
+            dismiss()
         }
         .onDisappear { if !saved { theme = openedTheme } }
     }

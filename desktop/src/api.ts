@@ -10,8 +10,9 @@ export const getSettings = () => invoke<Settings>("get_settings");
 export const autostartOn = () => invoke<boolean>("autostart_on");
 export const setAutostart = (on: boolean) => invoke<boolean>("set_autostart", { on });
 // secret null keeps the stored one.
-export const saveSettings = (serverUrl: string, secret: string | null) =>
-  invoke<void>("save_settings", { serverUrl, secret });
+export type Stranded = { changes: number; files: number };
+export const saveSettings = (serverUrl: string, secret: string | null, confirmed?: Stranded) =>
+  invoke<void>("save_settings", { serverUrl, secret, confirmed: confirmed ?? null });
 export const listTopics = () => invoke<Topic[]>("list_topics");
 export const createTopic = (name: string) => invoke<Topic>("create_topic", { name });
 export const pickerTopic = (name: string) => invoke<Topic>("picker_topic", { name });

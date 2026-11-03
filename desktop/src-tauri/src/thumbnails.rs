@@ -96,8 +96,7 @@ pub async fn upload(state: &AppState, url: &str, secret: &str) -> Result<bool, s
                 .timeout(Duration::from_secs(30)).header("Content-Type", "image/jpeg").body(prepared.clone()), &capability.token).await?;
             if response.status() != reqwest::StatusCode::NO_CONTENT { return Err(fail()); }
             let conn = state.db.lock().unwrap();
-            let current: Option<String> = conn.query_row("SELECT server_url FROM device", [], |row| row.get(0)).map_err(|_| fail())?;
-            if current.as_deref() != Some(url) { return Ok(false); }
+            if !sync::same_server(&conn, url).map_err(|_| fail())? { return Ok(false); }
             conn.execute("UPDATE attachments SET has_thumbnail = 1 WHERE id = ?1", [&id]).map_err(|_| fail())?;
             Ok(true)
         }.await;
