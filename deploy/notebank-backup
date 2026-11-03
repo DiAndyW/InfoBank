@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+
+trap 'curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail" || true' ERR
+
+# Dump before copying attachments, so a mid-backup upload leaves an orphan file, never a row without its file.
+setpriv --reuid=notebank --regid=notebank --clear-groups pg_dump --format=custom --dbname=notebank --host=/var/run/postgresql \
+	> "$STATE_DIRECTORY/notebank.dump"
+
+restic backup --host notebank --exclude '*.partial-*' "$STATE_DIRECTORY/notebank.dump" /var/lib/notebank/attachments
+restic forget --host notebank --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune
+restic check
+
+curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"

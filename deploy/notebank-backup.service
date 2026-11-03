@@ -1,0 +1,23 @@
+[Unit]
+Description=NoteBank backup to R2
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/notebank-backup
+EnvironmentFile=/etc/notebank/backup.env
+Environment=RESTIC_CACHE_DIR=/var/cache/notebank-backup
+StateDirectory=notebank-backup
+StateDirectoryMode=0700
+CacheDirectory=notebank-backup
+CacheDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

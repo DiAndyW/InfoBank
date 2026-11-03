@@ -1,0 +1,49 @@
+[Unit]
+Description=NoteBank Server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+User=notebank
+Group=notebank
+ExecStart=/usr/local/bin/notebank-server
+EnvironmentFile=/etc/notebank/notebank.env
+Environment=NOTEBANK_DATABASE_URL=postgres:///notebank?host=/var/run/postgresql
+Environment=NOTEBANK_ATTACHMENT_DIR=/var/lib/notebank/attachments
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/var/lib/notebank
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
