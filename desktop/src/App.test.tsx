@@ -861,19 +861,19 @@ test("a failed Topic change is shown in a dialog", async () => {
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
 });
 
-test("+ creates a Topic inline and opens it", async () => {
+test("+ creates a Topic in the shared dialog and opens it", async () => {
   const calls = backend(configured);
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
   await userEvent.type(screen.getByLabelText("Topic name"), "Books{Enter}");
-  expect(calls).toContainEqual({ cmd: "create_topic", args: { name: "Books" } });
+  expect(calls).toContainEqual({ cmd: "picker_topic", args: { name: "Books" } });
   await vi.waitFor(() => expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument());
   const lists = calls.filter((c) => c.cmd === "list_items");
   expect(lists[lists.length - 1].args.view).toEqual({ kind: "topic", id: "new" });
 });
 
 test("a name clash keeps the field open with the error", async () => {
-  backend(configured, { failing: { create_topic: 'A Topic named "Books" already exists' } });
+  backend(configured, { failing: { picker_topic: 'A Topic named "Books" already exists' } });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
   await userEvent.type(screen.getByLabelText("Topic name"), "books{Enter}");
@@ -887,19 +887,19 @@ test("Escape cancels naming a Topic", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
   await userEvent.type(screen.getByLabelText("Topic name"), "Books{Escape}");
   expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument();
-  expect(calls.some((c) => c.cmd === "create_topic")).toBe(false);
+  expect(calls.some((c) => c.cmd === "picker_topic")).toBe(false);
 });
 
 test("Enter twice creates one Topic", async () => {
   let release!: () => void;
-  const calls = backend(configured, { gates: { create_topic: new Promise<void>((resolve) => (release = resolve)) } });
+  const calls = backend(configured, { gates: { picker_topic: new Promise<void>((resolve) => (release = resolve)) } });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
   // The first create is still in flight when the second Enter arrives.
   await userEvent.type(screen.getByLabelText("Topic name"), "Books{Enter}{Enter}");
   await act(async () => release());
   await vi.waitFor(() => expect(screen.queryByLabelText("Topic name")).not.toBeInTheDocument());
-  expect(calls.filter((c) => c.cmd === "create_topic")).toHaveLength(1);
+  expect(calls.filter((c) => c.cmd === "picker_topic")).toHaveLength(1);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -1700,7 +1700,7 @@ test("Enter that confirms an input method's text doesn't save or send", async ()
   await userEvent.click(screen.getByRole("button", { name: "New Topic" }));
   fireEvent.change(screen.getByLabelText("Topic name"), { target: { value: "ジム" } });
   fireEvent.keyDown(screen.getByLabelText("Topic name"), { key: "Enter", keyCode: 229 });
-  expect(calls.some((c) => c.cmd === "create_topic")).toBe(false);
+  expect(calls.some((c) => c.cmd === "picker_topic")).toBe(false);
 });
 
 test("Cancel unstages the files added in the editor", async () => {
@@ -3108,4 +3108,103 @@ test("opening an image refreshes its preview after the original downloads", asyn
   options.thumbnail = "/data/files/a2/photo.heic";
   await userEvent.click(screen.getByRole("button", { name: "Open photo.heic" }));
   expect(await screen.findByRole("img", { name: "photo.heic" })).toHaveAttribute("src", expect.stringContaining("photo.heic"));
+});
+
+
+test("the sidebar toggle persists its state across launches", async () => {
+  backend(configured);
+  const app = render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Hide sidebar" }));
+  expect(screen.queryByRole("textbox", { name: "Search" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show sidebar" })).toHaveAttribute("aria-expanded", "false");
+  app.unmount();
+  render(<App />);
+  await screen.findByRole("button", { name: "Show sidebar" });
+  expect(screen.queryByRole("textbox", { name: "Search" })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
+  expect(screen.getByRole("navigation")).toBeInTheDocument();
+});
+
+test("the sidebar shortcut returns focus from Search to the capture box", async () => {
+  backend(configured);
+  localStorage.setItem("place", "home");
+  render(<App />);
+  await userEvent.click(await screen.findByRole("textbox", { name: "Search" }));
+  fireEvent.keyDown(document.activeElement!, { key: "\\", metaKey: true });
+  expect(screen.queryByRole("textbox", { name: "Search" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveFocus();
+});
+
+test("Search temporarily opens a collapsed sidebar and empty Escape restores it", async () => {
+  backend(configured);
+  localStorage.setItem("place", "home");
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Hide sidebar" }));
+  fireEvent.keyDown(document.body, { key: "f", metaKey: true });
+  expect(screen.getByRole("textbox", { name: "Search" })).toHaveFocus();
+  fireEvent.keyDown(document.activeElement!, { key: "f", metaKey: true });
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("textbox", { name: "Search" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveFocus();
+});
+
+test("empty Search Escape keeps an originally open sidebar open", async () => {
+  backend(configured);
+  render(<App />);
+  await screen.findByRole("navigation");
+  fireEvent.keyDown(document.body, { key: "f", ctrlKey: true });
+  await userEvent.keyboard("{Escape}");
+  expect(screen.getByRole("navigation")).toBeInTheDocument();
+});
+
+test("sidebar + opens the shared dialog and a reserved name stays in it", async () => {
+  backend(configured, { failing: { picker_topic: 'Inbox is a built-in name. Pick another.' } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "New Topic" }));
+  const dialog = screen.getByRole("dialog", { name: "New Topic" });
+  expect(within(screen.getByRole("navigation")).queryByRole("textbox", { name: "Topic name" })).not.toBeInTheDocument();
+  await userEvent.type(within(dialog).getByRole("textbox", { name: "Topic name" }), "Inbox");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Create" }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("built-in name");
+});
+
+test("collapsing during Search uncovers the draft and returns focus", async () => {
+  backend(configured);
+  localStorage.setItem("place", "home");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  await userEvent.type(box, "unfinished capture");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "look up");
+  fireEvent.keyDown(document.activeElement!, { key: "\\", metaKey: true });
+  expect(box.closest("main")).not.toHaveClass("is-covered");
+  expect(box).toHaveFocus();
+  expect(box).toHaveValue("unfinished capture");
+});
+
+test("cancelling sidebar New Topic restores + focus after a click without browser focus", async () => {
+  backend(configured);
+  localStorage.setItem("place", "home");
+  render(<App />);
+  const box = await screen.findByRole("textbox", { name: "New Item" });
+  box.focus();
+  const plus = screen.getByRole("button", { name: "New Topic" });
+  fireEvent.click(plus);
+  await userEvent.keyboard("{Escape}");
+  expect(plus).toHaveFocus();
+});
+
+
+test("the collapsed rail keeps main Places available without a Search button", async () => {
+  const calls = backend(configured);
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Hide sidebar" }));
+  const rail = screen.getByRole("navigation");
+  expect(within(rail).queryByRole("button", { name: "Search" })).not.toBeInTheDocument();
+  expect(within(rail).queryByRole("button", { name: /Trash/ })).not.toBeInTheDocument();
+  expect(within(rail).queryByRole("button", { name: "New Topic" })).not.toBeInTheDocument();
+  for (const [name,kind] of [["Home","all"],["Inbox","inbox"],["Tunnel","tunnel"]]) {
+    await userEvent.click(within(rail).getByRole("button", { name }));
+    if (name !== "Home") await vi.waitFor(() => expect(calls.filter(c=>c.cmd==="list_items").slice(-1)[0]?.args.view).toEqual({kind}));
+    expect(screen.getByRole("button", { name: "Show sidebar" })).toHaveAttribute("aria-expanded", "false");
+  }
 });

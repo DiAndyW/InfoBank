@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getSettings, itemTarget, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
 import DeleteTopic from "./DeleteTopic";
@@ -19,6 +19,12 @@ export default function App() {
   // Home or a feed place.
   const [feed, setFeed] = useState(() => localStorage.getItem("place") ?? "home");
   const [counts, setCounts] = useState<Counts>({ inbox: 0, tunnel: 0, trash: 0 });
+  const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("sidebarOpen") !== "false");
+  const sidebarSlot = useRef<HTMLDivElement>(null);
+  const beforeSearch = useRef<boolean | null>(null);
+  const focusSearch = useRef(false);
+  const focusAfterLayout = useRef(false);
+  const sidebarToggle = useRef<HTMLButtonElement>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
 
   const [startup, setStartup] = useState<StartupFailure | null>(null);
@@ -52,6 +58,40 @@ export default function App() {
   const searching = searchText.trim() !== "";
   const covered = searching && resultsOpen;
   const dialogOpen = () => document.querySelector('[aria-modal="true"]') !== null;
+  const focusEditor = () => {
+    if (editor.current) editor.current.focus();
+    else (document.querySelector<HTMLTextAreaElement>(".nb-composer textarea") ?? sidebarToggle.current)?.focus();
+  };
+  const toggleSidebar = () => {
+    if (sidebarOpen) {
+      focusAfterLayout.current = !!sidebarSlot.current?.contains(document.activeElement);
+      setResultsOpen(false);
+    }
+    beforeSearch.current = null;
+    setSidebarOpen(!sidebarOpen);
+    localStorage.setItem("sidebarOpen", String(!sidebarOpen));
+  };
+  const openSearch = () => {
+    if (beforeSearch.current === null) beforeSearch.current = sidebarOpen;
+    if (!sidebarOpen) {
+      focusSearch.current = true;
+      setSidebarOpen(true);
+    } else {
+      searchField.current?.focus();
+      searchField.current?.select();
+    }
+  };
+  useLayoutEffect(() => {
+    if (focusAfterLayout.current && !covered) {
+      focusAfterLayout.current = false;
+      focusEditor();
+    }
+    if (sidebarOpen && focusSearch.current && searchField.current) {
+      focusSearch.current = false;
+      searchField.current.focus();
+      searchField.current.select();
+    }
+  }, [sidebarOpen, covered, settings]);
   const select = async (key: string) => {
     if (editor.current && !(await editor.current.save())) return false;
     setFeed(key);
@@ -172,14 +212,18 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "f" || !(e.metaKey || e.ctrlKey) || e.shiftKey || dialogOpen()) return;
-      e.preventDefault();
-      searchField.current?.focus();
-      searchField.current?.select();
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.isComposing || dialogOpen()) return;
+      if (e.key === "\\") {
+        e.preventDefault();
+        toggleSidebar();
+      } else if (e.key === "f") {
+        e.preventDefault();
+        openSearch();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [sidebarOpen]);
 
   async function load() {
     try {
@@ -240,19 +284,33 @@ export default function App() {
     return <Settings initial={settings} theme={theme} onThemeChange={setTheme} onSaved={load} />;
   }
   return (
-    <div className="nb-app">
-      <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
-        search={searchText}
-        drag={dragging && { from: dragging.item.in_tunnel ? "tunnel" : dragging.item.topic_id ?? "inbox", over: dropOn }}
-        onDragOver={setDropOn}
-        onSearch={(text) => {
-          setSearchText(text);
-          setResultsOpen(true);
-        }}
-        onSearchFocus={() => setResultsOpen(true)}
-        onSearchEscape={() => editor.current?.focus()}
-        searchRef={searchField}
-      />
+    <div className={`nb-app${sidebarOpen ? "" : " is-sidebar-collapsed"}`}>
+      <div className="nb-sidebar-slot" ref={sidebarSlot}>
+        <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
+          collapsed={!sidebarOpen}
+          toggle={<button ref={sidebarToggle} type="button" className="nb-iconbtn" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            title={`${sidebarOpen ? "Hide" : "Show"} sidebar (⌘\\)`} aria-expanded={sidebarOpen} aria-controls="sidebar-content" onClick={toggleSidebar}>
+            <Icon name="sidebar" />
+          </button>}
+          search={searchText}
+          drag={dragging && { from: dragging.item.in_tunnel ? "tunnel" : dragging.item.topic_id ?? "inbox", over: dropOn }}
+          onDragOver={setDropOn}
+          onSearch={(text) => {
+            setSearchText(text);
+            setResultsOpen(true);
+          }}
+          onSearchFocus={() => setResultsOpen(true)}
+          onSearchEscape={(empty) => {
+            if (empty && beforeSearch.current !== null) {
+              setSidebarOpen(beforeSearch.current);
+              beforeSearch.current = null;
+            }
+            if (covered) focusAfterLayout.current = true;
+            else focusEditor();
+          }}
+          searchRef={searchField}
+        />
+      </div>
       <Feed
         home={feed === "home"}
         view={feed === "home" ? { kind: "all" } : feed === "all" || feed === "inbox" || feed === "tunnel" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}

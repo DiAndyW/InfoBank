@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { archiveTopic, createTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic } from "./api";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { archiveTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
+import NewTopicDialog from "./NewTopicDialog";
 
 const STATUS: Record<Exclude<SyncStatus, "unauthorized" | "not_configured">, [IconName, string, string]> = {
   synced: ["synced", "Synced", "nb-sync-ok"],
@@ -11,6 +12,8 @@ const STATUS: Record<Exclude<SyncStatus, "unauthorized" | "not_configured">, [Ic
 };
 
 type Props = {
+  collapsed: boolean;
+  toggle: ReactNode;
   topics: Topic[];
   counts: Counts;
   selected: string;
@@ -22,26 +25,25 @@ type Props = {
   search: string;
   onSearch: (text: string) => void;
   onSearchFocus: () => void;
-  onSearchEscape: () => void;
+  onSearchEscape: (empty: boolean) => void;
   // While an Item is dragged: where it is now ("inbox", "tunnel", or a Topic id), and the row it would drop on.
   drag: { from: string; over: string | null } | null;
   onDragOver: (key: string | null) => void;
   searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
+export default function Sidebar({ collapsed, toggle, topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
   // The field shows what's typed even mid-composition; the query only follows once the input method is done.
   const [draft, setDraft] = useState(search);
   const composing = useRef(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  // id null = a new Topic.
-  const [naming, setNaming] = useState<{ id: string | null; draft: string; error: string | null } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [naming, setNaming] = useState<{ id: string; draft: string; error: string | null } | null>(null);
   const open = topics.filter((t) => !t.archived);
   const archived = topics.filter((t) => t.archived);
   const saving = useRef(false);
   const nav = useRef<HTMLElement>(null);
-  const plus = useRef<HTMLButtonElement>(null);
   // A Topic whose row should take focus once it's on screen (a new one arrives with the next Topics refresh).
   const focusRow = useRef<string | null>(null);
 
@@ -55,20 +57,14 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
     if (!row) return;
     row.focus();
     focusRow.current = null;
-  }, [topics, naming, showArchived]);
+  }, [topics, naming, showArchived, creating]);
 
   async function saveName() {
     if (!naming || saving.current) return;
     saving.current = true;
     try {
-      if (naming.id === null) {
-        const created = await createTopic(naming.draft);
-        focusRow.current = created.id;
-        onSelect(created.id);
-      } else {
-        await renameTopic(naming.id, naming.draft);
-        focusRow.current = naming.id;
-      }
+      await renameTopic(naming.id, naming.draft);
+      focusRow.current = naming.id;
       setNaming(null);
     } catch (err) {
       setNaming({ ...naming, error: String(err) });
@@ -92,8 +88,7 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
             e.preventDefault();
             saveName();
           } else if (e.key === "Escape") {
-            if (naming.id === null) plus.current!.focus();
-            else focusRow.current = naming.id;
+            focusRow.current = naming.id;
             setNaming(null);
           }
         }}
@@ -155,9 +150,11 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
     );
   };
 
-  return (
-    <nav className="nb-sidebar" ref={nav}>
-      <div className="nb-search">
+  return (<>
+    <nav className={`nb-sidebar${collapsed ? " is-collapsed" : ""}`} ref={nav}>
+      <div className="nb-sidebar-header">
+        {toggle}
+      <div className="nb-search" hidden={collapsed} inert={collapsed}>
         <Icon name="search" />
         <input
           ref={searchRef}
@@ -178,7 +175,7 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
             if (e.key === "Escape" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
               setDraft("");
               onSearch("");
-              onSearchEscape();
+              onSearchEscape(draft.trim() === "");
             }
           }}
         />
@@ -197,6 +194,18 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
           </button>
         )}
       </div>
+      </div>
+      {collapsed && <div className="nb-sidebar-rail">
+        <div className="nb-rail-divider" />
+        {([ ["home", "Home", "home"], ["inbox", "Inbox", "inbox"], ["tunnel", "Tunnel", "send"] ] as const).map(([key, label, icon]) => (
+          <button key={key} type="button" className={["nb-iconbtn", selected === key && "is-selected", dropClass(key, key !== "home")].filter(Boolean).join(" ")}
+            aria-label={label} title={label} aria-current={selected === key ? "page" : undefined} onClick={() => onSelect(key)}
+            {...dropHandlers(key, key !== "home")}>
+            <Icon name={icon} />
+          </button>
+        ))}
+      </div>}
+      <div id="sidebar-content" className="nb-sidebar-full" hidden={collapsed} inert={collapsed}>
       {entry("home", "Home", "home")}
       {entry("all", "All Items", "all")}
       {entry("inbox", "Inbox", "inbox", counts.inbox)}
@@ -204,13 +213,12 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
       {entry("trash", "Trash", "trash", counts.trash)}
       <div className="nb-section">
         <span>Topics</span>
-        <button ref={plus} className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={() => setNaming({ id: null, draft: "", error: null })}>
+        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={(e) => { e.currentTarget.focus(); setCreating(true); }}>
           <Icon name="plus" />
         </button>
       </div>
       <div className="nb-topic-list">
-        {open.length === 0 && naming?.id !== null ? <div className="nb-section-empty">None yet</div> : open.map(row)}
-        {naming?.id === null && nameField}
+        {open.length === 0 ? <div className="nb-section-empty">None yet</div> : open.map(row)}
         <div className="nb-section">
           <button className="nb-section-toggle" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
             <span>Archived</span>
@@ -247,6 +255,12 @@ export default function Sidebar({ topics, counts, selected, onSelect, status, on
           <span className="nb-nav-label">Settings</span>
         </button>
       </div>
+      </div>
     </nav>
-  );
+    {creating && <NewTopicDialog onClose={() => setCreating(false)} onCreated={(created) => {
+      focusRow.current = created.id;
+      onSelect(created.id);
+      setCreating(false);
+    }} />}
+  </>);
 }
