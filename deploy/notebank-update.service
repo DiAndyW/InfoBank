@@ -1,0 +1,25 @@
+[Unit]
+Description=Check and install verified NoteBank Server releases
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/notebank-update check
+EnvironmentFile=/etc/notebank/backup.env
+EnvironmentFile=/etc/notebank/update.env
+Environment=RESTIC_CACHE_DIR=/var/cache/notebank-backup
+StateDirectory=notebank-update
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=20min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/usr/local/bin /run/lock /var/cache/notebank-backup
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

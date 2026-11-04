@@ -1,5 +1,9 @@
 #!/bin/bash
 set -euo pipefail
+umask 077
+
+exec 9>/run/lock/notebank-maintenance.lock
+flock -x 9
 
 trap 'curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail" || true' ERR
 
@@ -7,8 +11,32 @@ trap 'curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL/fail" || true' ER
 setpriv --reuid=notebank --regid=notebank --clear-groups pg_dump --format=custom --dbname=notebank --host=/var/run/postgresql \
 	> "$STATE_DIRECTORY/notebank.dump"
 
-restic backup --host notebank --exclude '*.partial-*' "$STATE_DIRECTORY/notebank.dump" /var/lib/notebank/attachments
+restic backup --json --host notebank --exclude '*.partial-*' "$STATE_DIRECTORY/notebank.dump" /var/lib/notebank/attachments > "$STATE_DIRECTORY/backup-result.json"
 restic forget --host notebank --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune
 restic check
 
+python3 - "$STATE_DIRECTORY" <<'MARKER'
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import sys
+root = Path(sys.argv[1])
+summaries = [json.loads(line) for line in (root / 'backup-result.json').read_text().splitlines()]
+snapshot = next(value['snapshot_id'] for value in reversed(summaries) if value.get('message_type') == 'summary')
+if not re.fullmatch(r'[0-9a-f]{64}', snapshot):
+    raise ValueError('invalid snapshot identity')
+marker = dict(format_version=1, completed_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), snapshot_id=snapshot)
+with (root / 'success.json.tmp').open('w') as output:
+    json.dump(marker, output)
+    output.flush()
+    os.fsync(output.fileno())
+os.replace(root / 'success.json.tmp', root / 'success.json')
+fd = os.open(root, os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+MARKER
 curl -fsS -m 10 --retry 3 -o /dev/null "$HEALTHCHECK_URL"

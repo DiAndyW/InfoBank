@@ -19,5 +19,6 @@ IOSchedulingClass=idle
 
 NoNewPrivileges=yes
 ProtectSystem=strict
+ReadWritePaths=/run/lock
 ProtectHome=yes
 PrivateTmp=yes

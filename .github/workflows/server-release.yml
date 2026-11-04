@@ -1,0 +1,68 @@
+name: Server release
+
+on:
+  push:
+    tags: ['server-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-release
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release tag and main ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r'server-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', os.environ['RELEASE_TAG'])
+          PY
+          git merge-base --is-ancestor HEAD origin/main
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Build Linux arm64 binary
+        working-directory: server
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: arm64
+        run: go build -trimpath -o ../notebank-server-linux-arm64 ./cmd/notebank-server
+      - name: Sign and publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          MINISIGN_PRIVATE_KEY: ${{ secrets.SERVER_RELEASE_MINISIGN_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          key_file=$(mktemp)
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$MINISIGN_PRIVATE_KEY" > "$key_file"
+          unset MINISIGN_PRIVATE_KEY
+          test -s "$key_file"
+          commit=$(git rev-parse HEAD)
+          python3 deploy/release-manifest.py "${RELEASE_TAG#server-v}" "$commit" notebank-server-linux-arm64 > manifest.json
+          minisign -S -s "$key_file" -m manifest.json
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes "Compatible Server release; CI checks passed." notebank-server-linux-arm64 manifest.json manifest.json.minisig
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false
