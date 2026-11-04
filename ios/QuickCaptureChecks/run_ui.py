@@ -2,18 +2,21 @@
 """Drive the quick action and the Capture Control on a simulator and check they open the focused composer."""
 from pathlib import Path
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 repo = Path(__file__).resolve().parents[2]
 app_id = "app.notebank.ios"
 host_id = "app.notebank.quick-capture-check"
 
-if len(sys.argv) != 2:
-    sys.exit("usage: run_ui.py <simulator UDID>")
+if len(sys.argv) not in (2, 3):
+    sys.exit("usage: run_ui.py <simulator UDID> [test method]")
 device = sys.argv[1]
+selected = sys.argv[2] if len(sys.argv) == 3 else None
 
 def encode(value):
     if isinstance(value, dict):
@@ -25,7 +28,21 @@ def encode(value):
 def simctl(*args, check=True):
     return subprocess.run(["xcrun", "simctl", *args], check=check, capture_output=True, text=True).stdout.strip()
 
-def generate_project(project):
+class CheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        authorized = self.headers.get("Authorization") == "Bearer check-secret"
+        self.send_response(204 if self.path == "/auth/check" and authorized else 503)
+        self.end_headers()
+
+    def do_POST(self):
+        self.send_response(503)
+        self.end_headers()
+
+    def log_message(self, *_args):
+        pass
+
+
+def generate_project(project, server_url):
     project.mkdir()
     objects = {}
     def add(key, **values):
@@ -62,9 +79,10 @@ def generate_project(project):
     schemes = project / "xcshareddata/xcschemes"
     schemes.mkdir(parents=True)
     (schemes / "Capture.xcscheme").write_text('''<?xml version="1.0" encoding="UTF-8"?>
-<Scheme version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AppTarget" BuildableName="CaptureHost.app" BlueprintName="CaptureHost" ReferencedContainer="container:Capture.xcodeproj"/></BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Debug" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TestTarget" BuildableName="CaptureUITests.xctest" BlueprintName="CaptureUITests" ReferencedContainer="container:Capture.xcodeproj"/></TestableReference></Testables></TestAction></Scheme>''')
+<Scheme version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AppTarget" BuildableName="CaptureHost.app" BlueprintName="CaptureHost" ReferencedContainer="container:Capture.xcodeproj"/></BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Debug" shouldUseLaunchSchemeArgsEnv="NO"><Testables><TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TestTarget" BuildableName="CaptureUITests.xctest" BlueprintName="CaptureUITests" ReferencedContainer="container:Capture.xcodeproj"/></TestableReference></Testables><EnvironmentVariables><EnvironmentVariable key="NOTEBANK_TEST_SERVER" value="SERVER_URL" isEnabled="YES"/></EnvironmentVariables></TestAction></Scheme>'''.replace("SERVER_URL", server_url))
 
-with tempfile.TemporaryDirectory(prefix="notebank-quick-capture-ui-") as temporary:
+with ThreadingHTTPServer(("127.0.0.1", 0), CheckHandler) as check_server, tempfile.TemporaryDirectory(prefix="notebank-quick-capture-ui-") as temporary:
+    threading.Thread(target=check_server.serve_forever, daemon=True).start()
     root = Path(temporary)
     try:
         simctl("shutdown", device, check=False)
@@ -78,15 +96,17 @@ with tempfile.TemporaryDirectory(prefix="notebank-quick-capture-ui-") as tempora
         time.sleep(5)
         simctl("terminate", device, app_id)
 
-        generate_project(root / "Capture.xcodeproj")
+        generate_project(root / "Capture.xcodeproj", f"http://127.0.0.1:{check_server.server_port}")
         result = root / "result.xcresult"
-        tests = subprocess.run(["xcodebuild", "test", "-project", str(root / "Capture.xcodeproj"), "-scheme", "Capture", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", str(root / "ui"), "-resultBundlePath", str(result), "-parallel-testing-enabled", "NO", "-quiet"])
+        tests = subprocess.run(["xcodebuild", "test", "-project", str(root / "Capture.xcodeproj"), "-scheme", "Capture", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", str(root / "ui"), "-resultBundlePath", str(result), "-parallel-testing-enabled", "NO", "-test-timeouts-enabled", "YES", "-maximum-test-execution-time-allowance", "120"] + ([f"-only-testing:CaptureUITests/QuickCaptureUITests/{selected}"] if selected else []))
         summary = json.loads(subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(result)], text=True))
         assert tests.returncode == 0, (summary["failedTests"], [failure["testIdentifierString"] + ": " + failure["failureText"] for failure in summary["testFailures"]])
-        assert summary["totalTestCount"] == 3 and summary["passedTests"] == 3, summary
+        expected = 1 if selected else 4
+        assert summary["totalTestCount"] == expected and summary["passedTests"] == expected, summary
 
-        print("3 quick capture UI tests passed: the quick action, a Control with a Place and a Control without one open the focused composer")
+        print(f"{expected} navigation and quick capture UI tests passed")
     finally:
+        check_server.shutdown()
         simctl("uninstall", device, app_id, check=False)
         simctl("uninstall", device, host_id + ".tests.xctrunner", check=False)
         simctl("uninstall", device, host_id, check=False)

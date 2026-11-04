@@ -207,7 +207,6 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
       </div>}
       <div id="sidebar-content" className="nb-sidebar-full" hidden={collapsed} inert={collapsed}>
       {entry("home", "Home", "home")}
-      {entry("all", "All Items", "all")}
       {entry("inbox", "Inbox", "inbox", counts.inbox)}
       {entry("tunnel", "Tunnel", "send", counts.tunnel)}
       {entry("trash", "Trash", "trash", counts.trash)}

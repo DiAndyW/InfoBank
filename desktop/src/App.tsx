@@ -17,7 +17,10 @@ export default function App() {
   const [editing, setEditing] = useState(false);
   const [topics, setTopics] = useState<Topic[]>([]);
   // Home or a feed place.
-  const [feed, setFeed] = useState(() => localStorage.getItem("place") ?? "home");
+  const [feed, setFeed] = useState(() => {
+    const saved = localStorage.getItem("place");
+    return saved === "all" ? "home" : saved ?? "home";
+  });
   const [counts, setCounts] = useState<Counts>({ inbox: 0, tunnel: 0, trash: 0 });
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem("sidebarOpen") !== "false");
   const sidebarSlot = useRef<HTMLDivElement>(null);
@@ -193,7 +196,10 @@ export default function App() {
   // Only on a Topics change, so selecting a just-created Topic isn't undone before its refresh arrives.
   useEffect(() => {
     if (!settings) return;
-    if (!["home", "all", "inbox", "tunnel", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) setFeed("inbox");
+    if (!["home", "inbox", "tunnel", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) {
+      setFeed("home");
+      localStorage.setItem("place", "home");
+    }
   }, [topics, !!settings]);
 
   useEffect(() => {
@@ -313,7 +319,7 @@ export default function App() {
       </div>
       <Feed
         home={feed === "home"}
-        view={feed === "home" ? { kind: "all" } : feed === "all" || feed === "inbox" || feed === "tunnel" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
+        view={feed === "home" ? { kind: "all" } : feed === "inbox" || feed === "tunnel" || feed === "trash" ? { kind: feed } : { kind: "topic", id: feed }}
         topics={topics}
         covered={covered}
         editor={editor}

@@ -84,7 +84,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
   const showLoadingOlder = useShownAfterDelay(loadingOlder);
   const current = view.kind === "topic" ? topics.find((t) => t.id === view.id) : undefined;
   const trash = view.kind === "trash";
-  const noComposer = !home && (view.kind === "all" || trash || current?.archived === true);
+  const noComposer = !home && (trash || current?.archived === true);
   const targets: { id: string; name: string; target: Target }[] = [
     { id: "inbox", name: "Inbox", target: { kind: "inbox" } },
     { id: "tunnel", name: "Tunnel", target: { kind: "tunnel" } },
@@ -318,7 +318,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
             ) : (
               <div className="nb-empty">
                 <p className="nb-empty-title">Nothing here yet.</p>
-                <p className="nb-empty-hint">{view.kind === "all" ? "Capture something in Home or choose a place in the sidebar." : "Capture something below."}</p>
+                <p className="nb-empty-hint">Capture something below.</p>
               </div>
             )
           ) : (
@@ -326,7 +326,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
               const time = new Date(it.capture_time_us / 1000);
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
-              const place = view.kind === "all" || trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
+              const place = trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
               const copy = view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
               const heading = trash
                 ? daysRemaining(it.purge_at_us)

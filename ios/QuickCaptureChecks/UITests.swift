@@ -11,13 +11,41 @@ final class QuickCaptureUITests: XCTestCase {
         let url = noteBank.textFields["Server URL"]
         guard url.waitForExistence(timeout: 5) else { return }
         url.tap()
-        url.typeText("http://127.0.0.1:9")
+        guard let serverURL = ProcessInfo.processInfo.environment["NOTEBANK_TEST_SERVER"] else {
+            XCTFail("The test Server URL is missing")
+            return
+        }
+        url.typeText(serverURL)
         let secret = noteBank.secureTextFields["Shared secret"]
         secret.tap()
         secret.typeText("check-secret")
         noteBank.staticTexts["Set up NoteBank"].tap()
         noteBank.buttons["Save"].tap()
         XCTAssertTrue(noteBank.textViews["Capture"].waitForExistence(timeout: 10), "Setup did not finish")
+    }
+
+    func testPlacesAndSearchAfterRemovingAllItems() {
+        completeSetup()
+        XCTAssertFalse(noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'All Items'")).firstMatch.exists)
+        noteBank.buttons["Search"].tap()
+        XCTAssertTrue(noteBank.buttons["Place"].waitForExistence(timeout: 5))
+        XCTAssertEqual(noteBank.buttons["Place"].value as? String, "Anywhere")
+        noteBank.buttons["Cancel"].tap()
+
+        noteBank.buttons["New Topic"].tap()
+        let alert = noteBank.alerts["New Topic"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.textFields.firstMatch.typeText("Navigation check")
+        alert.buttons["Save"].tap()
+        let topic = noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Navigation check'")).firstMatch
+        XCTAssertTrue(topic.waitForExistence(timeout: 5))
+        topic.tap()
+        noteBank.buttons["Topic actions"].tap()
+        noteBank.buttons["Delete Topic…"].tap()
+        noteBank.buttons["Keep all in Inbox"].tap()
+        noteBank.alerts["Delete this Topic?"].buttons["Delete Topic"].tap()
+        XCTAssertTrue(noteBank.textViews["Capture"].waitForExistence(timeout: 5), "Deleting the open Topic did not return Home")
+        XCTAssertFalse(topic.exists)
     }
 
     func assertComposerFocused() {
@@ -94,9 +122,9 @@ final class QuickCaptureUITests: XCTestCase {
 
         tunnel.tap()
         XCTAssertEqual(tunnel.value as? String, "0")
-        let allItems = noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'All Items'")).firstMatch
-        for _ in 0..<3 where !allItems.isHittable { noteBank.swipeUp() }
-        allItems.tap()
+        let inbox = noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Inbox'")).firstMatch
+        for _ in 0..<3 where !inbox.isHittable { noteBank.swipeUp() }
+        inbox.tap()
         noteBank.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(tunnel.waitForExistence(timeout: 5))
         XCTAssertEqual(tunnel.value as? String, "0", "Coming back to Home applied the Control's request again")

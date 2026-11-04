@@ -34,7 +34,7 @@ struct PlacesView: View {
     @Environment(\.palette) private var palette
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private func row(_ place: Place, _ name: String, _ count: Int?) -> some View {
+    private func row(_ place: FeedPlace, _ name: String, _ count: Int?) -> some View {
         NavigationLink(value: Route.place(place)) {
             HStack(spacing: 12) {
                 if symbol(place) != nil {
@@ -52,9 +52,8 @@ struct PlacesView: View {
         .buttonStyle(.plain)
     }
 
-    private func symbol(_ place: Place) -> String? {
+    private func symbol(_ place: FeedPlace) -> String? {
         switch place {
-        case .all: "square.3.layers.3d"
         case .inbox: "tray"
         case .tunnel: "arrow.left.arrow.right"
         case .topic: nil
@@ -98,8 +97,6 @@ struct PlacesView: View {
                 VStack(spacing: 0) {
                     HomeComposerView(model: composer, store: store, topics: places.topics, wake: wake).padding(.bottom, 20)
                     VStack(spacing: 0) {
-                        row(.all, "All Items", places.allCount)
-                        Divider().overlay(palette.line)
                         row(.inbox, "Inbox", places.inboxCount)
                         Divider().overlay(palette.line)
                         row(.tunnel, "Tunnel", places.tunnelCount)

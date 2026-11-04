@@ -35,7 +35,7 @@ struct Services {
 }
 
 enum Route: Hashable {
-    case place(Place), search(SearchPlace)
+    case place(FeedPlace), search(SearchPlace)
 }
 
 @main
@@ -78,11 +78,11 @@ struct RootView: View {
         _home = State(wrappedValue: ComposerModel(store: services.store, destination: .inbox, placeholder: "Capture something…", onCaptured: services.wake))
     }
 
-    private func itemPlace(_ itemID: String) -> Place {
+    private func itemPlace(_ itemID: String) -> FeedPlace {
         (try? services.store.pool.read { db in
-            guard let row = try Row.fetchOne(db, sql: "SELECT topic_id, in_tunnel FROM items WHERE id = ? AND deleted_at IS NULL", arguments: [itemID]) else { return Place.inbox }
+            guard let row = try Row.fetchOne(db, sql: "SELECT topic_id, in_tunnel FROM items WHERE id = ? AND deleted_at IS NULL", arguments: [itemID]) else { return FeedPlace.inbox }
             if row["in_tunnel"] as Bool { return .tunnel }
-            return (row["topic_id"] as String?).map(Place.topic) ?? .inbox
+            return (row["topic_id"] as String?).map(FeedPlace.topic) ?? .inbox
         }) ?? .inbox
     }
 
@@ -189,8 +189,7 @@ struct RootView: View {
                 savedPlace = ""
                 return
             }
-            var restored: [Place] = switch savedPlace {
-            case "all": [.all]
+            var restored: [FeedPlace] = switch savedPlace {
             case "trash": [.trash]
             case "inbox": [.inbox]
             case "tunnel": [.tunnel]
@@ -205,11 +204,16 @@ struct RootView: View {
             path = []
             showingSettings = false
         }
+        .onChange(of: places.places.topics + places.archived) { _, topics in
+            if path.contains(where: { route in
+                if case .place(.topic(let id)) = route { return !topics.contains { $0.id == id } }
+                return false
+            }) { path = [] }
+        }
         .onChange(of: path) { _, path in
             if case .place = path.last { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
             let trail = path.compactMap { if case .place(let place) = $0 { place } else { nil } }
             savedPlace = switch trail.last {
-            case .all?: "all"
             case .trash?: "trash"
             case .inbox?: "inbox"
             case .tunnel?: "tunnel"

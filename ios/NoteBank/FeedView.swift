@@ -1,15 +1,28 @@
 import NoteBankKit
 import SwiftUI
 
+enum FeedPlace: Hashable {
+    case inbox, tunnel, trash, topic(String)
+
+    var query: Place {
+        switch self {
+        case .inbox: .inbox
+        case .tunnel: .tunnel
+        case .trash: .trash
+        case .topic(let id): .topic(id)
+        }
+    }
+}
+
 struct ShowTarget: Equatable {
-    let place: Place
+    let place: FeedPlace
     let itemID: String
 }
 
 struct FeedView: View {
     private let store: Store
     private let transfers: AttachmentTransfers
-    let place: Place
+    let place: FeedPlace
     let status: SyncStatus
     let openSettings: () -> Void
     let notices: NoticeCenter
@@ -40,7 +53,7 @@ struct FeedView: View {
     @State private var deleteTopic = false
 
     init(
-        place: Place, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
+        place: FeedPlace, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
         onShow: @escaping (String) -> Void, onSearch: @escaping (SearchPlace) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
     ) {
         self.store = services.store
@@ -55,16 +68,15 @@ struct FeedView: View {
         wake = services.wake
         _target = target
         let title = switch place {
-        case .all: "All Items"
         case .trash: "Trash"
         case .inbox: "Inbox"
         case .tunnel: "Tunnel"
         case .topic: topicName ?? ""
         }
         _title = State(wrappedValue: title)
-        _model = State(wrappedValue: FeedModel(store: services.store, place: place))
+        _model = State(wrappedValue: FeedModel(store: services.store, place: place.query))
         let destination: Destination = switch place {
-        case .all, .inbox, .trash: .inbox
+        case .inbox, .trash: .inbox
         case .tunnel: .tunnel
         case .topic(let id): .topic(id)
         }
@@ -78,7 +90,6 @@ struct FeedView: View {
 
     private var searchPlace: SearchPlace? {
         switch place {
-        case .all: .all
         case .inbox: .inbox
         case .tunnel: .tunnel
         case .topic(let id): .topic(id)
@@ -108,7 +119,7 @@ struct FeedView: View {
     }
 
     private func itemRow(_ item: FeedItem, showsTime: Bool = true) -> some View {
-        ItemRow(item: item, showsTopic: place == .all || place == .trash, highlighted: highlighted == item.id,
+        ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
                 copyable: place == .tunnel, copied: copiedID == item.id,
                 onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
             .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
@@ -240,7 +251,7 @@ struct FeedView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 8) {
-                if place != .all && place != .trash && !model.topicUnavailable {
+                if place != .trash && !model.topicUnavailable {
                     ComposerView(model: composer) {
                         scrollsToNewest = true
                         model.reload()

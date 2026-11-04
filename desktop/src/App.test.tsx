@@ -33,7 +33,7 @@ type Options = {
 };
 
 function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opts: Options = {}) {
-  localStorage.setItem("place", "all");
+  localStorage.setItem("place", "inbox");
   const settings: Settings = { quick_capture: { shortcut: "shift+super+Space", on: true }, ...given };
   let hotkey = settings.quick_capture;
   let autostart = opts.autostart ?? false;
@@ -495,7 +495,7 @@ test("scrolling to the top loads older Items", async () => {
   await vi.waitFor(() =>
     expect(calls).toContainEqual({
       cmd: "list_items",
-      args: { view: { kind: "all" }, before: { capture_time_us: at(2026, 10, 14, 9, 41), id: "1", purge_at_us: null } },
+      args: { view: { kind: "inbox" }, before: { capture_time_us: at(2026, 10, 14, 9, 41), id: "1", purge_at_us: null } },
     }),
   );
 });
@@ -826,7 +826,7 @@ test("the sidebar refetches Topics when items change", async () => {
   expect(await screen.findByRole("button", { name: "From my phone" })).toBeInTheDocument();
 });
 
-test("when the selected Topic disappears the Inbox is shown", async () => {
+test("when the selected Topic disappears Home is shown", async () => {
   let topics = [topic("g", "Gym")];
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
@@ -845,9 +845,9 @@ test("when the selected Topic disappears the Inbox is shown", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
   topics = [];
   await act(() => emit("items-changed"));
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page"));
-  const lists = calls.filter((c) => c.cmd === "list_items");
-  expect(lists[lists.length - 1].args.view).toEqual({ kind: "inbox" });
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page"));
+  expect(localStorage.getItem("place")).toBe("home");
+  expect(screen.getByTestId("feed-items")).not.toBeVisible();
 });
 
 test("a failed Topic change is shown in a dialog", async () => {
@@ -1011,7 +1011,7 @@ test("only the Inbox and other open Topics take a dropped Item", async () => {
   render(<App />);
   await screen.findByText("squat 100");
   await userEvent.click(screen.getByRole("button", { name: /Archived/ }));
-  for (const target of [screen.getByRole("button", { name: "Gym" }), screen.getByRole("button", { name: "Old" }), screen.getByRole("button", { name: /^All Items/ }), screen.getByRole("button", { name: /^Trash/ })]) {
+  for (const target of [screen.getByRole("button", { name: "Gym" }), screen.getByRole("button", { name: "Old" }), screen.getByRole("button", { name: /^Trash/ })]) {
     drag("squat 100", target);
   }
   expect(moves(calls)).toEqual([]);
@@ -1055,19 +1055,17 @@ test("a failed move is shown in a dialog", async () => {
   expect(await screen.findByRole("alertdialog", { name: "Couldn't move the Item" })).toHaveTextContent("That Topic is archived");
 });
 
-test("All Items shows each Item's place as a chip, Topic names as text", async () => {
+test("Search results show each Item's place as a chip, Topic names as text", async () => {
   backend(configured, {
     topics: [topic("g", "<b>Gym</b>")],
-    // Newest first, as list_items returns them; the Feed shows them oldest first.
-    items: () => [filed("2", "loose", null), filed("1", "squat 100", "g")],
+    search: () => [found(filed("1", "squat 100", "g")), found(filed("2", "loose", null))],
   });
+  localStorage.setItem("place", "home");
   render(<App />);
-  const [first, second] = await screen.findAllByRole("article");
-  expect(within(first).getByTitle("In <b>Gym</b>")).toHaveTextContent("<b>Gym</b>");
-  expect(within(second).getByTitle("In Inbox")).toHaveTextContent("Inbox");
-
-  await userEvent.click(screen.getByRole("button", { name: "<b>Gym</b>" }));
-  await vi.waitFor(() => expect(within(screen.getAllByRole("article")[0]).queryByTitle("In <b>Gym</b>")).not.toBeInTheDocument());
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
+  const results = await screen.findAllByRole("button", { name: /squat 100|loose/ });
+  expect(results[0]).toHaveTextContent("<b>Gym</b>");
+  expect(results[1]).toHaveTextContent("Inbox");
 });
 
 test("each Topic in the sidebar shows how many Items it has", async () => {
@@ -1772,13 +1770,13 @@ test("switching views saves the open edit, and stays put if that save fails", as
   await openEdit("squat 100");
   await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), "!");
   failing.edit_item = "disk full";
-  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^Tunnel/ }));
   expect(await within(editorOf()).findByRole("alert")).toHaveTextContent("disk full");
-  expect(screen.getByRole("button", { name: "All Items" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page");
   delete failing.edit_item;
-  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^Tunnel/ }));
   expect(calls.filter((c) => c.cmd === "edit_item")).toEqual(Array(2).fill({ cmd: "edit_item", args: { itemId: "1", text: "squat 100!", addIds: [], removeIds: [], baseRev: 0 } }));
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Inbox/ })).toHaveAttribute("aria-current", "page"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: /^Tunnel/ })).toHaveAttribute("aria-current", "page"));
   expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
 });
 
@@ -1905,7 +1903,7 @@ test("typing in Search shows marked results over the Feed, and Esc brings the Fe
   expect(within(result).getByText("Inbox")).toBeInTheDocument();
   expect(feedHidden()).toBe(true);
   expect(searchCalls(calls)).toEqual([
-    { cmd: "search_items", args: { query: { text: "invoice", place: { kind: "all" }, from_us: null, to_us: null, has_files: false }, before: null } },
+    { cmd: "search_items", args: { query: { text: "invoice", place: { kind: "inbox" }, from_us: null, to_us: null, has_files: false }, before: null } },
   ]);
   await userEvent.keyboard("{Escape}");
   expect(feedHidden()).toBe(false);
@@ -2043,6 +2041,7 @@ const lastQuery = (calls: { cmd: string; args: any }[]) => {
 
 test("the place filter lists Inbox, open Topics, then archived ones, and narrows the search", async () => {
   const calls = backend(configured, { topics: [topic("t", "Taxes"), topic("o", "Old", { archived: true })] });
+  localStorage.setItem("place", "home");
   render(<App />);
   await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
   const place = await screen.findByRole("button", { name: "Place" });
@@ -2078,7 +2077,7 @@ test("a new search starts in the open Place and keeps its filter until the text 
   await vi.waitFor(() => expect(lastQuery(calls).place).toEqual({ kind: "inbox" }));
 });
 
-test.each(["All Items", "Trash"])("a search from %s starts Anywhere", async (name) => {
+test.each(["Home", "Trash"])("a search from %s starts Anywhere", async (name) => {
   const calls = backend(configured, { topics: [topic("t", "Taxes")] });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Taxes" }));
@@ -2122,6 +2121,7 @@ test("a custom range covers whole local days, even across a clock change", async
 
 test("with filters set, no results offers Clear filters, which resets them", async () => {
   const calls = backend(configured);
+  localStorage.setItem("place", "home");
   render(<App />);
   await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "note");
   await screen.findByText("No Items match.");
@@ -2794,7 +2794,6 @@ test("Tunnel settings round-trip", async () => {
   expect(await screen.findByRole("switch", { name: "Trash Tunnel notes after copying" })).not.toBeChecked();
 });
 
-
 test("Tunnel search filters and opens a result in its own place", async () => {
   const calls = backend(configured, { items: () => [tunnelItem()], search: () => [found(tunnelItem())] });
   render(<App />);
@@ -2808,7 +2807,6 @@ test("Tunnel search filters and opens a result in its own place", async () => {
   await userEvent.click(within(results).getByRole("button", { name: /transfer this/ }));
   expect(screen.getByRole("button", { name: /^Tunnel/ })).toHaveAttribute("aria-current", "page");
 });
-
 
 test("two quickly clicked Tunnel notes both move to Trash", async () => {
   const user = userEvent.setup();
@@ -2829,7 +2827,6 @@ test("leaving Tunnel cancels a pending copy-to-Trash decision", async () => {
   await new Promise((resolve) => setTimeout(resolve, 650));
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
 });
-
 
 test("a synced setting change updates the switch while Settings stays open", async () => {
   let remote = true;
@@ -2856,7 +2853,6 @@ test("copying the same Tunnel note again restarts its Copied confirmation", asyn
   expect(screen.getByText("Copied")).toBeInTheDocument();
 });
 
-
 test("a slow system double-click edits a Tunnel note without trashing it", async () => {
   userEvent.setup();
   const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, doubleClickIntervalMs: 900 });
@@ -2880,7 +2876,6 @@ test("a failed system timing read keeps a copied Tunnel note out of Trash", asyn
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
   expect(calls).toContainEqual({ cmd: "copy_item", args: { itemId: "tunnel-note" } });
 });
-
 
 test("a new desktop opens Home with the sidebar and captures to a chosen Topic or Tunnel", async () => {
   const calls = backend(configured, { topics: [topic("g", "Gym")] });
@@ -3083,20 +3078,6 @@ test("Home offers capture without duplicating sidebar places", async () => {
   expect(within(screen.getByRole("navigation")).getByRole("button", { name: "Gym" })).toBeVisible();
 });
 
-test("All Items is view-only and keeps the draft for the next capture destination", async () => {
-  backend(configured);
-  localStorage.setItem("place", "inbox");
-  render(<App />);
-  const box = await screen.findByRole("textbox", { name: "New Item" });
-  await userEvent.type(box, "keep this draft");
-  await userEvent.click(screen.getByRole("button", { name: "All Items" }));
-  expect(screen.queryByRole("textbox", { name: "New Item" })).not.toBeInTheDocument();
-  expect(screen.queryByText("Capture something below.")).not.toBeInTheDocument();
-  expect(screen.getByText("Capture something in Home or choose a place in the sidebar.")).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
-  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveValue("keep this draft");
-});
-
 test("opening an image refreshes its preview after the original downloads", async () => {
   const options: Options = {
     items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [{ ...photo, filename: "photo.heic", mime_type: "image/heic", has_thumbnail: false }])],
@@ -3109,7 +3090,6 @@ test("opening an image refreshes its preview after the original downloads", asyn
   await userEvent.click(screen.getByRole("button", { name: "Open photo.heic" }));
   expect(await screen.findByRole("img", { name: "photo.heic" })).toHaveAttribute("src", expect.stringContaining("photo.heic"));
 });
-
 
 test("the sidebar toggle persists its state across launches", async () => {
   backend(configured);
@@ -3193,7 +3173,6 @@ test("cancelling sidebar New Topic restores + focus after a click without browse
   expect(plus).toHaveFocus();
 });
 
-
 test("the collapsed rail keeps main Places available without a Search button", async () => {
   const calls = backend(configured);
   render(<App />);
@@ -3207,4 +3186,12 @@ test("the collapsed rail keeps main Places available without a Search button", a
     if (name !== "Home") await vi.waitFor(() => expect(calls.filter(c=>c.cmd==="list_items").slice(-1)[0]?.args.view).toEqual({kind}));
     expect(screen.getByRole("button", { name: "Show sidebar" })).toHaveAttribute("aria-expanded", "false");
   }
+});
+
+test("a saved All Items place returns Home with no All Items entry", async () => {
+  backend(configured);
+  localStorage.setItem("place", "all");
+  render(<App />);
+  expect(await screen.findByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
+  expect(screen.queryByRole("button", { name: "All Items" })).not.toBeInTheDocument();
 });
