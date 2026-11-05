@@ -79,12 +79,21 @@ jobs:
           npm ci
           npm test
           npm run build
-      - name: Rust tests
-        working-directory: desktop/src-tauri
+      - name: Select Rust toolchain
         run: |
           set -euo pipefail
           rustup toolchain install 1.93.1 --profile minimal
           rustup default 1.93.1
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: desktop/src-tauri -> target
+          key: ${{ matrix.os }}
+          cache-bin: 'false'
+      - name: Rust tests
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
           cargo test --locked | tee rust-tests.log
           python -c 'import re; from pathlib import Path; assert re.search(r"test result: ok\. [1-9][0-9]* passed", Path("rust-tests.log").read_text()), "No Rust tests ran"'
       - name: Native application build
