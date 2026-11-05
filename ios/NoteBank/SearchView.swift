@@ -10,6 +10,7 @@ struct SearchView: View {
     let topics: [TopicPlace]
     let archived: [TopicPlace]
     let onOpen: (String) -> Void
+    let onOpenTopic: (String) -> Void
     let onCancel: () -> Void
     @State private var model: SearchModel
     @State private var picking: DayEnd?
@@ -17,12 +18,23 @@ struct SearchView: View {
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
 
-    init(store: Store, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(store: Store, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         _model = State(wrappedValue: SearchModel(store: store, place: place))
         self.topics = topics
         self.archived = archived
         self.onOpen = onOpen
+        self.onOpenTopic = onOpenTopic
         self.onCancel = onCancel
+    }
+
+    private var matchingTopics: [TopicPlace] { TopicPlace.matching(topics + archived, text: model.text) }
+
+    private func resultHeading(_ text: String) -> some View {
+        Text(text).textCase(.uppercase).kerning(0.96)
+            .font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32).padding(.top, 16).padding(.bottom, 8)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private var placeTitle: String {
@@ -162,28 +174,50 @@ struct SearchView: View {
                     .padding(.vertical, 8)
             }
             ScrollView {
-                if model.isEmptyResult {
-                    VStack(spacing: 4) {
-                        Text("No Items match.").font(.plex(.sans, 15)).foregroundStyle(palette.inkMuted)
-                        if model.hasFilters {
-                            Button("Clear filters") { model.clearFilters() }
-                                .font(.plex(.sansMedium, 15, relativeTo: .callout))
-                                .frame(minHeight: 44)
-                        }
+                VStack(spacing: 0) {
+                    if !matchingTopics.isEmpty {
+                        resultHeading("Topics")
+                        VStack(spacing: 0) {
+                            ForEach(matchingTopics) { topic in
+                                if topic.id != matchingTopics.first?.id { Divider().overlay(palette.line) }
+                                Button { onOpenTopic(topic.id) } label: {
+                                    HStack(spacing: 8) {
+                                        Text(topic.name).font(.plex(.sans, 17)).foregroundStyle(palette.ink)
+                                        if archived.contains(where: { $0.id == topic.id }) {
+                                            Text("Archived").font(.plex(.sans, 11)).foregroundStyle(palette.inkMuted)
+                                        }
+                                        Spacer(minLength: 0)
+                                        Text(String(topic.count)).font(.plex(.mono, 13)).foregroundStyle(palette.inkMuted)
+                                        Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.lineStrong)
+                                    }.padding(.horizontal, 16).frame(minHeight: 48).contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                            }
+                        }.card().padding(.horizontal, 16)
+                        resultHeading("Items")
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 32)
-                } else if !model.results.isEmpty {
-                    LazyVStack(spacing: 0) {
-                        ForEach(model.results) { result in
-                            if result.id != model.results.first?.id { Divider().overlay(palette.line) }
-                            SearchResultRow(result: result) { onOpen(result.id) }
-                                .onAppear { if result.id == model.results.last?.id { model.loadMore() } }
+                    if model.isEmptyResult {
+                        VStack(spacing: 4) {
+                            Text("No Items match.").font(.plex(.sans, 15)).foregroundStyle(palette.inkMuted)
+                            if model.hasFilters {
+                                Button("Clear filters") { model.clearFilters() }
+                                    .font(.plex(.sansMedium, 15, relativeTo: .callout))
+                                    .frame(minHeight: 44)
+                            }
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 32)
+                    } else if !model.results.isEmpty {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.results) { result in
+                                if result.id != model.results.first?.id { Divider().overlay(palette.line) }
+                                SearchResultRow(result: result) { onOpen(result.id) }
+                                    .onAppear { if result.id == model.results.last?.id { model.loadMore() } }
+                            }
+                        }
+                        .card()
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
                     }
-                    .card()
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 4)
                 }
             }
             .scrollDismissesKeyboard(.interactively)

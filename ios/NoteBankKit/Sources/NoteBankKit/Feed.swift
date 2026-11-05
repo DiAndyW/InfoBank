@@ -47,6 +47,23 @@ public struct TopicPlace: Identifiable, Hashable, Sendable {
     public init(id: String, name: String, count: Int) { self.id = id; self.name = name; self.count = count }
 }
 
+extension TopicPlace {
+    public static func browsing(_ topics: [TopicPlace], archived: Bool, expanded: Bool, retaining id: String? = nil) -> [TopicPlace] {
+        let sorted = topics.sorted {
+            if !archived && !expanded && $0.count != $1.count { return $0.count > $1.count }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        return expanded ? sorted : sorted.enumerated().filter { $0.offset < 10 || $0.element.id == id }.map(\.element)
+    }
+
+    public static func matching(_ topics: [TopicPlace], text: String) -> [TopicPlace] {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return topics.filter { $0.name.range(of: query, options: .caseInsensitive) != nil }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
 public struct Places: Equatable, Sendable {
     public let allCount: Int
     public let inboxCount: Int

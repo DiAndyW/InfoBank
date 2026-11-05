@@ -48,6 +48,33 @@ final class QuickCaptureUITests: XCTestCase {
         XCTAssertFalse(topic.exists)
     }
 
+    func testTopicViewsAndCombinedSearch() {
+        completeSetup()
+        noteBank.buttons["New Topic"].tap()
+        let alert = noteBank.alerts["New Topic"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.textFields.firstMatch.typeText("Topic navigation check")
+        alert.buttons["Save"].tap()
+        noteBank.buttons["Archived"].tap()
+        XCTAssertTrue(noteBank.staticTexts["No archived Topics"].waitForExistence(timeout: 5))
+        noteBank.buttons["New Topic"].tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        alert.buttons["Cancel"].tap()
+        XCTAssertTrue(noteBank.buttons["Open"].isSelected)
+        noteBank.buttons["Search"].tap()
+        let search = noteBank.textFields["Search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.typeText("TOPIC NAVIGATION")
+        let match = noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Topic navigation check'")).firstMatch
+        XCTAssertTrue(match.waitForExistence(timeout: 5), "Empty Topic missing from combined search")
+        XCTAssertTrue(noteBank.staticTexts["Topics"].exists)
+        match.tap()
+        XCTAssertTrue(noteBank.buttons["Topic actions"].waitForExistence(timeout: 5))
+        noteBank.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "Back did not restore Search")
+        XCTAssertEqual(search.value as? String, "TOPIC NAVIGATION")
+    }
+
     func assertComposerFocused() {
         XCTAssertTrue(noteBank.keyboards.firstMatch.waitForExistence(timeout: 5), "The keyboard did not come up")
         let composer = noteBank.textViews.firstMatch

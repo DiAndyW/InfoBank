@@ -25,9 +25,9 @@ const midnight = (day: string, plusDays = 0) => {
 const marks = (s: string) =>
   s.split(/([^]*)/).map((part, i) => (part.startsWith("") ? <mark key={i}>{part.slice(1, -1)}</mark> : part));
 
-type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void };
+type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void; onOpenTopic: (topic: Topic) => void | Promise<void> };
 
-export default function SearchResults({ text, topics, startPlace, hidden, onOpen }: Props) {
+export default function SearchResults({ text, topics, startPlace, hidden, onOpen, onOpenTopic }: Props) {
   const [items, setItems] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exhausted, setExhausted] = useState(false);
@@ -43,6 +43,8 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
   const [to, setTo] = useState("");
   const [hasFiles, setHasFiles] = useState(false);
   const [menu, setMenu] = useState<"place" | "date" | null>(null);
+  const topicQuery = text.trim().toLocaleLowerCase();
+  const matchingTopics = topicQuery ? topics.filter((topic) => topic.name.toLocaleLowerCase().includes(topicQuery)) : [];
   const filtered = place !== "all" || range !== "any" || hasFiles;
   const query: SearchQuery = {
     text,
@@ -189,57 +191,80 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
         }}
       >
         <div className="nb-feed-col">
-          {items?.length === 0 ? (
-            <div className="nb-empty">
-              <p className="nb-empty-title">No Items match.</p>
-              {filtered && (
-                <button
-                  className="nb-btn nb-btn-secondary"
-                  onClick={() => {
-                    setPlace("all");
-                    pickRange("any");
-                    setFrom("");
-                    setTo("");
-                    setHasFiles(false);
-                  }}
-                >
-                  Clear filters
-                </button>
+          {matchingTopics.length > 0 && (
+            <section className="nb-result-section" aria-label="Topics">
+              <h3 className="nb-section nb-result-heading">Topics</h3>
+              <div className="nb-result-group">
+                {matchingTopics.map((topic) => (
+                  <button key={topic.id} className="nb-item nb-result nb-topic-result" onClick={() => onOpenTopic(topic)}>
+                    <span className="nb-item-body">
+                      <span className="nb-item-text">{topic.name}</span>
+                    </span>{" "}
+                    <span className="nb-item-meta">
+                      {topic.archived && <><span className="nb-topic-chip">Archived</span>{" "}</>}
+                      <span className="nb-count">{topic.item_count}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+          <section className="nb-result-section" aria-label="Items">
+            {matchingTopics.length > 0 && <h3 className="nb-section nb-result-heading">Items</h3>}
+            <div className={items === null ? undefined : "nb-result-group"}>
+              {items?.length === 0 ? (
+                <div className="nb-empty">
+                  <p className="nb-empty-title">No Items match.</p>
+                  {filtered && (
+                    <button
+                      className="nb-btn nb-btn-secondary"
+                      onClick={() => {
+                        setPlace("all");
+                        pickRange("any");
+                        setFrom("");
+                        setTo("");
+                        setHasFiles(false);
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              ) : (
+                items?.map((it) => {
+                  const time = new Date(it.capture_time_us / 1000);
+                  const topic = topics.find((t) => t.id === it.topic_id);
+                  return (
+                    <button key={it.id} className="nb-item nb-result" onClick={() => onOpen(it)}>
+                      <span className="nb-item-body">
+                        {it.marked_text !== null && <span className="nb-item-text">{marks(it.marked_text)}</span>}
+                        {it.marked_filenames.length > 0 && (
+                          <span className="nb-result-files">
+                            {it.marked_filenames.map((name, i) => (
+                              <span key={it.attachments[i].id} className="nb-topic-chip">
+                                <Icon name="file" size={12} />
+                                <span className="nb-chip-label">{marks(name)}</span>
+                              </span>
+                            ))}
+                          </span>
+                        )}
+                      </span>
+                      <span className="nb-item-meta">
+                        <span className="nb-topic-chip" title={`In ${it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}`}>
+                          <Icon name={it.in_tunnel ? "send" : topic ? "topic" : "inbox"} size={12} />
+                          <span className="nb-chip-label">{it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}</span>
+                        </span>
+                        <time className="nb-item-time">
+                          {time.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}{" "}
+                          {time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                        </time>
+                      </span>
+                    </button>
+                  );
+                })
               )}
             </div>
-          ) : (
-            items?.map((it) => {
-              const time = new Date(it.capture_time_us / 1000);
-              const topic = topics.find((t) => t.id === it.topic_id);
-              return (
-                <button key={it.id} className="nb-item nb-result" onClick={() => onOpen(it)}>
-                  <span className="nb-item-body">
-                    {it.marked_text !== null && <span className="nb-item-text">{marks(it.marked_text)}</span>}
-                    {it.marked_filenames.length > 0 && (
-                      <span className="nb-result-files">
-                        {it.marked_filenames.map((name, i) => (
-                          <span key={it.attachments[i].id} className="nb-topic-chip">
-                            <Icon name="file" size={12} />
-                            <span className="nb-chip-label">{marks(name)}</span>
-                          </span>
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                  <span className="nb-item-meta">
-                    <span className="nb-topic-chip" title={`In ${it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}`}>
-                      <Icon name={it.in_tunnel ? "send" : topic ? "topic" : "inbox"} size={12} />
-                      <span className="nb-chip-label">{it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox"}</span>
-                    </span>
-                    <time className="nb-item-time">
-                      {time.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}{" "}
-                      {time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
-                    </time>
-                  </span>
-                </button>
-              );
-            })
-          )}
+          </section>
         </div>
       </div>
     </main>

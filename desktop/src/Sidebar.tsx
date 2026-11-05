@@ -38,6 +38,9 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
   const composing = useRef(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [showAllArchived, setShowAllArchived] = useState(false);
+  const [focusedTopic, setFocusedTopic] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [naming, setNaming] = useState<{ id: string; draft: string; error: string | null } | null>(null);
   const open = topics.filter((t) => !t.archived);
@@ -47,9 +50,17 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
   // A Topic whose row should take focus once it's on screen (a new one arrives with the next Topics refresh).
   const focusRow = useRef<string | null>(null);
 
+  const ranked = [...open].sort((a, b) => b.item_count - a.item_count);
+  const visibleOpen = showAll ? open : ranked.filter((t, i) =>
+    i < 10 || t.id === selected || t.id === naming?.id || t.id === menuFor || t.id === focusedTopic || t.id === focusRow.current);
+
+  const visibleArchived = showAllArchived ? archived : archived.filter((t, i) =>
+    i < 10 || t.id === selected || t.id === naming?.id || t.id === menuFor || t.id === focusedTopic || t.id === focusRow.current);
+
+  const selectedArchived = topics.find((t) => t.id === selected)?.archived;
   useEffect(() => {
-    if (archived.some((t) => t.id === selected)) setShowArchived(true);
-  }, [selected, topics]);
+    if (selectedArchived !== undefined) setShowArchived(selectedArchived);
+  }, [selected, selectedArchived]);
 
   useEffect(() => {
     if (focusRow.current === null) return;
@@ -57,7 +68,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
     if (!row) return;
     row.focus();
     focusRow.current = null;
-  }, [topics, naming, showArchived, creating]);
+  }, [topics, naming, showArchived, creating, showAll, showAllArchived]);
 
   async function saveName() {
     if (!naming || saving.current) return;
@@ -125,7 +136,9 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
     const remove = { label: "Delete…", danger: true, onSelect: () => onDelete(t) };
     const className = ["nb-topic", selected === t.id && "is-selected", t.archived && "is-archived", menuFor === t.id && "is-open", dropClass(t.id, !t.archived)];
     return (
-      <div key={t.id} className={className.filter(Boolean).join(" ")} {...dropHandlers(t.id, !t.archived)}>
+      <div key={t.id} className={className.filter(Boolean).join(" ")} {...dropHandlers(t.id, !t.archived)}
+        onFocus={() => setFocusedTopic(t.id)}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setFocusedTopic(null); }}>
         <button
           className="nb-topic-name"
           data-topic={t.id}
@@ -209,30 +222,28 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
       {entry("home", "Home", "home")}
       {entry("inbox", "Inbox", "inbox", counts.inbox)}
       {entry("tunnel", "Tunnel", "send", counts.tunnel)}
-      {entry("trash", "Trash", "trash", counts.trash)}
       <div className="nb-section">
         <span>Topics</span>
-        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={(e) => { e.currentTarget.focus(); setCreating(true); }}>
+        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={(e) => { e.currentTarget.focus(); setShowArchived(false); setCreating(true); }}>
           <Icon name="plus" />
         </button>
       </div>
-      <div className="nb-topic-list">
-        {open.length === 0 ? <div className="nb-section-empty">None yet</div> : open.map(row)}
-        <div className="nb-section">
-          <button className="nb-section-toggle" aria-expanded={showArchived} onClick={() => setShowArchived(!showArchived)}>
-            <span>Archived</span>
-            {archived.length > 0 && (
-              <>
-                {" "}
-                <span className="nb-count">{archived.length}</span>
-              </>
-            )}
-            <span className="nb-section-chevron">
-              <Icon name={showArchived ? "chevron-down" : "chevron-right"} />
-            </span>
+      <div className="nb-topic-views" role="group" aria-label="Topic view">
+        <button className="nb-topic-view" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>Open</button>
+        <button className="nb-topic-view" aria-pressed={showArchived} onClick={() => setShowArchived(true)}>
+          Archived
+        </button>
+        {(showArchived ? archived : open).length > 10 && (
+          <button className="nb-topic-toggle" aria-expanded={showArchived ? showAllArchived : showAll} aria-controls="sidebar-open-topics"
+            onClick={() => showArchived ? setShowAllArchived(!showAllArchived) : setShowAll(!showAll)}>
+            {(showArchived ? showAllArchived : showAll) ? "Show less" : "Show all"}
           </button>
+        )}
+      </div>
+      <div className="nb-topic-list">
+        <div id="sidebar-open-topics">
+          {(showArchived ? archived : open).length === 0 ? <div className="nb-section-empty">None yet</div> : (showArchived ? visibleArchived : visibleOpen).map(row)}
         </div>
-        {showArchived && (archived.length === 0 ? <div className="nb-section-empty">None yet</div> : archived.map(row))}
       </div>
       <div className="nb-sidebar-foot">
         {status === "unauthorized" ? (
@@ -249,6 +260,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
             </div>
           )
         )}
+        {entry("trash", "Trash", "trash", counts.trash)}
         <button className="nb-nav" onClick={onSettings}>
           <Icon name="settings" />
           <span className="nb-nav-label">Settings</span>
