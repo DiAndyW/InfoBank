@@ -72,6 +72,7 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - uses: ./.github/actions/test-services
       - name: Frontend tests and typecheck/build
         working-directory: desktop
         run: |
@@ -98,11 +99,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - uses: ./.github/actions/test-services
       - name: Kit tests
         shell: bash
         run: |
           set -euo pipefail
-          swift test --package-path ios/NoteBankKit 2>&1 | tee kit-tests.log
+          swift test --package-path ios/NoteBankKit --no-parallel 2>&1 | tee kit-tests.log
           python3 -c 'import re; from pathlib import Path; assert re.search(r"[1-9][0-9]* tests? (?:in .* )?passed", Path("kit-tests.log").read_text()), "No Kit tests ran"'
       - name: iPhone simulator build
         run: >-
