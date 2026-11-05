@@ -1,10 +1,9 @@
 name: CI
 
 on:
-  push:
-    tags-ignore: ['server-v*']
   pull_request:
   workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
