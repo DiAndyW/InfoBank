@@ -353,6 +353,9 @@ export default function App() {
           topics={topics}
           startPlace={feed === "home" || feed === "trash" ? "all" : feed}
           hidden={!resultsOpen}
+          onOpenTopic={async (topic) => {
+            if (!(await select(topic.id))) setResultsOpen(false);
+          }}
           onOpen={async (it) => {
             const place = it.in_tunnel ? "tunnel" : topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";
             if (await select(place)) setHighlight(it.id);

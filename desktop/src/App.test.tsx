@@ -756,19 +756,19 @@ test("a second click while downloading is ignored", async () => {
   expect(calls.filter((c) => c.cmd === "open_attachment")).toHaveLength(1);
 });
 
-test("the Archived section is there with nothing archived, and says so when opened", async () => {
+test("the Archived view is available with nothing archived", async () => {
   backend(configured, { topics: [topic("g", "Gym")] });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Archived" }));
   expect(screen.getAllByText("None yet")).toHaveLength(1);
 });
 
-test("archived Topics are under a collapsed Archived section", async () => {
+test("archived Topics appear only in the Archived view", async () => {
   backend(configured, { topics: [topic("g", "Gym"), topic("o", "Old", { archived: true })] });
   render(<App />);
   expect(await screen.findByRole("button", { name: "Gym" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Old" })).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived" }));
   expect(screen.getByRole("button", { name: "Old" })).toBeInTheDocument();
 });
 
@@ -780,7 +780,7 @@ test("a Topic's menu archives it, and an archived one's unarchives it", async ()
   expect(calls).toContainEqual({ cmd: "archive_topic", args: { id: "g" } });
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived" }));
   await userEvent.click(screen.getByRole("button", { name: "Old actions" }));
   expect(screen.queryByRole("menuitem", { name: "Archive" })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("menuitem", { name: "Unarchive" }));
@@ -1010,8 +1010,9 @@ test("only the Inbox and other open Topics take a dropped Item", async () => {
   });
   render(<App />);
   await screen.findByText("squat 100");
-  await userEvent.click(screen.getByRole("button", { name: /Archived/ }));
-  for (const target of [screen.getByRole("button", { name: "Gym" }), screen.getByRole("button", { name: "Old" }), screen.getByRole("button", { name: /^Trash/ })]) {
+  drag("squat 100", screen.getByRole("button", { name: "Gym" }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived" }));
+  for (const target of [screen.getByRole("button", { name: "Old" }), screen.getByRole("button", { name: /^Trash/ })]) {
     drag("squat 100", target);
   }
   expect(moves(calls)).toEqual([]);
@@ -1087,7 +1088,7 @@ test("capturing in a Topic files the Item there", async () => {
 test("an archived Topic shows a bar instead of the composer", async () => {
   const calls = backend(configured, { topics: [topic("o", "Old", { archived: true })] });
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: "Archived 1" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Archived" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
   expect(screen.getByLabelText("New Item")).not.toBeVisible();
@@ -1164,7 +1165,7 @@ test("the draft survives a visit to an archived Topic", async () => {
   localStorage.setItem("place", "inbox");
   render(<App />);
   await userEvent.type(await screen.findByLabelText("New Item"), "half a thought");
-  await userEvent.click(screen.getByRole("button", { name: "Archived 1" }));
+  await userEvent.click(screen.getByRole("button", { name: "Archived" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   expect(await screen.findByText('"Old" is archived.')).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
@@ -1336,14 +1337,14 @@ test("Topics sort by name the way people read them, accents with their letter", 
   expect(names).toEqual(["apple", "École", "Zebra"]);
 });
 
-test("archiving the open Topic opens the Archived section, so the selection stays in view", async () => {
+test("archiving the selected Topic switches to Archived so selection stays in view", async () => {
   const topics = [topic("g", "Gym")];
   backend(configured, { topics });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
   topics[0] = topic("g", "Gym", { archived: true });
   await act(() => emit("items-changed"));
-  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Archived 1" })).toHaveAttribute("aria-expanded", "true"));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Archived" })).toHaveAttribute("aria-pressed", "true"));
   expect(screen.getByRole("button", { name: "Gym" })).toHaveAttribute("aria-current", "page");
 });
 
@@ -1783,7 +1784,7 @@ test("switching views saves the open edit, and stays put if that save fails", as
 test("Items in an archived Topic can be edited and moved to Trash", async () => {
   backend(configured, { topics: [topic("o", "Old", { archived: true, item_count: 1 })], items: () => [filed("1", "old note", "o")] });
   render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: "Archived 1" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Archived" }));
   await userEvent.click(screen.getByRole("button", { name: "Old" }));
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
   expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
@@ -3194,4 +3195,211 @@ test("a saved All Items place returns Home with no All Items entry", async () =>
   render(<App />);
   expect(await screen.findByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
   expect(screen.queryByRole("button", { name: "All Items" })).not.toBeInTheDocument();
+});
+
+const rankedSidebarTopics = () => [
+  topic("z", "Zebra", { item_count: 12 }), topic("a", "apple", { item_count: 10 }),
+  topic("e", "École", { item_count: 10 }), topic("m", "Maple", { item_count: 9 }),
+  topic("o", "Oak", { item_count: 8 }), topic("p", "Pine", { item_count: 7 }),
+  topic("q", "Quill", { item_count: 6 }), topic("r", "River", { item_count: 5 }),
+  topic("s", "Sun", { item_count: 4 }), topic("t", "Tree", { item_count: 3 }),
+  topic("w", "Willow"), topic("y", "Yarrow"),
+];
+const sidebarTopicNames = () => Array.from(document.querySelectorAll("nav .nb-topic-name")).map((row) => row.textContent);
+
+test("the sidebar shows the ten Topics with most Items and alphabetical ties", async () => {
+  backend(configured, { topics: rankedSidebarTopics() });
+  render(<App />);
+  await screen.findByRole("button", { name: "Zebra" });
+  expect(sidebarTopicNames()).toEqual(["Zebra", "apple", "École", "Maple", "Oak", "Pine", "Quill", "River", "Sun", "Tree"]);
+  expect(screen.queryByRole("button", { name: "Willow" })).not.toBeInTheDocument();
+});
+
+test("the sidebar Show all Topics is alphabetical and Show less restores ranking", async () => {
+  backend(configured, { topics: rankedSidebarTopics() });
+  render(<App />);
+  const toggle = await screen.findByRole("button", { name: "Show all" });
+  const heading = toggle.parentElement!.previousElementSibling! as HTMLElement;
+  expect(within(heading).getByText("Topics")).toBeInTheDocument();
+  expect(within(heading).getByRole("button", { name: "New Topic" })).toBeInTheDocument();
+  expect(toggle.closest(".nb-topic-list")).toBeNull();
+  await userEvent.click(toggle);
+  expect(sidebarTopicNames()).toEqual(["apple", "École", "Maple", "Oak", "Pine", "Quill", "River", "Sun", "Tree", "Willow", "Yarrow", "Zebra"]);
+  await userEvent.click(screen.getByRole("button", { name: "Yarrow" }));
+  await userEvent.click(screen.getByRole("button", { name: "Show less" }));
+  expect(sidebarTopicNames()).toEqual(["Zebra", "apple", "École", "Maple", "Oak", "Pine", "Quill", "River", "Sun", "Tree", "Yarrow"]);
+  expect(screen.getByRole("button", { name: "Yarrow" })).toHaveAttribute("aria-current", "page");
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(screen.queryByRole("button", { name: "Yarrow" })).not.toBeInTheDocument();
+});
+
+test("the sidebar ranks empty Topics alphabetically and needs no Show all for ten", async () => {
+  backend(configured, { topics: rankedSidebarTopics().slice(2) });
+  render(<App />);
+  await screen.findByRole("button", { name: "École" });
+  expect(sidebarTopicNames()).toEqual(["École", "Maple", "Oak", "Pine", "Quill", "River", "Sun", "Tree", "Willow", "Yarrow"]);
+  expect(screen.queryByRole("button", { name: /Show all/ })).not.toBeInTheDocument();
+});
+
+test("the sidebar keeps a renaming Topic visible when Item counts change", async () => {
+  const topics = rankedSidebarTopics();
+  backend(configured, { topics });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Zebra actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  topics[0] = topic("z", "Zebra");
+  await act(() => emit("items-changed"));
+  expect(await screen.findByRole("textbox", { name: "Topic name" })).toHaveValue("Zebra");
+  expect(screen.getByRole("textbox", { name: "Topic name" })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("textbox", { name: "Topic name" })).not.toBeInTheDocument();
+});
+
+test("Topic Search matches names above Items, including empty and archived Topics", async () => {
+  backend(configured, {
+    topics: [topic("b", "Beta notes"), topic("a", "Alpha notes"), topic("old", "Old notes", { archived: true }), topic("other", "Other")],
+    search: () => [found(feedItem("match", "a matching Item", 1))],
+  });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "NoTeS");
+  const group = await screen.findByRole("region", { name: "Topics" });
+  expect(within(group).getAllByRole("button").map((b) => b.textContent)).toEqual(["Alpha notes 0", "Beta notes 0", "Old notes Archived 0"]);
+  expect(within(group).queryByText("Other")).not.toBeInTheDocument();
+  const item = await screen.findByRole("button", { name: /a matching Item/ });
+  expect(group.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("Topic Search opens an empty out-of-shortlist Topic and preserves back navigation", async () => {
+  const topics = rankedSidebarTopics();
+  const calls = backend(configured, { topics });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "will");
+  const group = await screen.findByRole("region", { name: "Topics" });
+  await screen.findByText("No Items match.");
+  await userEvent.click(within(group).getByRole("button", { name: "Willow 0" }));
+  expect(screen.getByRole("button", { name: "Willow" })).toHaveAttribute("aria-current", "page");
+  expect(localStorage.getItem("place")).toBe("w");
+  expect(calls).toContainEqual({ cmd: "list_items", args: { view: { kind: "topic", id: "w" }, before: null } });
+  expect(screen.queryByRole("region", { name: "Topics" })).not.toBeInTheDocument();
+  expect(field).toHaveValue("will");
+  await userEvent.click(field);
+  expect(screen.getByRole("region", { name: "Topics" })).toBeInTheDocument();
+});
+
+test("Topic Search opens an archived Topic and ignores Item filters", async () => {
+  backend(configured, { topics: [topic("old", "Old notes", { archived: true })] });
+  render(<App />);
+  const field = await screen.findByRole("textbox", { name: "Search" });
+  await userEvent.type(field, "old");
+  await screen.findByText("No Items match.");
+  await userEvent.click(screen.getByRole("button", { name: "Has files" }));
+  const group = await screen.findByRole("region", { name: "Topics" });
+  await userEvent.click(within(group).getByRole("button", { name: "Old notes Archived 0" }));
+  expect(screen.getByRole("button", { name: "Archived" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Old notes" })).toHaveAttribute("aria-current", "page");
+});
+
+test("Topic Search renders HTML-like Topic names as text", async () => {
+  backend(configured, { topics: [topic("html", "<b>notes</b>")] });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "notes");
+  const group = await screen.findByRole("region", { name: "Topics" });
+  expect(within(group).getByText("<b>notes</b>")).toBeInTheDocument();
+  expect(group.querySelector("b")).toBeNull();
+});
+
+test("Topic Search keeps the edited Item when saving before navigation fails", async () => {
+  const item = feedItem("edit", "unfinished", 1);
+  const calls = backend(configured, { topics: [topic("t", "Target")], items: () => [item], failing: { edit_item: "disk full" } });
+  render(<App />);
+  fireEvent.doubleClick(await screen.findByText("unfinished"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), " thought");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "target");
+  await userEvent.click(within(await screen.findByRole("region", { name: "Topics" })).getByRole("button", { name: "Target 0" }));
+  expect(await screen.findByText(/Couldn't save the edit\. Your changes are kept\. disk full/)).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("unfinished thought");
+  expect(calls.some((c) => c.cmd === "edit_item")).toBe(true);
+  expect(localStorage.getItem("place")).toBe("inbox");
+  expect(screen.queryByRole("region", { name: "Topics" })).not.toBeInTheDocument();
+});
+
+test("Topic Search refreshes Topic names and counts after sync", async () => {
+  const topics = [topic("t", "Target", { item_count: 1 })];
+  backend(configured, { topics });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "target");
+  expect(within(await screen.findByRole("region", { name: "Topics" })).getByRole("button", { name: "Target 1" })).toBeInTheDocument();
+  topics[0] = topic("t", "New target", { item_count: 7 });
+  await act(() => emit("items-changed"));
+  expect(await within(screen.getByRole("region", { name: "Topics" })).findByRole("button", { name: "New target 7" })).toBeInTheDocument();
+  topics.splice(0);
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(screen.queryByRole("region", { name: "Topics" })).not.toBeInTheDocument());
+});
+
+test("Topic Search successfully saves the edit before opening the chosen Topic", async () => {
+  const item = feedItem("edit", "unfinished", 1);
+  const calls = backend(configured, { topics: [topic("t", "Target")], items: ({ view }) => view.kind === "inbox" ? [item] : [] });
+  render(<App />);
+  fireEvent.doubleClick(await screen.findByText("unfinished"));
+  await userEvent.type(screen.getByRole("textbox", { name: "Edit Item" }), " thought");
+  await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "target");
+  await userEvent.click(within(await screen.findByRole("region", { name: "Topics" })).getByRole("button", { name: "Target 0" }));
+  expect(calls.find((c) => c.cmd === "edit_item")?.args.text).toBe("unfinished thought");
+  expect(screen.getByRole("button", { name: "Target" })).toHaveAttribute("aria-current", "page");
+  expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
+});
+
+test("the sidebar keeps a keyboard-focused Topic through a count refresh", async () => {
+  const topics = rankedSidebarTopics();
+  backend(configured, { topics });
+  render(<App />);
+  const row = await screen.findByRole("button", { name: "Tree" });
+  act(() => row.focus());
+  expect(row).toHaveFocus();
+  topics[10] = topic("w", "Willow", { item_count: 20 });
+  await act(() => emit("items-changed"));
+  await screen.findByRole("button", { name: "Willow" });
+  expect(row).toBeInTheDocument();
+  expect(row).toHaveFocus();
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect(screen.queryByRole("button", { name: "Tree" })).not.toBeInTheDocument();
+});
+
+
+test("Topic views replace the list and remember independent expansion", async () => {
+  backend(configured, { topics: [...rankedSidebarTopics(), ...Array.from({length: 12}, (_, i) => topic(`arch${i}`, `Archive ${String(i).padStart(2, "0")}`, {archived: true}))] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", {name: "Show all"}));
+  await userEvent.click(screen.getByRole("button", {name: "Archived"}));
+  expect(screen.queryByRole("button", {name: "Zebra"})).not.toBeInTheDocument();
+  expect(sidebarTopicNames()).toHaveLength(10);
+  await userEvent.click(screen.getByRole("button", {name: "Show all"}));
+  expect(sidebarTopicNames()).toHaveLength(12);
+  await userEvent.click(screen.getByRole("button", {name: "Open"}));
+  expect(screen.getByRole("button", {name: "Show less"})).toBeInTheDocument();
+  expect(sidebarTopicNames()).toHaveLength(12);
+  await userEvent.click(screen.getByRole("button", {name: "Archived"}));
+  expect(sidebarTopicNames()).toHaveLength(12);
+  await userEvent.click(screen.getByRole("button", {name: "New Topic"}));
+  expect(screen.getByRole("button", {name: "Open"})).toHaveAttribute("aria-pressed", "true");
+});
+
+
+test("Topic refresh preserves a manually chosen view until the selection changes groups", async () => {
+  const topics = [topic("g", "Gym"), topic("o", "Old", {archived: true})];
+  backend(configured, {topics});
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", {name: "Gym"}));
+  await userEvent.click(screen.getByRole("button", {name: "Archived"}));
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("button", {name: "Archived"})).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(screen.getByRole("button", {name: "Old"}));
+  await userEvent.click(screen.getByRole("button", {name: "Open"}));
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("button", {name: "Open"})).toHaveAttribute("aria-pressed", "true");
+  topics[1] = topic("o", "Old");
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("button", {name: "Open"})).toHaveAttribute("aria-pressed", "true");
 });

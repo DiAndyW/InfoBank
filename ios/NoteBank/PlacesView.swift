@@ -6,6 +6,9 @@ struct PlacesView: View {
     let wake: () -> Void
     let archived: [TopicPlace]
     @State private var showingArchived = false
+    @State private var showAllOpen = false
+    @State private var showAllArchived = false
+    @State private var retainedTopicID: String?
     @State private var naming = false
     @State private var renameID: String?
     @State private var name = ""
@@ -32,7 +35,6 @@ struct PlacesView: View {
     let onSearch: () -> Void
     let openSettings: () -> Void
     @Environment(\.palette) private var palette
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func row(_ place: FeedPlace, _ name: String, _ count: Int?) -> some View {
         NavigationLink(value: Route.place(place)) {
@@ -59,6 +61,52 @@ struct PlacesView: View {
         case .topic: nil
         case .trash: "trash"
         }
+    }
+
+    private var visibleTopics: [TopicPlace] {
+        TopicPlace.browsing(showingArchived ? archived : places.topics, archived: showingArchived,
+                            expanded: showingArchived ? showAllArchived : showAllOpen, retaining: renameID ?? retainedTopicID)
+    }
+
+    private var topicHeader: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Topics").textCase(.uppercase).kerning(0.96).accessibilityAddTraits(.isHeader)
+                    .font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
+                Spacer()
+                Button { showingArchived = false; renameID = nil; name = ""; naming = true } label: {
+                    Image(systemName: "plus").frame(width: 44, height: 44)
+                }.accessibilityLabel("New Topic")
+            }
+            HStack(spacing: 24) {
+                ForEach([false, true], id: \.self) { archivedView in
+                    Button { showingArchived = archivedView } label: {
+                        Text(archivedView ? "Archived" : "Open")
+                            .font(.plex(showingArchived == archivedView ? .sansSemibold : .sans, 15))
+                            .foregroundStyle(showingArchived == archivedView ? palette.accent : palette.inkMuted)
+                            .frame(minHeight: 44)
+                            .overlay(alignment: .bottom) {
+                                if showingArchived == archivedView { Rectangle().fill(palette.accent).frame(height: 2) }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(showingArchived == archivedView ? .isSelected : [])
+                }
+                Spacer(minLength: 0)
+                if (showingArchived ? archived : places.topics).count > 10 {
+                    Button {
+                        if showingArchived { showAllArchived.toggle() } else { showAllOpen.toggle() }
+                    } label: {
+                        Text((showingArchived ? showAllArchived : showAllOpen) ? "Show less" : "Show all")
+                            .underline().font(.plex(.sans, 13)).frame(minHeight: 44)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        .background(palette.surfaceSidebar)
     }
 
     var body: some View {
@@ -94,7 +142,7 @@ struct PlacesView: View {
             .padding(.horizontal, 32)
             .padding(.bottom, 12)
             ScrollView {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     HomeComposerView(model: composer, store: store, topics: places.topics, wake: wake).padding(.bottom, 20)
                     VStack(spacing: 0) {
                         row(.inbox, "Inbox", places.inboxCount)
@@ -102,49 +150,20 @@ struct PlacesView: View {
                         row(.tunnel, "Tunnel", places.tunnelCount)
                     }
                     .card()
-                    HStack {
-                        Text("Topics").textCase(.uppercase).kerning(0.96).accessibilityAddTraits(.isHeader).font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
-                        Spacer()
-                        Button { renameID = nil; name = ""; naming = true } label: { Image(systemName: "plus").frame(width: 44, height: 44) }.accessibilityLabel("New Topic")
-                    }.padding(.horizontal, 16).padding(.top, 12)
-                    if !places.topics.isEmpty {
+                    Section {
                         VStack(spacing: 0) {
-                            ForEach(places.topics) { topic in
-                                if topic.id != places.topics.first?.id { Divider().overlay(palette.line) }
-                                row(.topic(topic.id), topic.name, topic.count).contextMenu { topicMenu(topic, archived: false) }
+                            ForEach(visibleTopics) { topic in
+                                if topic.id != visibleTopics.first?.id { Divider().overlay(palette.line) }
+                                row(.topic(topic.id), topic.name, topic.count)
+                                    .contextMenu { topicMenu(topic, archived: showingArchived) }
                             }
-                        }
-                        .card()
-                    }
-                    Button { showingArchived.toggle() } label: {
-                        HStack {
-                            Text("Archived Topics")
-                                .textCase(.uppercase).kerning(0.96)
-                                .font(.plex(.sansSemibold, 12, relativeTo: .caption))
-                                .foregroundStyle(palette.inkMuted)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .rotationEffect(.degrees(showingArchived ? 90 : 0))
-                                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showingArchived)
-                                .font(.system(size: 13, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityValue(showingArchived ? "Expanded" : "Collapsed")
-                    .padding(.horizontal, 16).padding(.top, 12)
-                    if showingArchived {
-                        VStack(spacing: 0) {
-                            ForEach(archived) { topic in
-                                if topic.id != archived.first?.id { Divider().overlay(palette.line) }
-                                row(.topic(topic.id), topic.name, topic.count).contextMenu { topicMenu(topic, archived: true) }
-                            }
-                            if archived.isEmpty {
-                                Text("No archived Topics").font(.plex(.sans, 14)).foregroundStyle(palette.inkMuted).padding(16)
+                            if visibleTopics.isEmpty {
+                                Text(showingArchived ? "No archived Topics" : "No Topics yet")
+                                    .font(.plex(.sans, 14)).foregroundStyle(palette.inkMuted).padding(16)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }.card()
-                    }
+                    } header: { topicHeader }
                     row(.trash, "Trash", nil).card().padding(.top, 20)
                 }
                 .padding(.horizontal, 16)
@@ -167,7 +186,7 @@ struct PlacesView: View {
             Button("Save") {
                 run {
                     if let renameID { try store.renameTopic(renameID, name: name, nowUs: Time.nowUs()) }
-                    else { _ = try store.createTopic(name: name, nowUs: Time.nowUs()) }
+                    else { retainedTopicID = try store.createTopic(name: name, nowUs: Time.nowUs()) }
                 }
             }
         }
