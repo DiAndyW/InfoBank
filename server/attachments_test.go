@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -384,17 +385,62 @@ func TestFailedPutLeavesNoFile(t *testing.T) {
 	}
 }
 
-func TestMissingOriginalDoesNotConfirmAnAlreadyUploadedFile(t *testing.T) {
+func TestMissingOriginalQueuesRecoveryAndValidatesReplacement(t *testing.T) {
 	e := newSyncEnv(t)
-	_, id := e.capturePhoto()
+	content := []byte("original bytes")
+	_, id := e.captureFile("file.txt", "text/plain", content)
+	if got := e.upload(id, content); got != 204 {
+		t.Fatal(got)
+	}
+	cursor := e.pull(0).Cursor
 	if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.send("GET", "/attachments/"+id, nil).Code; got != http.StatusInternalServerError {
-		t.Fatalf("missing original GET = %d, want 500", got)
+	if got := e.send("GET", "/attachments/"+id, nil).Code; got != 500 {
+		t.Fatalf("GET = %d", got)
 	}
-	if got := e.upload(id, pngOf(t, 10, 10)); got != http.StatusInternalServerError {
-		t.Fatalf("missing original PUT = %d, want 500 rather than confirming storage", got)
+	page := e.pull(cursor)
+	if len(page.Items) != 1 || page.Items[0].Attachments[0].Uploaded {
+		t.Fatalf("missing original not queued: %+v", page.Items)
+	}
+	if got := e.upload(id, []byte("short")); got != 400 {
+		t.Fatalf("wrong-size repair = %d", got)
+	}
+	if got := e.upload(id, content); got != 204 {
+		t.Fatalf("repair = %d", got)
+	}
+	rec := e.send("GET", "/attachments/"+id, nil)
+	if rec.Code != 200 || !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("repaired GET = %d %q", rec.Code, rec.Body)
+	}
+	page = e.pull(page.Cursor)
+	if len(page.Items) != 1 || !page.Items[0].Attachments[0].Uploaded {
+		t.Fatalf("repair not published: %+v", page.Items)
+	}
+}
+
+func TestRetryRepairsMissingOriginalWithoutConfirmingInvalidBody(t *testing.T) {
+	for _, content := range [][]byte{nil, []byte("original")} {
+		e := newSyncEnv(t)
+		itemID, id := e.captureFile("file", "application/octet-stream", content)
+		if got := e.upload(id, content); got != 204 {
+			t.Fatal(got)
+		}
+		if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
+			t.Fatal(err)
+		}
+		if got := e.upload(id, append(content, 'x')); got != 400 {
+			t.Fatalf("invalid repair = %d", got)
+		}
+		if e.item(itemID).Attachments[0].Uploaded {
+			t.Fatal("invalid body confirmed missing file")
+		}
+		if got := e.upload(id, content); got != 204 {
+			t.Fatalf("valid repair = %d", got)
+		}
+		if got := e.send("GET", "/attachments/"+id, nil); got.Code != 200 || !bytes.Equal(got.Body.Bytes(), content) {
+			t.Fatalf("GET = %d %q", got.Code, got.Body)
+		}
 	}
 }
 
@@ -413,5 +459,192 @@ func TestMissingThumbnailDoesNotMakeOriginalUnavailable(t *testing.T) {
 	}
 	if got := e.send("GET", "/attachments/"+id, nil).Code; got != http.StatusOK {
 		t.Fatalf("original = %d, want 200", got)
+	}
+}
+
+func TestMissingThumbnailCanBeUploadedAgain(t *testing.T) {
+	e := newSyncEnv(t)
+	_, id := e.capturePhoto()
+	var key string
+	if err := e.h.api.db.QueryRow(context.Background(), "SELECT thumbnail_key FROM attachments WHERE id = $1", id).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(e.dir, key)); err != nil {
+		t.Fatal(err)
+	}
+	cursor := e.pull(0).Cursor
+	if got := e.send("GET", "/attachments/"+id+"/thumbnail", nil).Code; got != 500 {
+		t.Fatal(got)
+	}
+	page := e.pull(cursor)
+	if len(page.Items) != 1 || page.Items[0].Attachments[0].HasThumbnail || !page.Items[0].Attachments[0].Uploaded {
+		t.Fatalf("preview loss not published: %+v", page.Items)
+	}
+	if got := e.send("PUT", "/attachments/"+id+"/thumbnail", bytes.NewReader(jpegPreview(t, 40, 30)), "Content-Type", "image/jpeg").Code; got != 204 {
+		t.Fatal(got)
+	}
+	if got := thumbnailSize(t, e.send("GET", "/attachments/"+id+"/thumbnail", nil)); got != image.Pt(40, 30) {
+		t.Fatal(got)
+	}
+}
+
+func TestStorageErrorsDoNotQueueRecovery(t *testing.T) {
+	e := newSyncEnv(t)
+	_, id := e.capturePhoto()
+	cursor := e.pull(0).Cursor
+	if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(id, filepath.Join(e.dir, id)); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"GET", "PUT"} {
+		if got := e.send(method, "/attachments/"+id, strings.NewReader("body")).Code; got != 500 {
+			t.Fatalf("%s = %d", method, got)
+		}
+	}
+	if page := e.pull(cursor); len(page.Items) != 0 {
+		t.Fatalf("storage error changed sync state: %+v", page.Items)
+	}
+}
+
+func TestMissingOriginalAndThumbnailAreBothRecovered(t *testing.T) {
+	e := newSyncEnv(t)
+	content := pngOf(t, 10, 10)
+	_, id := e.captureFile("photo.png", "image/png", content)
+	if got := e.upload(id, content); got != 204 {
+		t.Fatal(got)
+	}
+	var key string
+	if err := e.h.api.db.QueryRow(context.Background(), "SELECT thumbnail_key FROM attachments WHERE id = $1", id).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{id, key} {
+		if err := os.Remove(filepath.Join(e.dir, key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.send("GET", "/attachments/"+id+"/thumbnail", nil)
+	e.send("GET", "/attachments/"+id, nil)
+	cursor := e.pull(0).Cursor
+	e.send("GET", "/attachments/"+id, nil)
+	if page := e.pull(cursor); len(page.Items) != 0 {
+		t.Fatal("repeated failure bumped sync cursor")
+	}
+	if got := e.upload(id, content); got != 204 {
+		t.Fatal(got)
+	}
+	if got := thumbnailSize(t, e.send("GET", "/attachments/"+id+"/thumbnail", nil)); got != image.Pt(10, 10) {
+		t.Fatal(got)
+	}
+}
+
+func TestRetryRepairsMissingThumbnailWithoutDownloadFirst(t *testing.T) {
+	e := newSyncEnv(t)
+	_, id := e.capturePhoto()
+	var key string
+	if err := e.h.api.db.QueryRow(context.Background(), "SELECT thumbnail_key FROM attachments WHERE id = $1", id).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(e.dir, key)); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.send("PUT", "/attachments/"+id+"/thumbnail", bytes.NewReader(jpegPreview(t, 40, 30)), "Content-Type", "image/jpeg").Code; got != 204 {
+		t.Fatal(got)
+	}
+	if got := thumbnailSize(t, e.send("GET", "/attachments/"+id+"/thumbnail", nil)); got != image.Pt(40, 30) {
+		t.Fatal(got)
+	}
+}
+
+func TestStaleMissingFileRequestCannotInvalidateCompletedRepair(t *testing.T) {
+	for _, original := range []bool{true, false} {
+		t.Run(map[bool]string{true: "original", false: "thumbnail"}[original], func(t *testing.T) {
+			e := newSyncEnv(t)
+			_, id := e.capturePhoto()
+			key := id
+			if !original {
+				if err := e.h.api.db.QueryRow(context.Background(), "SELECT thumbnail_key FROM attachments WHERE id = $1", id).Scan(&key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(filepath.Join(e.dir, key)); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			tx, err := e.h.api.db.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", syncLock); err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() { _, err := e.h.api.invalidateMissingFile(ctx, key, original); result <- err }()
+			for {
+				var waiting bool
+				if err := e.h.api.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory')").Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				if waiting {
+					break
+				}
+				select {
+				case err := <-result:
+					t.Fatalf("did not wait for publication: %v", err)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-time.After(time.Millisecond):
+				}
+			}
+			if original {
+				if err := e.h.api.files.Put(key, strings.NewReader("restored"), 8); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				newKey := uuid.NewString()
+				if err := e.h.api.files.Put(newKey, strings.NewReader("restored"), 8); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.Exec(ctx, "UPDATE attachments SET thumbnail_key = $1 WHERE id = $2", newKey, id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cursor := e.pull(0).Cursor
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-result; err != nil {
+				t.Fatal(err)
+			}
+			if page := e.pull(cursor); len(page.Items) != 0 {
+				t.Fatalf("stale request invalidated repaired file: %+v", page.Items)
+			}
+			got := e.item(e.pull(0).Items[0].ID).Attachments[0]
+			if !got.Uploaded || !got.HasThumbnail {
+				t.Fatalf("repair flags lost: %+v", got)
+			}
+		})
+	}
+}
+
+func TestMissingFileCannotRepublishRemovedAttachment(t *testing.T) {
+	e := newSyncEnv(t)
+	itemID, id := e.capturePhoto()
+	if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
+		t.Fatal(err)
+	}
+	e.push(phoneID, op{"type": "RemoveAttachment", "at": e.at(1), "item_id": itemID, "attachment_id": id})
+	cursor := e.pull(0).Cursor
+	if _, err := e.h.api.invalidateMissingFile(context.Background(), id, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.upload(id, pngOf(t, 10, 10)); got != 410 {
+		t.Fatal(got)
+	}
+	if page := e.pull(cursor); len(page.Items) != 0 {
+		t.Fatal("removed Attachment changed during recovery")
 	}
 }

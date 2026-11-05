@@ -6,6 +6,7 @@ import (
 	"errors"
 	"image/jpeg"
 	"io"
+	"io/fs"
 	"log"
 	"mime"
 	"net/http"
@@ -82,15 +83,16 @@ func (a *syncAPI) upload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusGone)
 		return
 	case uploaded:
-		f, err := a.files.Open(fileKey)
+		missing, err := a.invalidateMissingFile(r.Context(), fileKey, true)
 		if err != nil {
 			log.Printf("upload: stored original unavailable: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		f.Close()
-		w.WriteHeader(http.StatusNoContent)
-		return
+		if !missing {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 
 	if err := a.files.Put(fileKey, r.Body, sizeBytes); err != nil {
@@ -173,8 +175,9 @@ func (a *syncAPI) uploadThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var mimeType string
-	var removed, ready bool
-	err = a.db.QueryRow(r.Context(), "SELECT mime_type, deleted_at IS NOT NULL, thumbnail_key IS NOT NULL FROM attachments WHERE id = $1", id).Scan(&mimeType, &removed, &ready)
+	var removed bool
+	var thumbnailKey *string
+	err = a.db.QueryRow(r.Context(), "SELECT mime_type, deleted_at IS NOT NULL, thumbnail_key FROM attachments WHERE id = $1", id).Scan(&mimeType, &removed, &thumbnailKey)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		http.NotFound(w, r)
@@ -194,9 +197,16 @@ func (a *syncAPI) uploadThumbnail(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnsupportedMediaType)
 		return
 	}
-	if ready {
-		w.WriteHeader(http.StatusNoContent)
-		return
+	if thumbnailKey != nil {
+		missing, err := a.invalidateMissingFile(r.Context(), *thumbnailKey, false)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if !missing {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxThumbnailUploadBytes+1))
 	if err != nil {
@@ -250,7 +260,7 @@ func (a *syncAPI) download(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mimeType)
 	w.Header().Set("Content-Disposition", disposition)
-	a.serveFile(w, r, fileKey, uploadedAt)
+	a.serveFile(w, r, fileKey, uploadedAt, true)
 }
 
 func (a *syncAPI) thumbnail(w http.ResponseWriter, r *http.Request) {
@@ -264,7 +274,7 @@ func (a *syncAPI) thumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	a.serveFile(w, r, thumbnailKey, uploadedAt)
+	a.serveFile(w, r, thumbnailKey, uploadedAt, false)
 }
 
 // lookup scans the row query selects for the path's Attachment id, answering 404 or 500 itself if there is none.
@@ -288,14 +298,63 @@ func (a *syncAPI) lookup(w http.ResponseWriter, r *http.Request, query string, d
 }
 
 // serveFile streams the file, answering Range requests, and never lets a browser guess another type.
-func (a *syncAPI) serveFile(w http.ResponseWriter, r *http.Request, key string, modified time.Time) {
+func (a *syncAPI) serveFile(w http.ResponseWriter, r *http.Request, key string, modified time.Time, original bool) {
 	f, err := a.files.Open(key)
 	if err != nil {
 		log.Printf("%s %s: %v", r.Method, r.URL.Path, err)
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, err := a.invalidateMissingFile(r.Context(), key, original); err != nil {
+				log.Printf("attachment recovery: %v", err)
+			}
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, "", modified, f)
+}
+
+// Rechecking under the publication lock prevents a stale request from undoing a completed upload.
+func (a *syncAPI) invalidateMissingFile(ctx context.Context, key string, original bool) (bool, error) {
+	f, err := a.files.Open(key)
+	if err == nil {
+		f.Close()
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, syncLock); err != nil {
+		return false, err
+	}
+	f, err = a.files.Open(key)
+	if err == nil {
+		f.Close()
+		return false, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	query := `UPDATE attachments SET thumbnail_key = NULL WHERE thumbnail_key = $1 AND deleted_at IS NULL RETURNING item_id`
+	if original {
+		query = `UPDATE attachments SET uploaded_at = NULL WHERE file_key = $1 AND uploaded_at IS NOT NULL AND deleted_at IS NULL RETURNING item_id`
+	}
+	var itemID uuid.UUID
+	err = tx.QueryRow(ctx, query, key).Scan(&itemID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE items SET seq = nextval('sync_seq') WHERE id = $1`, itemID); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }

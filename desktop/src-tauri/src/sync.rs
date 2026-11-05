@@ -1137,6 +1137,68 @@ pub(crate) mod server_tests {
     }
 
     #[tokio::test]
+    async fn a_missing_server_original_is_reuploaded_from_a_cached_device() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "recover");
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "uploaded", &id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        std::fs::remove_file(server.attachments.path().join(&id)).unwrap();
+        assert!(crate::cache::file(&b, &id, T0).await.is_err());
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "uploaded", &id));
+        let path = crate::cache::file(&b, &id, T0).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), PIXEL_PNG);
+    }
+
+    #[tokio::test]
+    async fn a_failed_upload_keeps_its_original_and_retries_when_storage_recovers() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "retry");
+        std::fs::create_dir(server.attachments.path().join(&id)).unwrap();
+        let _ = sync(&a).await;
+        assert!(!flag(&a, "uploaded", &id));
+        assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
+        crate::cache::evict(&a.db.lock().unwrap(), &a.dir, T0, 0).unwrap();
+        let local = crate::cache::file(&a, &id, T0).await.unwrap();
+        assert_eq!(std::fs::read(local).unwrap(), PIXEL_PNG);
+        std::fs::remove_dir(server.attachments.path().join(&id)).unwrap();
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "uploaded", &id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        let recovered = crate::cache::file(&b, &id, T0).await.unwrap();
+        assert_eq!(std::fs::read(recovered).unwrap(), PIXEL_PNG);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_missing_server_thumbnail_is_reuploaded_from_a_cached_device() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = capture_png(&a, "preview");
+        sync(&a).await.unwrap();
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        for file in std::fs::read_dir(server.attachments.path()).unwrap() {
+            let file = file.unwrap();
+            if file.file_name().to_string_lossy() != id { std::fs::remove_file(file.path()).unwrap(); }
+        }
+        assert!(crate::cache::thumbnail(&b, &id, T0).await.is_err());
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "has_thumbnail", &id));
+        let response = client().get(format!("{}/attachments/{id}/thumbnail", server.url)).bearer_auth(&server.secret).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert!(response.bytes().await.unwrap().starts_with(&[0xff, 0xd8]));
+    }
+
+    #[tokio::test]
     async fn an_attachment_removed_on_the_server_stops_uploading() {
         let mut server = TestServer::new();
         server.start();

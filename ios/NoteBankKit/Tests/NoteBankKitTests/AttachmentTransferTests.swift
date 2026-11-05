@@ -40,6 +40,73 @@ struct AttachmentTransferTests {
         #expect(try store.items(in: .all, before: nil, limit: 1).first?.attachments.first?.uploadError != nil)
     }
 
+    @Test func missingServerOriginalIsRecoveredFromDeviceCache() async throws {
+        let server = try TestServer(); try await server.start()
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: server.secret, secrets: secrets)
+        let staged = try store.stageFile(at: AttachmentTests().source())
+        _ = try store.capture(text: "recover", attachmentIDs: [staged.id], to: .inbox, nowUs: 1_760_000_000_000_000)
+        var notices: [SyncNotice] = []
+        _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        try await transfers.synchronize()
+        for _ in 0..<200 {
+            if try store.attachment(staged.id)?.uploaded == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(try store.attachment(staged.id)?.uploaded == true)
+        let (other, _) = try tempStore(); let otherSecrets = SecretStore.memory()
+        try other.saveSettings(url: server.url, newSecret: server.secret, secrets: otherSecrets)
+        _ = try await cycle(store: other, secrets: otherSecrets, http: .live, queued: &notices)
+        let downloads = AttachmentTransfers(store: other, secrets: otherSecrets, background: false)
+        try FileManager.default.removeItem(at: server.attachments.appending(path: staged.id))
+        await #expect(throws: AttachmentError.self) { try await downloads.open(staged.id) }
+        _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+        #expect(try store.attachment(staged.id)?.uploaded == false)
+        try await transfers.synchronize()
+        for _ in 0..<200 {
+            if try store.attachment(staged.id)?.uploaded == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(try store.attachment(staged.id)?.uploaded == true)
+        let opened = try await downloads.open(staged.id)
+        #expect(try Data(contentsOf: opened) == Data("hello".utf8))
+        await downloads.release(staged.id)
+    }
+
+    @Test func missingServerThumbnailIsRecoveredFromDeviceCache() async throws {
+        let server = try TestServer(); try await server.start()
+        let (store, _) = try tempStore(); let secrets = SecretStore.memory()
+        try store.saveSettings(url: server.url, newSecret: server.secret, secrets: secrets)
+        let source = URL(filePath: #filePath).deletingLastPathComponent().appending(path: "Fixtures/synthetic.heic")
+        let staged = try store.stageFile(at: source)
+        _ = try store.capture(text: "preview", attachmentIDs: [staged.id], to: .inbox, nowUs: Time.nowUs())
+        var notices: [SyncNotice] = []
+        _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+        let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
+        try await transfers.synchronize()
+        for _ in 0..<200 {
+            if try store.attachment(staged.id)?.uploaded == true { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await transfers.synchronize()
+        _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+        #expect(try store.attachment(staged.id)?.hasThumbnail == true)
+        for file in try FileManager.default.contentsOfDirectory(at: server.attachments, includingPropertiesForKeys: nil) where file.lastPathComponent != staged.id {
+            try FileManager.default.removeItem(at: file)
+        }
+        var request = URLRequest(url: URL(string: server.url + "/attachments/\(staged.id)/thumbnail")!)
+        request.setValue("Bearer " + server.secret, forHTTPHeaderField: "Authorization")
+        let (_, missing) = try await URLSession.shared.data(for: request)
+        #expect((missing as? HTTPURLResponse)?.statusCode == 500)
+        _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+        #expect(try store.attachment(staged.id)?.hasThumbnail == false)
+        try await transfers.synchronize()
+        let (bytes, repaired) = try await URLSession.shared.data(for: request)
+        #expect((repaired as? HTTPURLResponse)?.statusCode == 200)
+        #expect(bytes.starts(with: [0xff, 0xd8]))
+    }
+
     @Test func captureUploadsWithScopedTokenAndSecondDeviceDownloadsExactBytes() async throws {
         let server = try TestServer(); try await server.start()
         let (store, _) = try tempStore(); let secrets = SecretStore.memory()
@@ -118,6 +185,7 @@ extension AttachmentTransferTests {
 
 extension AttachmentTransferTests {
     @Test func backgroundRequestUsesOnlyUploadCapabilityAndFailedUploadsWaitToRetry() async throws {
+        let recovered = Mutex(false)
         let server = try await FakeServer { request in
             if request.path.hasSuffix("upload-token") {
                 #expect(request.headers["authorization"] == "Bearer account-secret")
@@ -125,7 +193,7 @@ extension AttachmentTransferTests {
             }
             #expect(request.headers["authorization"] == "Bearer attachment-only")
             #expect(request.body == Data("hello".utf8))
-            return .init(status: 500)
+            return .init(status: recovered.withLock { $0 } ? 204 : 500)
         }
         let (store, _) = try tempStore(); let secrets = SecretStore.memory()
         try store.saveSettings(url: server.url, newSecret: "account-secret", secrets: secrets)
@@ -143,6 +211,20 @@ extension AttachmentTransferTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(server.requests(to: "/attachments/" + file.id) == 1)
         #expect(try store.attachment(file.id)?.uploaded == false)
+        try store.evictCache(nowUs: Time.nowUs(), maxFileBytes: 0)
+        #expect(try store.localFile(file.id) != nil)
+        recovered.withLock { $0 = true }
+        try await store.pool.write { db in
+            try db.execute(sql: "UPDATE attachment_uploads SET retry_at = 0 WHERE attachment_id = ?", arguments: [file.id])
+        }
+        try await transfers.synchronize()
+        for _ in 0..<100 {
+            if try store.attachment(file.id)?.uploaded == true { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(try store.attachment(file.id)?.uploaded == true)
+        #expect(try store.uploadError(file.id) == nil)
+
     }
 }
 

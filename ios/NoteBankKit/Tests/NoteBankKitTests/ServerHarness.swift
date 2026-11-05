@@ -66,7 +66,7 @@ final class TestServer {
     let secret = "test-secret-that-is-at-least-32-characters"
     let port: UInt16
     private let databaseName = "notebank_ios_test_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-    private let attachments = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    let attachments = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
     private var process: Process?
 
     init() throws {
