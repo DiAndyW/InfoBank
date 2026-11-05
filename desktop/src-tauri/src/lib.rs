@@ -37,6 +37,7 @@ pub struct AppState {
     notices: Mutex<Vec<sync::SyncNotice>>,
     picking_files: AtomicBool,
     prefetching: AtomicBool,
+    prepared_copies: Mutex<std::collections::HashMap<String, clipboard::Prepared>>,
     #[cfg(target_os = "macos")]
     previous_app: Mutex<Option<i32>>,
 }
@@ -57,6 +58,7 @@ impl AppState {
             notices: Mutex::new(Vec::new()),
             picking_files: AtomicBool::new(false),
             prefetching: AtomicBool::new(false),
+            prepared_copies: Mutex::new(std::collections::HashMap::new()),
             #[cfg(target_os = "macos")]
             previous_app: Mutex::new(None),
         }
@@ -199,6 +201,10 @@ pub fn run() {
             commands::unstage_attachment,
             commands::thumbnail,
             commands::copy_item,
+            commands::prepare_copy_items,
+            commands::finish_copy_items,
+            commands::discard_copy_items,
+            commands::set_items_trashed,
             commands::open_attachment,
             commands::reveal_attachment,
             commands::list_items,

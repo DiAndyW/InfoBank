@@ -5,6 +5,7 @@ struct ItemActionsView: View {
     let item: FeedItem
     let store: Store
     var copiesWholeItem = false
+    var onSelect: (() -> Void)?
     let onCopy: () -> Void
     let onChanged: (_ trashed: Bool, _ moved: Bool) -> Void
 
@@ -54,6 +55,7 @@ struct ItemActionsView: View {
                 switch page {
                 case .commands:
                     List {
+                        if let onSelect, item.syncError == nil { Button("Select", systemImage: "checkmark.circle", action: onSelect) }
                         if copiesWholeItem || item.text != nil { Button(copiesWholeItem ? "Copy Item" : "Copy Text", systemImage: "doc.on.doc", action: onCopy) }
                         if item.syncError != nil {
                             Button("Discard…", systemImage: "trash", role: .destructive) { discard = true }

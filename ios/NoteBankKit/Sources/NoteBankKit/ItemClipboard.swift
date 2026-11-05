@@ -3,6 +3,11 @@ import UniformTypeIdentifiers
 import ImageIO
 
 public enum ItemClipboard {
+    public static func text(items: [FeedItem]) -> String? {
+        let text = items.compactMap(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return text.isEmpty ? nil : text
+    }
+
     public static func providers(text: String?, attachments: [(file: URL, mimeType: String)]) throws -> [NSItemProvider] {
         let representations = try contents(text: nil, attachments: attachments)
         var providers = text.map { [NSItemProvider(object: $0 as NSString)] } ?? []

@@ -2,6 +2,7 @@ thoughts.md
 .scratch/
 .DS_Store
 .superpowers
+.playwright-mcp/
 ios/NoteBankKit/.build/
 ios/**/xcuserdata/
 *.xcuserstate

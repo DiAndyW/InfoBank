@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 
-export type NoticeData = { id: number; message: string; action?: { label: "Undo" | "Show"; onAction: () => void } };
+export type NoticeData = { id: number; message: string; inSearch?: boolean; action?: { label: "Undo" | "Show"; onAction: () => void | boolean | Promise<void | boolean> } };
 
 export default function Notice({ message, action, onClose }: { message: string; action?: NoticeData["action"]; onClose: () => void }) {
   const [held, setHeld] = useState(false);
   const [focused, setFocused] = useState(document.hasFocus());
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const on = () => setFocused(true);
@@ -19,10 +20,10 @@ export default function Notice({ message, action, onClose }: { message: string; 
   }, []);
 
   useEffect(() => {
-    if (held || !focused) return;
+    if (held || !focused || busy) return;
     const timer = setTimeout(onClose, action?.label === "Undo" ? 6000 : 4000);
     return () => clearTimeout(timer);
-  }, [held, focused, action?.label]);
+  }, [held, focused, action?.label, busy]);
 
   return (
     <div
@@ -37,9 +38,11 @@ export default function Notice({ message, action, onClose }: { message: string; 
       {action && (
         <button
           className="nb-notice-action"
-          onClick={() => {
-            action.onAction();
-            onClose();
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try { if (await action.onAction() !== false) onClose(); }
+            finally { setBusy(false); }
           }}
         >
           {action.label}

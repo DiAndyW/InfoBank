@@ -3,7 +3,7 @@ import Observation
 
 public struct Notice: Equatable, Identifiable {
     public let id = UUID()
-    public enum Action: Equatable { case show, dismiss, undoTrash, undoMove(Destination) }
+    public enum Action: Equatable { case show, dismiss, undoTrash, undoMove(Destination), undoBatchTrash([String]) }
 
     public var actionTitle: String { action == .show ? "Show" : action == .dismiss ? "Dismiss" : "Undo" }
 
@@ -30,6 +30,16 @@ public final class NoticeCenter {
 
     public func postMoved(itemID: String, from destination: Destination) {
         current = Notice(message: "Item moved", itemID: itemID, action: .undoMove(destination))
+    }
+
+    public func postTrashed(itemIDs: [String], copied: Bool) {
+        guard let first = itemIDs.first else { return }
+        let count = "\(itemIDs.count) \(itemIDs.count == 1 ? "Item" : "Items")"
+        current = Notice(message: count + (copied ? " copied · moved to Trash" : " moved to Trash"), itemID: first, action: .undoBatchTrash(itemIDs))
+    }
+
+    public func postBatchCompleted(count: Int, copied: Bool) {
+        current = Notice(message: "\(count) \(count == 1 ? "Item" : "Items") \(copied ? "copied" : "restored")", itemID: "", action: .dismiss)
     }
 
     public func postRestored(itemID: String) {

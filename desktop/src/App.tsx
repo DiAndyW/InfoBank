@@ -204,17 +204,17 @@ export default function App() {
 
   useEffect(() => {
     const undo = notice?.action?.label === "Undo" ? notice.action : null;
-    if (!undo || covered) return;
+    const undoID = notice?.id;
+    if (!undo || editing || (covered && !notice?.inSearch)) return;
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement).closest("input, textarea, [contenteditable]");
       if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || typing || dialogOpen()) return;
       e.preventDefault();
-      undo.onAction();
-      setNotice(null);
+      void Promise.resolve(undo.onAction()).then(result => { if (result !== false) setNotice(current => current?.id === undoID ? null : current); });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [notice, covered]);
+  }, [notice, editing, covered]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -325,6 +325,7 @@ export default function App() {
         editor={editor}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
+        onNotice={show}
         onError={showError}
         onTrashed={(id, copied = false) =>
           show(copied ? "Copied · moved to Trash" : "Item moved to Trash", {
@@ -353,6 +354,10 @@ export default function App() {
           topics={topics}
           startPlace={feed === "home" || feed === "trash" ? "all" : feed}
           hidden={!resultsOpen}
+          notice={notice?.inSearch ? notice : null}
+          onNotice={(message, action) => setNotice({ id: ++noticeId.current, message, action, inSearch: true })}
+          onError={showError}
+          onDismissNotice={() => setNotice(null)}
           onOpenTopic={async (topic) => {
             if (!(await select(topic.id))) setResultsOpen(false);
           }}

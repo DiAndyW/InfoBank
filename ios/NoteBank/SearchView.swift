@@ -12,14 +12,22 @@ struct SearchView: View {
     let onOpen: (String) -> Void
     let onOpenTopic: (String) -> Void
     let onCancel: () -> Void
+    private let store: Store
+    private let notices: NoticeCenter
+    private let wake: () -> Void
+    @State private var batch: BatchItemActions
     @State private var model: SearchModel
     @State private var picking: DayEnd?
     @State private var draft = Date()
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
 
-    init(store: Store, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        _model = State(wrappedValue: SearchModel(store: store, place: place))
+    init(services: Services, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        _model = State(wrappedValue: SearchModel(store: services.store, place: place))
+        store = services.store
+        notices = services.notices
+        wake = services.wake
+        _batch = State(wrappedValue: BatchItemActions(services: services))
         self.topics = topics
         self.archived = archived
         self.onOpen = onOpen
@@ -119,7 +127,7 @@ struct SearchView: View {
                 .background(palette.chip, in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(RoundedRectangle(cornerRadius: 10))
                 .onTapGesture { fieldFocused = true }
-                Button("Cancel", action: onCancel)
+                Button(batch.selection.isSelecting ? "Done" : "Cancel", action: batch.selection.isSelecting ? batch.cancel : onCancel)
                     .font(.plex(.sans, 17))
                     .padding(.horizontal, 8)
                     .frame(minHeight: 44)
@@ -210,7 +218,10 @@ struct SearchView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(model.results) { result in
                                 if result.id != model.results.first?.id { Divider().overlay(palette.line) }
-                                SearchResultRow(result: result) { onOpen(result.id) }
+                                SelectableItemRow(selection: batch.selection, item: result.item, busy: batch.busy,
+                                                  onBegin: { fieldFocused = false }) {
+                                    SearchResultRow(result: result) { onOpen(result.id) }
+                                }
                                     .onAppear { if result.id == model.results.last?.id { model.loadMore() } }
                             }
                         }
@@ -223,6 +234,23 @@ struct SearchView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onOpen, onError: { batch.error = $0 })
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if batch.selection.isSelecting {
+                BatchActionsBar(batch: batch, items: model.results.map(\.item))
+            }
+        }
+        .onChange(of: model.text) { batch.cancel() }
+        .onChange(of: model.place) { batch.cancel() }
+        .onChange(of: model.dates) { batch.cancel() }
+        .onChange(of: model.hasFiles) { batch.cancel() }
+        .onChange(of: model.results) { _, results in batch.reconcile(results.map(\.item)) }
+        .onDisappear { batch.cancel() }
+        .alert("Couldn't finish the action", isPresented: Binding(get: { batch.error != nil }, set: { if !$0 { batch.error = nil } })) {
+            Button("OK") { batch.error = nil }
+        } message: { Text(batch.error ?? "") }
         .containerBackground(palette.surfaceSidebar, for: .navigation)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(item: $picking) { end in
@@ -287,6 +315,7 @@ private struct SearchField: UIViewRepresentable {
         // Setting text mid-composition would cancel the IME's marked text.
         if field.markedTextRange == nil && field.text != text { field.text = text }
         if focused && !field.isFirstResponder && field.window != nil { field.becomeFirstResponder() }
+        if !focused && field.isFirstResponder { field.resignFirstResponder() }
         let ink = UIColor(palette.ink)
         if field.textColor != ink {
             field.textColor = ink

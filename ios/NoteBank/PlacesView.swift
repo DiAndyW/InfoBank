@@ -171,11 +171,7 @@ struct PlacesView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .overlay(alignment: .bottom) {
-            if let notice = notices.current {
-                NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: { if notice.action == .dismiss { notices.dismiss() } else { onShow(notice.itemID) } }, onDismiss: notices.dismiss)
-                    .padding(.horizontal, 12)
-                    .id(notice.id)
-            }
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { error = $0 })
         }
         .contentShape(.rect)
         .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }

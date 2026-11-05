@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import { searchItems, type SearchItem, type SearchQuery, type Topic } from "./api";
 import { Icon } from "./icons";
 import Menu from "./Menu";
+import Notice, { type NoticeData } from "./Notice";
+import { SelectionBar, useItemSelection, type ShowNotice } from "./Selection";
 
 const WAIT_MS = 150;
 
@@ -25,9 +27,9 @@ const midnight = (day: string, plusDays = 0) => {
 const marks = (s: string) =>
   s.split(/([^]*)/).map((part, i) => (part.startsWith("") ? <mark key={i}>{part.slice(1, -1)}</mark> : part));
 
-type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void; onOpenTopic: (topic: Topic) => void | Promise<void> };
+type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void; onOpenTopic: (topic: Topic) => void | Promise<void>; onNotice: ShowNotice; onError: (title: string, error: unknown) => void; notice: NoticeData | null; onDismissNotice: () => void };
 
-export default function SearchResults({ text, topics, startPlace, hidden, onOpen, onOpenTopic }: Props) {
+export default function SearchResults({ text, topics, startPlace, hidden, onOpen, onOpenTopic, onNotice, onError, notice, onDismissNotice }: Props) {
   const [items, setItems] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exhausted, setExhausted] = useState(false);
@@ -54,6 +56,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
     has_files: hasFiles,
   };
   const queryKey = JSON.stringify(query);
+  const selection = useItemSelection({ items: items ?? [], scope: queryKey, enabled: !hidden, onNotice, onError });
 
   useEffect(() => {
     if (place !== "all" && place !== "inbox" && place !== "tunnel" && !topics.some((t) => t.id === place)) setPlace("all");
@@ -126,6 +129,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
   return (
     <main className="nb-results" hidden={hidden}>
       <header className="nb-results-head">
+        <div className="nb-selection-controls"><button className="nb-btn nb-btn-quiet" onClick={selection.selecting ? selection.clear : selection.enter}>{selection.selecting ? "Done" : "Select"}</button></div>
         <h2 className="nb-results-title">Results for "{text.trim()}"</h2>
         <div className="nb-filters">
           <Menu
@@ -235,7 +239,10 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
                   const time = new Date(it.capture_time_us / 1000);
                   const topic = topics.find((t) => t.id === it.topic_id);
                   return (
-                    <button key={it.id} className="nb-item nb-result" onClick={() => onOpen(it)}>
+                    <button key={it.id} className={["nb-item nb-result", selection.selecting && "is-selecting", selection.ids.has(it.id) && "is-batch-selected"].filter(Boolean).join(" ")}
+                      aria-pressed={selection.selecting ? selection.ids.has(it.id) : undefined}
+                      onClick={e => { if (!selection.pick(it.id, e)) onOpen(it); }}>
+                      {selection.selecting && <span className="nb-selection-check" aria-hidden="true">{selection.ids.has(it.id) && <Icon name="check" />}</span>}
                       <span className="nb-item-body">
                         {it.marked_text !== null && <span className="nb-item-text">{marks(it.marked_text)}</span>}
                         {it.marked_filenames.length > 0 && (
@@ -267,6 +274,8 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
           </section>
         </div>
       </div>
+      <div className="nb-notice-slot">{notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
+      {selection.selecting && <SelectionBar selection={selection} />}
     </main>
   );
 }

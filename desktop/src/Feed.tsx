@@ -16,6 +16,7 @@ import ItemEditor, { type EditorHandle } from "./ItemEditor";
 import { linkify } from "./links";
 import Menu from "./Menu";
 import Notice, { type NoticeData } from "./Notice";
+import { SelectionBar, useItemSelection, type ShowNotice } from "./Selection";
 
 const HIGHLIGHT_MS = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -35,6 +36,7 @@ type Props = {
   editor: RefObject<EditorHandle | null>;
   notice: NoticeData | null;
   onDismissNotice: () => void;
+  onNotice: ShowNotice;
   onError: (title: string, err: unknown) => void;
   onTrashed: (id: string, copied?: boolean) => void;
   onRestored: (item: FeedItem) => void;
@@ -50,7 +52,7 @@ function refusal(reason: string) {
   return `${what} It's only on this Device.`;
 }
 
-export default function Feed({ home, view, topics, covered, editor, notice, onDismissNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+export default function Feed({ home, view, topics, covered, editor, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [homeTunnel, setHomeTunnel] = useState(() => localStorage.getItem("tunnelSwitch") === "true");
   const [homeTopic, setHomeTopic] = useState<string | null>(null);
   useEffect(() => {
@@ -296,10 +298,18 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
       ? [...items, editing].sort((a, b) => b.capture_time_us - a.capture_time_us || (a.id < b.id ? 1 : -1))
       : items;
   const shown = [...listed].reverse();
+  const selection = useItemSelection({ items: shown, scope: viewKey, enabled: !home && !covered && !editing, onNotice, onError });
   const today = new Date().toDateString();
   return (
     <main className={["nb-feed", covered && "is-covered", home && "is-home"].filter(Boolean).join(" ")} aria-hidden={covered || undefined} inert={covered}>
       {home && <h1 className="nb-home-title">NoteBank</h1>}
+      {!home && <div className="nb-selection-controls">
+        <button className="nb-btn nb-btn-quiet" onClick={() => {
+          cancelCopy();
+          setMenuFor(null);
+          if (selection.selecting) selection.clear(); else selection.enter();
+        }}>{selection.selecting ? "Done" : "Select"}</button>
+      </div>}
       <div hidden={!!home} className="nb-feed-scroll" ref={listRef} onScroll={onScroll} data-testid="feed-items">
         <div className="nb-feed-col">
           {loadingOlder && showLoadingOlder && (
@@ -359,31 +369,46 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                     <article
                       style={view.kind === "tunnel" ? { viewTransitionName: `item-${it.id}` } : undefined}
                       data-item={it.id}
+                      role={selection.selecting ? "checkbox" : undefined}
+                      aria-checked={selection.selecting ? selection.ids.has(it.id) : undefined}
+                      aria-label={selection.selecting ? it.text || it.attachments[0]?.filename || "Item" : undefined}
+                      tabIndex={selection.selecting ? 0 : undefined}
+                      onKeyDown={e => {
+                        if (e.key === " " && selection.selecting) { e.preventDefault(); selection.pick(it.id, e); }
+                      }}
+                      onClickCapture={e => {
+                        if (selection.pick(it.id, e)) { cancelCopy(); setMenuFor(null); e.preventDefault(); e.stopPropagation(); }
+                      }}
+                      onPointerDownCapture={e => {
+                        if (selection.selecting || e.metaKey || e.ctrlKey) e.stopPropagation();
+                      }}
                       onClick={view.kind === "tunnel" && !it.sync_error ? (e) => {
-                        if (e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
+                        if (selection.selecting || e.metaKey || e.ctrlKey || e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
                         copyItem(it, true);
                       } : undefined}
                       onDoubleClick={trash || it.sync_error ? undefined : (e) => {
-                        if ((e.target as HTMLElement).closest("a, button, input")) return;
+                        if (selection.selecting || e.metaKey || e.ctrlKey || (e.target as HTMLElement).closest("a, button, input")) return;
                         cancelCopy(it.id);
                         open(it);
                       }}
-                      className={["nb-item", view.kind === "tunnel" && it.text && !it.sync_error && "is-copyable", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
+                      className={["nb-item", selection.ids.has(it.id) && "is-batch-selected", selection.selecting && "is-selecting", view.kind === "tunnel" && it.text && !it.sync_error && !selection.selecting && "is-copyable", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
                       onContextMenu={
                         trash
                           ? undefined
                           : (e) => {
                               e.preventDefault();
+                              if (selection.selecting) return;
                               setMenuFor(it.id);
                             }
                       }
                     >
-                      {!trash && !it.sync_error && (
+                      {selection.selecting && <span className="nb-selection-check" aria-hidden="true">{selection.ids.has(it.id) && <Icon name="check" />}</span>}
+                      {!selection.selecting && !trash && !it.sync_error && (
                         <span className="nb-grip nb-reveal" title="Drag to a Topic" aria-hidden="true" onPointerDown={(e) => startDrag(e, it)}>
                           <Icon name="grip" />
                         </span>
                       )}
-                      <div className="nb-item-body">
+                      <div className="nb-item-body" inert={selection.selecting}>
                         {it.text && (
                           <p className="nb-item-text">
                             {linkify(it.text).map((part, j) =>
@@ -412,7 +437,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                         )}
                         {it.attachments.length > 0 && <Attachments list={it.attachments} />}
                       </div>
-                      <div className="nb-item-meta">
+                      <div className="nb-item-meta" inert={selection.selecting}>
                         {place && (
                           <span className="nb-topic-chip" title={`In ${place}`}>
                             <Icon name={it.in_tunnel ? "send" : topic ? "topic" : "inbox"} size={12} />
@@ -443,6 +468,8 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             <Icon name="restore" />
                             Restore
                           </button>
+                        ) : selection.selecting ? (
+                          <span className="nb-iconbtn" aria-hidden="true" />
                         ) : (
                           <Menu
                             label="Item actions"
@@ -542,7 +569,8 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
           }
         />
       )}
-      <div className="nb-notice-slot">{notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
+      <div className="nb-notice-slot">{!covered && notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
+      {selection.selecting && <SelectionBar selection={selection} trash={trash} tunnel={view.kind === "tunnel"} />}
       {current?.archived && (
         <div className="nb-archived-bar">
           <Icon name="archive" />
@@ -559,7 +587,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
           <span>Items in Trash are deleted for good after 30 days.</span>
         </div>
       )}
-      <div hidden={noComposer} className="nb-main-composer">
+      <div hidden={noComposer || selection.selecting} className="nb-main-composer">
         <Composer
           acceptsDrops={!noComposer && !covered}
           picker={home ? <CaptureDestination topics={topics.filter((t) => !t.archived)} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={setHomeTopic} /> : undefined}

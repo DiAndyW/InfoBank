@@ -128,7 +128,6 @@ struct ItemRow: View {
         .onTapGesture { if copyable { onCopy() } }
         .background(highlighted ? palette.accentSoft : .clear)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
-        .onLongPressGesture { onCommands() }
         .accessibilityElement(children: item.attachments.isEmpty ? .combine : .contain)
         .accessibilityAddTraits(copyable ? .isButton : [])
         .accessibilityAction(named: "Item actions", onCommands)

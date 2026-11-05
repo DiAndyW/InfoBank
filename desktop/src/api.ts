@@ -74,6 +74,10 @@ export const stageBytes = (filename: string, bytes: Uint8Array) =>
 export const unstage = (id: string) => invoke<void>("unstage_attachment", { id });
 export const thumbnail = (id: string) => invoke<string>("thumbnail", { id });
 export const copyWholeItem = (itemId: string) => invoke<void>("copy_item", { itemId });
+export const prepareCopyItems = (itemIds: string[]) => invoke<string>("prepare_copy_items", { itemIds });
+export const finishCopyItems = (token: string) => invoke<void>("finish_copy_items", { token });
+export const discardCopyItems = (token: string) => invoke<void>("discard_copy_items", { token });
+export const setItemsTrashed = (itemIds: string[], trashed: boolean) => invoke<void>("set_items_trashed", { itemIds, trashed });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
 export type Before = { capture_time_us: number; id: string; purge_at_us?: number | null };

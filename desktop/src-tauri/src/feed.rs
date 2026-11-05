@@ -271,6 +271,21 @@ pub fn resolve_conflict(conn: &Connection, dir: &Path, item_id: &str, keep: Keep
     edit_item(conn, dir, item_id, text.as_deref().unwrap_or(""), &[], &[], base_rev, now_us)
 }
 
+pub fn set_many_trashed(conn: &Connection, item_ids: &[String], trashed: bool, now_us: i64) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut seen = std::collections::HashSet::new();
+    for id in item_ids.iter().filter(|id| seen.insert(id.as_str())) {
+        let available = tx.query_row(
+            "SELECT sync_error IS NULL AND (deleted_at IS NOT NULL) != ?2 AND (?2 OR purge_at IS NULL OR purge_at > ?3) AND (?2 OR text IS NOT NULL OR EXISTS(SELECT 1 FROM attachments WHERE item_id = items.id)) FROM items WHERE id = ?1",
+            rusqlite::params![id, trashed, now_us], |r| r.get::<_, bool>(0),
+        ).optional().map_err(|e| e.to_string())?.unwrap_or(false);
+        if !available { return Err(GONE.into()); }
+        let op = if trashed { ops::Op::TrashItem { item_id: id.clone() } } else { ops::Op::RestoreItem { item_id: id.clone() } };
+        ops::queue(&tx, op, now_us)?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 pub fn set_trashed(conn: &Connection, item_id: &str, trashed: bool, now_us: i64) -> Result<(), String> {
     let in_trash: bool = conn
         .query_row("SELECT deleted_at IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| r.get(0))
@@ -412,6 +427,45 @@ pub fn nav_counts(conn: &Connection, now_us: i64) -> rusqlite::Result<Counts> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_trash_and_restore_are_atomic_and_queue_each_item_once() {
+        let (d, conn) = fresh();
+        for text in ["first", "second"] {
+            capture(&conn, d.path(), text, &[], &Target::Tunnel, 1).unwrap();
+        }
+        let ids: Vec<String> = list_items(&conn, &View::Tunnel, None, 0).unwrap().into_iter().map(|i| i.id).collect();
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        assert!(set_many_trashed(&conn, &[ids[0].clone(), "missing".into()], true, 2).is_err());
+        assert_eq!(count(&conn, "outbox"), 0);
+        assert_eq!(list_items(&conn, &View::Tunnel, None, 0).unwrap().len(), 2);
+        set_many_trashed(&conn, &[ids[0].clone(), ids[1].clone(), ids[0].clone()], true, 2).unwrap();
+        assert_eq!(count(&conn, "outbox"), 2);
+        assert!(list_items(&conn, &View::Tunnel, None, 0).unwrap().is_empty());
+        assert!(set_many_trashed(&conn, &[ids[0].clone(), "missing".into()], false, 3).is_err());
+        assert_eq!(count(&conn, "outbox"), 2);
+        set_many_trashed(&conn, &ids, false, 3).unwrap();
+        assert_eq!(count(&conn, "outbox"), 4);
+        assert_eq!(list_items(&conn, &View::Tunnel, None, 0).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn batch_rejects_unavailable_or_wrong_state_items_without_partial_changes() {
+        let (d, conn) = fresh();
+        capture(&conn, d.path(), "first", &[], &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), "second", &[], &Target::Inbox, 2).unwrap();
+        let ids: Vec<String> = list_items(&conn, &View::Inbox, None, 0).unwrap().into_iter().map(|i| i.id).collect();
+        conn.execute("UPDATE items SET sync_error = 'invalid' WHERE id = ?1", [&ids[1]]).unwrap();
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        assert!(set_many_trashed(&conn, &ids, true, 3).is_err());
+        assert_eq!(count(&conn, "outbox"), 0);
+        assert_eq!(list_items(&conn, &View::Inbox, None, 0).unwrap().len(), 2);
+        conn.execute("UPDATE items SET sync_error = NULL, deleted_at = 2, purge_at = 3 WHERE id = ?1", [&ids[1]]).unwrap();
+        assert!(set_many_trashed(&conn, &ids, true, 4).is_err());
+        assert!(set_many_trashed(&conn, &[ids[1].clone()], false, 4).is_err());
+        conn.execute("UPDATE items SET text = NULL, purge_at = NULL WHERE id = ?1", [&ids[1]]).unwrap();
+        assert!(set_many_trashed(&conn, &[ids[1].clone()], false, 4).is_err());
+    }
 
     fn fresh() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();

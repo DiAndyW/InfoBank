@@ -47,6 +47,8 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       await opts.gates?.[cmd];
       if (opts.failing?.[cmd]) throw opts.failing[cmd];
       if (cmd === "copy_item") return null;
+      if (cmd === "prepare_copy_items") return "prepared-batch";
+      if (["finish_copy_items", "discard_copy_items", "set_items_trashed"].includes(cmd)) return null;
       if (cmd === "startup_error") return opts.startup ?? null;
       if (["show_data_folder", "quit"].includes(cmd)) return null;
       if (cmd === "get_settings") return settings;
@@ -142,6 +144,40 @@ const feedItem = (
 const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => ({ id, name, archived: false, item_count: 0, ...extra });
 
 const configured = { server_url: "https://notes.example.com", has_secret: true };
+
+test("multi-select Tunnel modifier clicks do not copy, final deselection exits, and batch Copy trashes once", async () => {
+  const items = [feedItem("b", "newer", 2), feedItem("a", "older", 1)];
+  const calls = backend(configured, { items: () => items, trashAfterCopy: true });
+  localStorage.setItem("place", "tunnel");
+  render(<App />);
+  fireEvent.click(await screen.findByText("older"), { metaKey: true, detail: 1 });
+  expect(screen.getByText("1 Item selected")).toBeInTheDocument();
+  expect(document.querySelector('.nb-item [aria-label="Item actions"]')).toBeNull();
+  fireEvent.click(screen.getByText("older"), { detail: 1 });
+  expect(screen.queryByText("1 Item selected")).not.toBeInTheDocument();
+  expect(document.querySelector('.nb-item [aria-label="Item actions"]')).not.toBeNull();
+  expect(calls.some(c => c.cmd === "copy_item")).toBe(false);
+  fireEvent.click(screen.getByText("older"), { ctrlKey: true, detail: 1 });
+  fireEvent.click(screen.getByText("newer"), { detail: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Copy & Trash" }));
+  expect(await screen.findByText("2 Items copied · moved to Trash")).toBeInTheDocument();
+  expect(calls.find(c => c.cmd === "prepare_copy_items")?.args.itemIds).toEqual(["a", "b"]);
+  expect(calls.filter(c => c.cmd === "set_items_trashed").map(c => c.args)).toEqual([{ itemIds: ["a", "b"], trashed: true }]);
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+  expect(calls.filter(c => c.cmd === "set_items_trashed").slice(-1)[0]?.args).toEqual({ itemIds: ["a", "b"], trashed: false });
+});
+
+test("multi-select Search copies results without opening or trashing them", async () => {
+  const item = { ...feedItem("a", "find this", 1), marked_text: "find this", marked_filenames: [] };
+  const calls = backend(configured, { search: () => [item] });
+  render(<App />);
+  await userEvent.type(await screen.findByRole("textbox", { name: "Search" }), "find");
+  fireEvent.click(await screen.findByText("find this"), { metaKey: true });
+  expect(screen.getByText("1 Item selected")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Copy" }));
+  expect(await screen.findByText("1 Item copied")).toBeInTheDocument();
+  expect(calls.some(c => c.cmd === "set_items_trashed")).toBe(false);
+});
 
 test("a failed launch says why, and offers the data folder and Quit", async () => {
   const calls = backend(configured, { startup: { message: "Couldn't open the database: file is not a database", data_dir: "/Users/me/data" } });

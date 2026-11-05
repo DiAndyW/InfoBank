@@ -25,6 +25,31 @@ extension Store {
         }
     }
 
+    public func trash(itemIDs: [String], nowUs: Int64) throws {
+        try setTrashed(itemIDs: itemIDs, trashed: true, nowUs: nowUs)
+    }
+
+    public func restore(itemIDs: [String], nowUs: Int64) throws {
+        try setTrashed(itemIDs: itemIDs, trashed: false, nowUs: nowUs)
+    }
+
+    private func setTrashed(itemIDs: [String], trashed: Bool, nowUs: Int64) throws {
+        try pool.write { db in
+            var seen: Set<String> = []
+            for id in itemIDs where seen.insert(id).inserted {
+                guard try Bool.fetchOne(db, sql: "SELECT sync_error IS NULL AND (deleted_at IS NOT NULL) != ? AND (? OR purge_at IS NULL OR purge_at > ?) AND (? OR text IS NOT NULL OR EXISTS(SELECT 1 FROM attachments WHERE item_id = items.id)) FROM items WHERE id = ?", arguments: [trashed, trashed, nowUs, trashed, id]) == true else {
+                    throw ItemActionError.notFound
+                }
+                if trashed {
+                    try db.execute(sql: "UPDATE items SET deleted_at = ?, purge_at = NULL WHERE id = ?", arguments: [nowUs, id])
+                } else {
+                    try db.execute(sql: "UPDATE items SET deleted_at = NULL, purge_at = NULL, topic_id = CASE WHEN EXISTS(SELECT 1 FROM topics WHERE topics.id = items.topic_id AND deleted_at IS NULL) THEN topic_id ELSE NULL END WHERE id = ?", arguments: [id])
+                }
+                try queue(db, trashed ? "TrashItem" : "RestoreItem", nowUs: nowUs, ["item_id": id])
+            }
+        }
+    }
+
     public func trashAfterCopy() throws -> Bool? {
         try pool.read { db in
             try Bool.fetchOne(

@@ -6,29 +6,67 @@ pub struct Payload {
     pub files: Vec<PathBuf>,
 }
 
-fn snapshot(state: &AppState, item_id: &str) -> Result<(Option<String>, Vec<(String, String)>), String> {
+type Snapshot = (Option<String>, Vec<(String, String, String, i64)>, Option<String>);
+
+pub struct Prepared {
+    pub payload: Payload,
+    snapshots: Vec<(String, Snapshot)>,
+    folder: PathBuf,
+}
+
+impl Prepared {
+    pub fn validate(&self, state: &AppState) -> Result<(), String> {
+        for (id, original) in &self.snapshots {
+            if &snapshot(state, id)? != original {
+                return Err("The Item changed while preparing the copy; copy it again".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn discard(self) {
+        let _ = std::fs::remove_dir_all(self.folder);
+    }
+}
+
+fn snapshot(state: &AppState, item_id: &str) -> Result<Snapshot, String> {
     let conn = state.db.lock().unwrap();
-    let text = conn
-        .query_row("SELECT text FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| {
-            r.get(0)
+    let (text, sync_error) = conn
+        .query_row("SELECT text, sync_error FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| {
+            Ok((r.get(0)?, r.get::<_, Option<String>>(1)?))
         })
         .map_err(|_| "This Item is no longer available")?;
     let mut stmt = conn
-        .prepare("SELECT id, filename FROM attachments WHERE item_id = ?1 ORDER BY id")
+        .prepare("SELECT id, filename, mime_type, size_bytes FROM attachments WHERE item_id = ?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let attachments = stmt
-        .query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
-    Ok((text, attachments))
+    Ok((text, attachments, sync_error))
 }
 
 pub async fn prepare(state: &AppState, item_id: &str, now_us: i64) -> Result<Payload, String> {
-    let (text, attachments) = snapshot(state, item_id)?;
-    if text.is_none() && attachments.is_empty() {
-        return Err("This Item is empty".into());
+    Ok(prepare_items(state, &[item_id.into()], now_us, false).await?.payload)
+}
+
+pub async fn prepare_many(state: &AppState, item_ids: &[String], now_us: i64) -> Result<Prepared, String> {
+    prepare_items(state, item_ids, now_us, true).await
+}
+
+async fn prepare_items(state: &AppState, item_ids: &[String], now_us: i64, reject_sync_errors: bool) -> Result<Prepared, String> {
+    let mut snapshots = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for id in item_ids.iter().filter(|id| seen.insert(id.as_str())) {
+        let value = snapshot(state, id)?;
+        if reject_sync_errors && value.2.is_some() { return Err("This Item is no longer available".into()); }
+        if value.0.as_deref().is_none_or(str::is_empty) && value.1.is_empty() {
+            return Err("This Item is empty".into());
+        }
+        snapshots.push((id.clone(), value));
     }
+    if snapshots.is_empty() { return Err("Select at least one Item".into()); }
     let root = state.dir.join("clipboard");
     let mut directory = std::fs::DirBuilder::new();
     directory.recursive(true);
@@ -53,7 +91,7 @@ pub async fn prepare(state: &AppState, item_id: &str, now_us: i64) -> Result<Pay
     let folder = root.join(uuid::Uuid::new_v4().to_string());
     let result = async {
         let mut exported = Vec::new();
-        for (id, name) in &attachments {
+        for (id, name, _, _) in snapshots.iter().flat_map(|(_, value)| &value.1) {
             let source = cache::file(state, id, now_us).await?;
             let target = folder.join(id).join(files::safe_name(name));
             tokio::fs::create_dir_all(target.parent().unwrap())
@@ -64,11 +102,13 @@ pub async fn prepare(state: &AppState, item_id: &str, now_us: i64) -> Result<Pay
                 .map_err(|_| "Couldn't prepare clipboard files")?;
             exported.push(target);
         }
-        let (current_text, current_attachments) = snapshot(state, item_id)?;
-        if current_text != text || current_attachments != attachments {
-            return Err("The Item changed while preparing the copy; copy it again".into());
-        }
-        Ok(Payload { text, files: exported })
+        let text = snapshots.iter().filter_map(|(_, value)| value.0.as_deref()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let prepared = Prepared {
+            payload: Payload { text: (!text.is_empty()).then_some(text), files: exported },
+            snapshots, folder: folder.clone(),
+        };
+        prepared.validate(state)?;
+        Ok(prepared)
     }
     .await;
     if result.is_err() {
@@ -218,6 +258,47 @@ pub fn write(_: &Payload) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn single_copy_can_rescue_a_rejected_item_but_batch_copy_refuses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("db")).unwrap();
+        conn.execute("INSERT INTO items (id, text, capture_time, sync_error) VALUES ('rejected', 'keep this text', 1, 'invalid')", []).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "secret", None).unwrap();
+        let state = crate::AppState::new(conn, secret, dir.path().to_path_buf());
+        assert_eq!(prepare(&state, "rejected", 1).await.unwrap().text.as_deref(), Some("keep this text"));
+        assert!(prepare_many(&state, &["rejected".into()], 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn batch_copy_preserves_order_and_duplicate_filenames_and_rechecks_every_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("db")).unwrap();
+        for (id, text) in [("one", "first"), ("two", "second")] {
+            conn.execute("INSERT INTO items (id, text, capture_time) VALUES (?1, ?2, 1)", [id, text]).unwrap();
+            let attachment = uuid::Uuid::new_v4().to_string();
+            std::fs::write(dir.path().join(&attachment), text).unwrap();
+            conn.execute("INSERT INTO attachments VALUES (?1, ?2, 'same.txt', 'text/plain', ?3, 1, 0)", (&attachment, id, text.len() as i64)).unwrap();
+            conn.execute("INSERT INTO cached_files VALUES (?1, 'file', ?1, ?2, 1)", (&attachment, text.len() as i64)).unwrap();
+        }
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "secret", None).unwrap();
+        let state = crate::AppState::new(conn, secret, dir.path().to_path_buf());
+        let prepared = prepare_many(&state, &["two".into(), "one".into()], 1).await.unwrap();
+        assert_eq!(prepared.payload.text.as_deref(), Some("second\n\nfirst"));
+        assert_eq!(prepared.payload.files.len(), 2);
+        assert_eq!(std::fs::read(&prepared.payload.files[0]).unwrap(), b"second");
+        assert_eq!(std::fs::read(&prepared.payload.files[1]).unwrap(), b"first");
+        assert_ne!(prepared.payload.files[0], prepared.payload.files[1]);
+        prepared.validate(&state).unwrap();
+        state.db.lock().unwrap().execute("UPDATE items SET text = 'changed' WHERE id = 'two'", []).unwrap();
+        assert!(prepared.validate(&state).is_err());
+        prepared.discard();
+        assert_eq!(std::fs::read_dir(dir.path().join("clipboard")).unwrap().count(), 0);
+        state.db.lock().unwrap().execute("DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM attachments WHERE item_id = 'one')", []).unwrap();
+        assert!(prepare_many(&state, &["two".into(), "one".into()], 1).await.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("clipboard")).unwrap().count(), 0);
+        assert!(prepare_many(&state, &["one".into(), "missing".into()], 1).await.is_err());
+    }
     use keyring_core::api::CredentialStoreApi;
 
     #[cfg(target_os = "macos")]

@@ -164,7 +164,7 @@ struct RootView: View {
                                     foregrounds: foregrounds,
                                     target: $target)
                             case .search(let place):
-                                SearchView(store: services.store, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
+                                SearchView(services: services, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
                             }
                         }
                 }

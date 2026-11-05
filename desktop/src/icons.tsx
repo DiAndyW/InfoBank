@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
 
 const PATHS = {
+  copy: <><rect x={5.5} y={5.5} width={8} height={9} rx={1} /><path d="M10.5 5.5V2.5h-8v9h3" /></>,
   sidebar: <><rect x={2} y={2.5} width={12} height={11} rx={1.5} /><path d="M6 2.5v11" /></>,
   home: <path d="M2 7 8 2l6 5v7H9.5V9h-3v5H2z" />,
   more: (

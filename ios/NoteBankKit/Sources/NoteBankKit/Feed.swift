@@ -72,6 +72,19 @@ public struct Places: Equatable, Sendable {
 }
 
 extension Store {
+    public func items(ids: [String]) throws -> [FeedItem] {
+        try pool.read { db in
+            var result: [FeedItem] = []
+            var seen: Set<String> = []
+            for id in ids where seen.insert(id).inserted {
+                let rows = try Row.fetchAll(db, sql: "SELECT \(Self.feedColumns) FROM items LEFT JOIN topics ON topics.id = items.topic_id WHERE items.id = ? AND items.deleted_at IS NULL AND items.sync_error IS NULL", arguments: [id])
+                guard let item = try Self.feedItems(db, rows).first else { throw ItemActionError.notFound }
+                result.append(item)
+            }
+            return result
+        }
+    }
+
     public func items(in place: Place, before cursor: FeedCursor?, limit: Int) throws -> [FeedItem] {
         if place == .trash {
             return try feed(place, after: cursor.map { ("(COALESCE(items.purge_at, 9223372036854775807), -items.capture_time, items.id) > (?, ?, ?)", [$0.purgeAtUs ?? Int64.max, -$0.captureTimeUs, $0.id]) }, limit: limit)

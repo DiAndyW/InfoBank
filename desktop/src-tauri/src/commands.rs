@@ -12,6 +12,55 @@ fn now_us() -> i64 {
 }
 
 #[tauri::command]
+pub async fn prepare_copy_items(state: State<'_, AppState>, item_ids: Vec<String>) -> Result<String, String> {
+    let prepared = crate::clipboard::prepare_many(&state, &item_ids, now_us()).await?;
+    let token = uuid::Uuid::new_v4().to_string();
+    state.prepared_copies.lock().unwrap().insert(token.clone(), prepared);
+    Ok(token)
+}
+
+#[tauri::command]
+pub async fn discard_copy_items(state: State<'_, AppState>, token: String) -> Result<(), String> {
+    if let Some(prepared) = state.prepared_copies.lock().unwrap().remove(&token) { prepared.discard(); }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn finish_copy_items(app: AppHandle, token: String) -> Result<(), String> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        let result = (|| {
+            let prepared = state.prepared_copies.lock().unwrap().remove(&token).ok_or("Copy was cancelled")?;
+            let result = (|| {
+                prepared.validate(&state)?;
+                #[cfg(target_os = "windows")]
+                let owner = handle.get_webview_window("main").ok_or("Couldn't access the clipboard window")?
+                    .hwnd().map_err(|_| "Couldn't access the clipboard window")?.0 as usize;
+                #[cfg(target_os = "windows")]
+                return crate::clipboard::write(&prepared.payload, owner);
+                #[cfg(target_os = "macos")]
+                return crate::clipboard::write(&prepared.payload, &objc2_app_kit::NSPasteboard::generalPasteboard());
+                #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+                return crate::clipboard::write(&prepared.payload);
+            })();
+            if result.is_err() { prepared.discard(); }
+            result
+        })();
+        let _ = send.send(result);
+    }).map_err(|_| "Couldn't access the clipboard")?;
+    receive.await.map_err(|_| "Couldn't access the clipboard")?
+}
+
+#[tauri::command]
+pub async fn set_items_trashed(app: AppHandle, state: State<'_, AppState>, item_ids: Vec<String>, trashed: bool) -> Result<(), String> {
+    feed::set_many_trashed(&state.db.lock().unwrap(), &item_ids, trashed, now_us())?;
+    changed(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let owner = app

@@ -51,6 +51,7 @@ struct FeedView: View {
     @State private var renameTopic = false
     @State private var topicNameDraft = ""
     @State private var deleteTopic = false
+    @State private var batch: BatchItemActions
 
     init(
         place: FeedPlace, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
@@ -67,6 +68,7 @@ struct FeedView: View {
         self.foregrounds = foregrounds
         wake = services.wake
         _target = target
+        _batch = State(wrappedValue: BatchItemActions(services: services))
         let title = switch place {
         case .trash: "Trash"
         case .inbox: "Inbox"
@@ -119,10 +121,13 @@ struct FeedView: View {
     }
 
     private func itemRow(_ item: FeedItem, showsTime: Bool = true) -> some View {
-        ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
-                copyable: place == .tunnel, copied: copiedID == item.id,
-                onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
-            .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+        SelectableItemRow(selection: batch.selection, item: item, busy: batch.busy,
+                          onBegin: { copyTask?.cancel() }, onCommands: { commands = item }) {
+            ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
+                    copyable: place == .tunnel, copied: copiedID == item.id,
+                    onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
+        }
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
     private func copy(_ item: FeedItem) {
@@ -228,41 +233,28 @@ struct FeedView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let notice = notices.current {
-                NoticeView(
-                    message: notice.message, actionTitle: notice.actionTitle,
-                    onAction: {
-                        do {
-                            switch notice.action {
-                            case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
-                            case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
-                            case .show: onShow(notice.itemID); return
-                            case .dismiss: notices.dismiss(); return
-                            }
-                            model.reload()
-                            notices.dismiss()
-                            wake()
-                        } catch { actionError = error.localizedDescription }
-                    },
-                    onDismiss: notices.dismiss)
-                    .id(notice.id)
-                    .padding(12)
-            }
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { actionError = $0 })
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 8) {
-                if place != .trash && !model.topicUnavailable {
-                    ComposerView(model: composer) {
-                        scrollsToNewest = true
-                        model.reload()
+            if batch.selection.isSelecting {
+                BatchActionsBar(batch: batch, items: model.items, trash: place == .trash, tunnel: place == .tunnel)
+            } else {
+                VStack(spacing: 8) {
+                    if place != .trash && !model.topicUnavailable {
+                        ComposerView(model: composer) {
+                            scrollsToNewest = true
+                            model.reload()
+                        }
                     }
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(palette.surface)
+                .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(palette.surface)
-            .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
         }
+        .onChange(of: model.items) { _, items in batch.reconcile(items) }
+        .onChange(of: batch.error) { _, error in if let error { actionError = error; batch.error = nil } }
         .sheet(item: $commands, onDismiss: {
             if let item = copyAfterSheet {
                 copyAfterSheet = nil
@@ -273,6 +265,7 @@ struct FeedView: View {
             if place == .trash {
                 NavigationStack {
                     List {
+                        Button("Select", systemImage: "checkmark.circle") { commands = nil; batch.selection.begin(item.id) }
                         Button("Restore", systemImage: "arrow.uturn.backward") {
                             do {
                                 try store.restore(itemID: item.id, nowUs: Time.nowUs())
@@ -288,7 +281,11 @@ struct FeedView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
                 }.presentationDetents([.medium])
             } else {
-            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, onCopy: {
+            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, onSelect: {
+                copyTask?.cancel()
+                commands = nil
+                batch.selection.begin(item.id)
+            }, onCopy: {
                 copyAfterSheet = item
                 commands = nil
             }, onChanged: { trashed, moved in
@@ -319,7 +316,7 @@ struct FeedView: View {
         .onDisappear {
             visible = false
             copyTask?.cancel()
-            if let notice = notices.current, notice.action != .show { notices.dismiss() }
+            batch.cancel()
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(palette.surface, for: .navigationBar)
@@ -340,13 +337,16 @@ struct FeedView: View {
             }
         }
         .toolbar {
-            if let searchPlace {
+            if batch.selection.isSelecting {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { batch.cancel() } }
+            }
+            if !batch.selection.isSelecting, let searchPlace {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { onSearch(searchPlace) } label: { Image(systemName: "magnifyingglass") }
                         .accessibilityLabel("Search")
                 }
             }
-            if case .topic(let id) = place, model.topicName != nil {
+            if !batch.selection.isSelecting, case .topic(let id) = place, model.topicName != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Rename", systemImage: "pencil") { topicNameDraft = model.topicName ?? title; renameTopic = true }
