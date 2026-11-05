@@ -77,3 +77,7 @@ Both count lines should match, apart from anything added since the snapshot.
    ```
 8. Follow **Get a snapshot** and **Put it back**. `dropdb` has nothing to drop, and `systemctl start notebank` is the first start.
 9. `systemctl enable notebank notebank-backup.timer`, then `systemctl restart caddy`.
+
+## Automatic release updater
+
+See [UPDATES.md](UPDATES.md) for CI, signing keys, installation and recovery. On a replacement VM, recover the trusted public key and read-only repository credential from the password manager, reinstall the updater units manually, establish the actual installed binary baseline and run a fresh successful backup before enabling the timer. Preserve transaction state when recovering an existing VM; do not initialize over an interrupted update. Caddy and the Server unit remain manual.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for NoteBank Server releases every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=notebank-update.service
+
+[Install]
+WantedBy=timers.target
