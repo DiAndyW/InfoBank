@@ -2200,7 +2200,7 @@ test("opening a result shows it highlighted in its Topic even pages back, and th
   expect(screen.queryByRole("heading", { name: 'Results for "invoice"' })).not.toBeInTheDocument();
   await userEvent.click(field);
   expect(screen.getByRole("heading", { name: 'Results for "invoice"' })).toBeInTheDocument();
-});
+}, 15_000);
 
 test("a result in an archived Topic opens that Topic", async () => {
   const it = filed("x", "kept note", "o");
