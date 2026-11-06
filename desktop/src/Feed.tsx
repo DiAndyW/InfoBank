@@ -123,7 +123,8 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
 
   useEffect(() => {
     if (copied === null) return;
-    const timer = setTimeout(() => setCopied(null), 1500);
+    // A newer confirmation can be set but not yet rendered when this fires, so this timer can't have been cancelled.
+    const timer = setTimeout(() => setCopied((now) => (now === copied ? null : now)), 1500);
     return () => clearTimeout(timer);
   }, [copied]);
 

@@ -10,7 +10,7 @@ type Options = {
   topics?: Topic[];
   trashAfterCopy?: boolean | null;
   doubleClickIntervalMs?: number;
-  pulledTrashAfterCopy?: () => boolean | null;
+  pulledTrashAfterCopy?: () => boolean | null | Promise<boolean | null>;
   // A function runs per save_settings call (0-based): it may throw or wait.
   saveError?: unknown;
   captureError?: string;
@@ -2888,6 +2888,31 @@ test("copying the same Tunnel note again restarts its Copied confirmation", asyn
   await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(2));
   await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   expect(screen.getByText("Copied")).toBeInTheDocument();
+});
+
+test("a Copied confirmation expiring just as the note is copied again doesn't clear the new one", async () => {
+  const timers = vi.spyOn(globalThis, "setTimeout");
+  const user = userEvent.setup();
+  let asked = 0;
+  let answer = (_: boolean) => {};
+  backend(configured, {
+    items: () => [tunnelItem()],
+    pulledTrashAfterCopy: () => (++asked === 1 ? false : new Promise<boolean>((resolve) => { answer = resolve; })),
+  });
+  render(<App />);
+  await user.click(await openTunnel());
+  await screen.findByText("Copied");
+  const expireFirst = await vi.waitFor(() => timers.mock.calls.find(([, ms]) => ms === 1500)![0] as () => void);
+  await user.click(screen.getByText("transfer this"));
+  await vi.waitFor(() => expect(asked).toBe(2));
+  // React holds updates until act ends, so the new confirmation is set but not yet shown when the old timer fires.
+  await act(async () => {
+    answer(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expireFirst();
+  });
+  expect(screen.getByText("Copied")).toBeInTheDocument();
+  timers.mockRestore();
 });
 
 test("a slow system double-click edits a Tunnel note without trashing it", async () => {
