@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "visible": false,
         "title": "NoteBank",
         "width": 1100,
@@ -23,6 +24,7 @@
       },
       {
         "label": "quick-capture",
+        "create": false,
         "title": "Quick capture",
         "width": 600,
         "height": 400,
