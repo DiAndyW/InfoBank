@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+<mask id="back" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<rect width="1024" height="1024" fill="#fff"/>
+<g transform="translate(430 560) rotate(-4)"><rect x="-240" y="-310" width="480" height="620" rx="60" fill="#000" stroke="#000" stroke-width="110"/></g>
+</mask>
+<mask id="front" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<rect width="1024" height="1024" fill="#fff"/>
+<g transform="translate(430 560) rotate(-4)" stroke="#000" stroke-width="90" stroke-linecap="round">
+<line x1="-130" y1="-140" x2="130" y2="-140"/><line x1="-130" y1="20" x2="130" y2="20"/><line x1="-130" y1="180" x2="10" y2="180"/></g>
+</mask>
+</defs>
+<g mask="url(#back)"><g transform="translate(620 450) rotate(16)"><rect x="-240" y="-310" width="480" height="620" rx="60" fill="#000"/></g></g>
+<g mask="url(#front)"><g transform="translate(430 560) rotate(-4)"><rect x="-240" y="-310" width="480" height="620" rx="60" fill="#000"/></g></g>
+</svg>
