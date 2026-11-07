@@ -78,6 +78,8 @@ export const prepareCopyItems = (itemIds: string[]) => invoke<string>("prepare_c
 export const finishCopyItems = (token: string) => invoke<void>("finish_copy_items", { token });
 export const discardCopyItems = (token: string) => invoke<void>("discard_copy_items", { token });
 export const setItemsTrashed = (itemIds: string[], trashed: boolean) => invoke<void>("set_items_trashed", { itemIds, trashed });
+export const attachmentStored = (id: string): Promise<boolean> => invoke<boolean>("attachment_stored", { id });
+export const attachmentOriginal = (id: string): Promise<string> => invoke<string>("attachment_original", { id });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
 export type Before = { capture_time_us: number; id: string; purge_at_us?: number | null };

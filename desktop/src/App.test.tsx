@@ -19,8 +19,11 @@ type Options = {
   picked?: StagedFiles;
   staged?: Staged[];
   thumbnail?: string;
+  thumbnailLookup?: () => string | Promise<string>;
   openError?: string;
   openHang?: boolean;
+  stored?: string[];
+  original?: Record<string, string | Promise<string>>;
   failing?: Record<string, string>;
   counts?: () => Counts;
   edited?: { trashed: boolean };
@@ -92,8 +95,15 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       }
       if (cmd === "unstage_attachment") return null;
       if (cmd === "thumbnail") {
+        if (opts.thumbnailLookup) return opts.thumbnailLookup();
         if (!opts.thumbnail) throw "Can't download while offline";
         return opts.thumbnail;
+      }
+      if (cmd === "attachment_stored") return (opts.stored ?? []).includes((args as { id: string }).id);
+      if (cmd === "attachment_original") {
+        const original = opts.original?.[(args as { id: string }).id];
+        if (original === undefined) throw "Can't download while offline";
+        return original;
       }
       if (cmd === "reveal_attachment") return null;
       if (cmd === "open_attachment") {
@@ -720,6 +730,19 @@ test("a file chip opens the file, and says why it can't", async () => {
   expect(screen.getByText("2.3 MB")).toBeInTheDocument();
 });
 
+test("a file chip can retry opening after an error", async () => {
+  const options: Options = { items: () => [feedItem("1", "", 1, false, [report])], openError: "Can't download while offline" };
+  const calls = backend(configured, options);
+  render(<App />);
+  const chip = await screen.findByRole("button", { name: "Open report.pdf" });
+  await userEvent.click(chip);
+  await screen.findByText("Can't download while offline");
+  options.openError = undefined;
+  await userEvent.click(chip);
+  await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(2));
+  expect(screen.queryByText("Can't download while offline")).not.toBeInTheDocument();
+});
+
 test("an image shows its filename until the thumbnail arrives", async () => {
   backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [photo])] });
   render(<App />);
@@ -778,6 +801,41 @@ test("a file that can run code is never opened, only shown in Finder", async () 
   expect(calls.some((c) => c.cmd === "open_attachment")).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "Show in Finder" }));
   expect(calls).toContainEqual({ cmd: "reveal_attachment", args: { id: "a3" } });
+});
+
+test("a stored file opens without saying Downloading", async () => {
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [report])],
+    stored: ["a1"],
+    openHang: true,
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open report.pdf" }));
+  await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(1));
+  expect(screen.queryByText("Downloading…")).not.toBeInTheDocument();
+});
+
+test("a file not stored says Downloading", async () => {
+  backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [report])],
+    openHang: true,
+  });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open report.pdf" }));
+  expect(await screen.findByText("Downloading…")).toBeInTheDocument();
+});
+
+test("clicking a stored file twice while it opens opens it once", async () => {
+  const calls = backend(configured, {
+    items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [report])],
+    stored: ["a1"],
+    openHang: true,
+  });
+  render(<App />);
+  const chip = await screen.findByRole("button", { name: "Open report.pdf" });
+  await userEvent.click(chip);
+  await userEvent.click(chip);
+  expect(calls.filter((c) => c.cmd === "open_attachment")).toHaveLength(1);
 });
 
 test("a second click while downloading is ignored", async () => {
@@ -3150,6 +3208,7 @@ test("opening an image refreshes its preview after the original downloads", asyn
   await vi.waitFor(() => expect(calls.some(c => c.cmd === "thumbnail")).toBe(true));
   options.thumbnail = "/data/files/a2/photo.heic";
   await userEvent.click(screen.getByRole("button", { name: "Open photo.heic" }));
+  await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close image" }));
   expect(await screen.findByRole("img", { name: "photo.heic" })).toHaveAttribute("src", expect.stringContaining("photo.heic"));
 });
 
@@ -3463,4 +3522,584 @@ test("Topic refresh preserves a manually chosen view until the selection changes
   topics[1] = topic("o", "Old");
   await act(() => emit("items-changed"));
   expect(screen.getByRole("button", {name: "Open"})).toHaveAttribute("aria-pressed", "true");
+});
+
+async function startViewer(options: Options = {}, images: FeedAttachment[] = [photo], tunnel = false) {
+  const calls = backend(configured, {
+    items: () => [{ ...feedItem("viewer-item", "viewer note", 1, false, images), in_tunnel: tunnel }],
+    thumbnail: "/data/thumb.jpg",
+    original: { a2: "/data/original.jpg" },
+    ...options,
+  });
+  if (tunnel) localStorage.setItem("place", "tunnel");
+  render(<App />);
+  const opener = await screen.findByRole("button", { name: `Open ${images[0].filename}` });
+  fireEvent.click(opener);
+  const dialog = await screen.findByRole("dialog", { name: images[0].filename });
+  return { calls, dialog, ui: within(dialog), opener };
+}
+
+const secondPhoto: FeedAttachment = { ...photo, id: "second-image", filename: "second.png" };
+
+test("viewer opens on the thumbnail without opening another app, then sharpens", async () => {
+  let resolve!: (path: string) => void;
+  const original = new Promise<string>(done => { resolve = done; });
+  const { calls, ui, dialog } = await startViewer({ original: { a2: original } });
+  expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+  expect(await ui.findByText("Loading full image…")).toBeVisible();
+  expect(calls.some(c => c.cmd === "open_attachment")).toBe(false);
+  await act(async () => resolve("/data/sharp.jpg"));
+  const sharp = dialog.querySelector<HTMLImageElement>('img[src$="sharp.jpg"]')!;
+  expect(sharp).not.toBeNull();
+  expect(sharp).toHaveClass("is-loading");
+  expect(ui.getByText("Loading full image…")).toBeVisible();
+  expect(sharp.parentElement).toBe(ui.getByRole("img", { name: "photo.jpg" }).parentElement);
+  fireEvent.load(sharp);
+  expect(sharp).not.toHaveClass("is-loading");
+  expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toBe(sharp);
+  expect(dialog.querySelector('img[src$="thumb.jpg"]')).toBeNull();
+  expect(ui.queryByRole("button", { name: "Next image" })).not.toBeInTheDocument();
+  expect(ui.queryByText("1 of 1")).not.toBeInTheDocument();
+});
+
+test("viewer stored original never shows loading text", async () => {
+  const { ui } = await startViewer({ stored: [photo.id], original: { a2: new Promise(() => {}) } });
+  expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
+  expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+});
+
+test("viewer keeps thumbnail on download failure and Retry succeeds", async () => {
+  const options: Options = { original: {} };
+  const { calls, ui, dialog } = await startViewer(options);
+  expect(await ui.findByText("Can't download while offline")).toBeVisible();
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+  const retry = ui.getByRole("button", { name: "Retry" });
+  expect(ui.getByText("Can't download while offline")).not.toContainElement(retry);
+  expect(retry.querySelector("svg")).not.toBeNull();
+  options.original!.a2 = "/data/retried.jpg";
+  await userEvent.click(retry);
+  await vi.waitFor(() => expect(dialog.querySelector('img[src$="retried.jpg"]')).not.toBeNull());
+  fireEvent.load(dialog.querySelector('img[src$="retried.jpg"]')!);
+  expect(ui.queryByText("Can't download while offline")).not.toBeInTheDocument();
+  expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
+});
+
+for (const stored of [true, false]) {
+  test(`viewer failed display with stored=${stored} preserves thumbnail and correct recovery`, async () => {
+    const { ui, dialog } = await startViewer({ stored: stored ? [photo.id] : [] });
+    await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
+    fireEvent.error(dialog.querySelector('img[src$="original.jpg"]')!);
+    expect(await ui.findByText(stored ? "This image can't be shown here." : "Couldn't load this image")).toBeVisible();
+    expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+    expect(!!ui.queryByRole("button", { name: "Retry" })).toBe(!stored);
+    expect(ui.getByRole("button", { name: "Open original" })).toBeEnabled();
+  });
+}
+
+test("viewer Open original awaits the existing download without fetching twice", async () => {
+  let resolve!: (path: string) => void;
+  const { calls, ui } = await startViewer({ original: { a2: new Promise(done => { resolve = done; }) } });
+  await ui.findByText("Loading full image…");
+  await userEvent.click(ui.getByRole("button", { name: "Open original" }));
+  expect(calls.some(c => c.cmd === "open_attachment")).toBe(false);
+  await act(async () => resolve("/data/original.jpg"));
+  await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(1));
+  expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(1);
+});
+
+test("viewer Open original after failure shares its transfer with Retry", async () => {
+  const options: Options = { original: {} };
+  const { calls, ui, dialog } = await startViewer(options);
+  await ui.findByText("Can't download while offline");
+  let resolve!: (path: string) => void;
+  options.original!.a2 = new Promise(done => { resolve = done; });
+  await userEvent.click(ui.getByRole("button", { name: "Open original" }));
+  expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
+  expect(ui.getByText("Loading full image…")).toBeVisible();
+  expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(0);
+  await userEvent.click(ui.getByRole("button", { name: "Retry" }));
+  expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
+  await act(async () => resolve("/data/recovered.jpg"));
+  await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(1));
+  fireEvent.load(dialog.querySelector('img[src$="recovered.jpg"]')!);
+  expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
+  expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
+});
+
+test("viewer Open original reports external app errors", async () => {
+  const { ui } = await startViewer({ openError: "No application available" });
+  await userEvent.click(ui.getByRole("button", { name: "Open original" }));
+  expect(await ui.findByText("No application available")).toBeVisible();
+});
+
+test("viewer arrows skip videos and runnable images and body Escape returns focus", async () => {
+  const { ui, opener } = await startViewer({}, [photo, { ...photo, id: "video", mime_type: "video/quicktime", filename: "clip.mov" }, { ...photo, id: "unsafe", filename: "unsafe.png", runnable: true }, secondPhoto]);
+  expect(ui.getByText("1 of 2")).toBeVisible();
+  (document.activeElement as HTMLElement).blur();
+  expect(document.body).toHaveFocus();
+  fireEvent.keyDown(document.body, { key: "ArrowRight" });
+  expect(screen.getByRole("dialog", { name: "second.png" })).toBeInTheDocument();
+  expect(ui.getByText("2 of 2")).toBeVisible();
+  await userEvent.click(ui.getByRole("button", { name: "Previous image" }));
+  expect(screen.getByRole("dialog", { name: "photo.jpg" })).toBeInTheDocument();
+  await userEvent.click(ui.getByRole("button", { name: "Next image" }));
+  fireEvent.keyDown(document.body, { key: "ArrowLeft" });
+  (document.activeElement as HTMLElement).blur();
+  expect(document.body).toHaveFocus();
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(opener).toHaveFocus();
+});
+
+test("viewer without thumbnail shows no image until the original loads", async () => {
+  let resolve!: (path: string) => void;
+  const { ui, dialog } = await startViewer({ thumbnail: undefined, original: { a2: new Promise(done => { resolve = done; }) } });
+  expect(await ui.findByText("Loading full image…")).toBeVisible();
+  expect(ui.queryByRole("img")).not.toBeInTheDocument();
+  await act(async () => resolve("/data/original.jpg"));
+  fireEvent.load(dialog.querySelector("img")!);
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toBeVisible();
+});
+
+test("viewer blocks app shortcuts and Escape leaves Selection active", async () => {
+  const { ui } = await startViewer();
+  fireEvent.keyDown(document.body, { key: "f", metaKey: true });
+  fireEvent.keyDown(document.body, { key: "\\", metaKey: true });
+  expect(screen.getByRole("button", { name: "Hide sidebar" })).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Search" })).not.toHaveFocus();
+  expect(screen.getByRole("main")).not.toHaveAttribute("aria-hidden", "true");
+  expect(ui.getByRole("button", { name: "Close image" })).toBeInTheDocument();
+  const row = screen.getByText("viewer note").closest("article")!;
+  fireEvent.click(row, { metaKey: true });
+  expect(screen.getByRole("checkbox", { name: "viewer note" })).toBeInTheDocument();
+  expect(screen.getByRole("dialog", { name: "photo.jpg" })).toBeInTheDocument();
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: "viewer note" })).toBeInTheDocument();
+});
+
+test("viewer survives a thumbnail refresh and an Item falling out of the loaded page", async () => {
+  let images = [photo, secondPhoto];
+  let removed = false;
+  const { calls, dialog, ui } = await startViewer({ items: () => removed ? [] : [feedItem("viewer-item", "", 1, false, images)] }, images);
+  images = [{ ...photo, has_thumbnail: false }, secondPhoto];
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("dialog", { name: "photo.jpg" })).toBe(dialog);
+  await userEvent.click(ui.getByRole("button", { name: "Close image" }));
+  expect(screen.getByRole("button", { name: "Open photo.jpg" })).toHaveFocus();
+  await userEvent.click(screen.getByRole("button", { name: "Open photo.jpg" }));
+  const loads = calls.filter(c => c.cmd === "list_items").length;
+  removed = true;
+  await act(() => emit("items-changed"));
+  expect(screen.getByRole("dialog", { name: "photo.jpg" })).toBeInTheDocument();
+  expect(screen.getByText("1 of 2")).toBeVisible();
+  expect(calls.filter(c => c.cmd === "list_items")).toHaveLength(loads + 1);
+});
+
+test("viewer closes when the attachment disappears from a present Item", async () => {
+  let images = [photo];
+  await startViewer({ items: () => [feedItem("viewer-item", "", 1, false, images)] });
+  images = [];
+  await act(() => emit("items-changed"));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("viewer closes when sync removes the selected Topic and changes the view", async () => {
+  const topics = [topic("t", "Target")];
+  const calls = backend(configured, { topics, items: () => [feedItem("viewer-item", "", 1, false, [photo])], thumbnail: "/data/thumb.jpg" });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Target" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Open photo.jpg" }));
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  topics.splice(0);
+  await act(() => emit("items-changed"));
+  await vi.waitFor(() => expect(localStorage.getItem("place")).toBe("home"));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(calls.some(c => c.cmd === "list_items")).toBe(true);
+});
+
+test("viewer suppresses Tunnel removal transitions during sync", async () => {
+  const transition = vi.fn((update: () => void) => { update(); return { ready: Promise.resolve() }; });
+  Object.defineProperty(document, "startViewTransition", { configurable: true, value: transition });
+  let removed = false;
+  try {
+    await startViewer({ items: () => removed ? [] : [{ ...feedItem("viewer-item", "", 1, false, [photo]), in_tunnel: true }] }, [photo], true);
+    removed = true;
+    await act(() => emit("items-changed"));
+    expect(transition).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "photo.jpg" })).toBeInTheDocument();
+  } finally { delete (document as Partial<Document>).startViewTransition; }
+});
+
+test("viewer ignores a deferred original from the previous image", async () => {
+  let first!: (path: string) => void;
+  let second!: (path: string) => void;
+  const { ui, dialog } = await startViewer({ original: {
+    a2: new Promise(done => { first = done; }),
+    "second-image": new Promise(done => { second = done; }),
+  } }, [photo, secondPhoto]);
+  await ui.findByText("Loading full image…");
+  await userEvent.click(ui.getByRole("button", { name: "Next image" }));
+  await act(async () => first("/data/first.jpg"));
+  expect(dialog.querySelector('img[src$="first.jpg"]')).toBeNull();
+  await act(async () => second("/data/second.jpg"));
+  fireEvent.load(dialog.querySelector('img[src$="second.jpg"]')!);
+  expect(ui.getByRole("img", { name: "second.png" })).toHaveAttribute("src", expect.stringContaining("second.jpg"));
+});
+
+for (const tunnel of [false, true]) {
+  test(`viewer double-click stays outside Item handlers (tunnel=${tunnel})`, async () => {
+    const { calls, ui } = await startViewer({}, [photo], tunnel);
+    await userEvent.dblClick(await ui.findByRole("img", { name: "photo.jpg" }));
+    expect(screen.queryByRole("textbox", { name: "Edit Item" })).not.toBeInTheDocument();
+    expect(calls.some(c => ["copy_item", "edit_item"].includes(c.cmd))).toBe(false);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+}
+
+for (const size of [300, 399, 400]) {
+  test(`viewer natural long edge ${size} uses the small-image threshold`, async () => {
+    const { ui, dialog } = await startViewer();
+    const thumb = await ui.findByRole("img", { name: "photo.jpg" });
+    Object.defineProperty(thumb, "naturalWidth", { value: size });
+    fireEvent.load(thumb);
+    expect(thumb.classList.contains("is-small")).toBe(size < 400);
+    await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
+    const original = dialog.querySelector('img[src$="original.jpg"]')!;
+    Object.defineProperty(original, "naturalWidth", { value: size });
+    fireEvent.load(original);
+    expect(original.classList.contains("is-small")).toBe(size < 400);
+  });
+}
+
+
+for (const outcome of ["load", "failure"]) {
+  test(`viewer late stored result cannot restart loading after ${outcome}`, async () => {
+    let resolve!: (path: string) => void;
+    let reject!: (error: string) => void;
+    const options: Options = { gates: {}, original: { a2: new Promise((yes, no) => { resolve = yes; reject = no; }) } };
+    const { calls, ui, dialog } = await startViewer(options, [photo, secondPhoto]);
+    await vi.waitFor(() => expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(1));
+    await userEvent.click(ui.getByRole("button", { name: "Next image" }));
+    let release!: () => void;
+    options.gates!.attachment_stored = new Promise(done => { release = done; });
+    await userEvent.click(ui.getByRole("button", { name: "Previous image" }));
+    if (outcome === "load") {
+      await act(async () => resolve("/data/late.jpg"));
+      fireEvent.load(dialog.querySelector('img[src$="late.jpg"]')!);
+    } else {
+      await act(async () => reject("Download failed"));
+      expect(ui.getByText("Download failed")).toBeVisible();
+    }
+    await act(async () => release());
+    expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
+  });
+}
+
+for (const multiple of [false, true]) {
+  test(`viewer contains Tab in both directions (multiple=${multiple})`, async () => {
+    const { ui, dialog } = await startViewer({}, multiple ? [photo, secondPhoto] : [photo]);
+    const buttons = ui.getAllByRole("button").filter(b => !(b as HTMLButtonElement).disabled);
+    const first = buttons[0];
+    const last = buttons[buttons.length - 1];
+    last.focus();
+    await userEvent.tab();
+    expect(first).toHaveFocus();
+    await userEvent.tab({ shift: true });
+    expect(last).toHaveFocus();
+    dialog.focus();
+    await userEvent.tab({ shift: true });
+    expect(last).toHaveFocus();
+    expect(screen.getByRole("main")).not.toHaveAttribute("aria-hidden", "true");
+  });
+}
+
+test("viewer Retry preserves the thumbnail while its lookup is pending", async () => {
+  let retrying = false;
+  const options: Options = { original: {}, thumbnailLookup: () => retrying ? new Promise(() => {}) : "/data/thumb.jpg" };
+  const { ui } = await startViewer(options);
+  await ui.findByText("Can't download while offline");
+  const thumb = ui.getByRole("img", { name: "photo.jpg" });
+  Object.defineProperty(thumb, "naturalWidth", { value: 300 });
+  fireEvent.load(thumb);
+  retrying = true;
+  options.original!.a2 = new Promise(() => {});
+  await userEvent.click(ui.getByRole("button", { name: "Retry" }));
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toBe(thumb);
+  expect(thumb).toHaveClass("is-small");
+});
+
+test("viewer Open original ignores repeated clicks until opening settles", async () => {
+  let resolve!: (path: string) => void;
+  let release!: () => void;
+  const { calls, ui } = await startViewer({
+    original: { a2: new Promise(done => { resolve = done; }), "second-image": "/data/second.jpg" },
+    gates: { open_attachment: new Promise(done => { release = done; }) },
+  }, [photo, secondPhoto]);
+  const button = ui.getByRole("button", { name: "Open original" });
+  await userEvent.dblClick(button);
+  await userEvent.click(ui.getByRole("button", { name: "Next image" }));
+  await userEvent.click(button);
+  await vi.waitFor(() => expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: secondPhoto.id } }));
+  await userEvent.click(ui.getByRole("button", { name: "Previous image" }));
+  await act(async () => resolve("/data/original.jpg"));
+  await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment" && c.args?.id === photo.id)).toHaveLength(1));
+  await userEvent.click(button);
+  expect(calls.filter(c => c.cmd === "open_attachment" && c.args?.id === photo.id)).toHaveLength(1);
+  await act(async () => release());
+  await userEvent.click(button);
+  expect(calls.filter(c => c.cmd === "open_attachment" && c.args?.id === photo.id)).toHaveLength(2);
+});
+
+test("viewer removes an undecodable thumbnail while the original is pending", async () => {
+  const { ui } = await startViewer({ original: { a2: new Promise(() => {}) } });
+  fireEvent.error(await ui.findByRole("img", { name: "photo.jpg" }));
+  expect(ui.queryByRole("img")).not.toBeInTheDocument();
+  expect(ui.getByText("Loading full image…")).toBeVisible();
+});
+
+test("viewer rejects file drops and leaves the Composer empty", async () => {
+  const { calls, ui } = await startViewer();
+  await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
+  expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
+  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
+  await userEvent.click(ui.getByRole("button", { name: "Close image" }));
+  expect(screen.queryByText("scan.png")).not.toBeInTheDocument();
+});
+
+test("viewer close keeps an existing Feed thumbnail without another lookup", async () => {
+  const { calls, ui, opener } = await startViewer();
+  expect(within(opener).getByRole("img")).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+  await ui.findByRole("img", { name: "photo.jpg" });
+  const before = calls.filter(c => c.cmd === "thumbnail").length;
+  await userEvent.click(ui.getByRole("button", { name: "Close image" }));
+  expect(calls.filter(c => c.cmd === "thumbnail")).toHaveLength(before);
+  expect(within(opener).getByRole("img")).toBeVisible();
+});
+
+
+function doubleClickStage(stage: HTMLElement, at: { clientX: number; clientY: number }) {
+  fireEvent.click(stage, { ...at, detail: 1 });
+  fireEvent.click(stage, { ...at, detail: 2 });
+  fireEvent.doubleClick(stage, { ...at, detail: 2 });
+}
+
+function zoomSurface(dialog: HTMLElement) {
+  const stage = dialog.querySelector<HTMLElement>(".nb-viewer-stage")!;
+  const images = dialog.querySelector<HTMLElement>(".nb-viewer-images")!;
+  vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON() {} });
+  Object.defineProperties(images, { clientWidth: { value: 800, configurable: true }, clientHeight: { value: 600, configurable: true } });
+  return { stage, images, scale: () => Number(images.style.transform.match(/scale\(([^)]+)\)/)?.[1]) };
+}
+
+for (const ctrlKey of [true, false]) {
+  test(`viewer zoom wheel (ctrlKey=${ctrlKey}) stays between 1 and 6 and prevents page scrolling`, async () => {
+    const { dialog } = await startViewer();
+    const { stage, scale } = zoomSurface(dialog);
+    const wheel = createEvent.wheel(stage, { deltaY: -100, ctrlKey, clientX: 400, clientY: 300, cancelable: true });
+    fireEvent(stage, wheel);
+    expect(scale()).toBeGreaterThan(1);
+    expect(wheel.defaultPrevented).toBe(true);
+    fireEvent.wheel(stage, { deltaY: -10000, ctrlKey });
+    expect(scale()).toBe(6);
+    fireEvent.wheel(stage, { deltaY: 10000, ctrlKey });
+    expect(scale()).toBe(1);
+  });
+}
+
+for (const [deltaY, ctrlKey] of [[-4, false], [-0.9, true]] as const) {
+  test(`viewer zoom accumulates small wheel deltas (ctrlKey=${ctrlKey})`, async () => {
+    const { dialog } = await startViewer();
+    const { stage, scale } = zoomSurface(dialog);
+    for (let i = 0; i < 50; i++) {
+      fireEvent.wheel(stage, { deltaY, ctrlKey, clientX: 400, clientY: 300 });
+    }
+    expect(scale()).toBeGreaterThan(1);
+  });
+}
+
+test("viewer opened by double-clicking a thumbnail stays at fit until a double click of its own", async () => {
+  const { dialog } = await startViewer();
+  const { stage, scale } = zoomSurface(dialog);
+  const at = { clientX: 500, clientY: 350, detail: 2 };
+  fireEvent.click(stage, at);
+  fireEvent.doubleClick(stage, at);
+  expect(scale()).toBe(1);
+  doubleClickStage(stage, at);
+  expect(scale()).toBe(3);
+});
+
+test("viewer zoom double click toggles 3 and 1 toward the pointer", async () => {
+  const { dialog } = await startViewer();
+  const { stage, images, scale } = zoomSurface(dialog);
+  doubleClickStage(stage,{ clientX: 500, clientY: 350 });
+  expect(scale()).toBe(3);
+  expect(images.style.transform).toContain("translate(-200px, -100px)");
+  doubleClickStage(stage,{ clientX: 500, clientY: 350 });
+  expect(scale()).toBe(1);
+  expect(images.style.transform).toContain("translate(0px, 0px)");
+});
+
+test("viewer zoom only pans while enlarged and stops on pointer up or cancel", async () => {
+  const { dialog } = await startViewer();
+  const { stage, images } = zoomSurface(dialog);
+  const pointer = (type: string, x: number, y: number) => fireEvent(stage, Object.assign(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }), { pointerId: 1 }));
+  const initial = images.style.transform;
+  pointer("pointerdown", 400, 300);
+  pointer("pointermove", 450, 330);
+  pointer("pointerup", 450, 330);
+  expect(images.style.transform).toBe(initial);
+  doubleClickStage(stage,{ clientX: 400, clientY: 300 });
+  pointer("pointerdown", 400, 300);
+  pointer("pointermove", 450, 330);
+  expect(images.style.transform).toContain("translate(50px, 30px)");
+  pointer("pointerup", 450, 330);
+  pointer("pointermove", 500, 400);
+  expect(images.style.transform).toContain("translate(50px, 30px)");
+  pointer("pointerdown", 450, 330);
+  pointer("pointermove", 100000, 100000);
+  const clamped = images.style.transform;
+  const [x, y] = clamped.match(/translate\(([^p]+)px, ([^p]+)px\)/)!.slice(1).map(Number);
+  expect(x).toBeGreaterThan(0);
+  expect(x).toBeLessThan(1600);
+  expect(y).toBeGreaterThan(0);
+  expect(y).toBeLessThan(1200);
+  pointer("pointercancel", 100000, 100000);
+  pointer("pointermove", 0, 0);
+  expect(images.style.transform).toBe(clamped);
+});
+
+test("viewer zoom survives original load and resets when navigating", async () => {
+  const { dialog } = await startViewer({ original: { a2: "/data/original.jpg", "second-image": "/data/second.png" } }, [photo, secondPhoto]);
+  const { stage, images, scale } = zoomSurface(dialog);
+  doubleClickStage(stage,{ clientX: 450, clientY: 350 });
+  expect(scale()).toBe(3);
+  const zoomed = images.style.transform;
+  const original = await vi.waitFor(() => {
+    const image = dialog.querySelector<HTMLImageElement>('img[src$="original.jpg"]');
+    expect(image).not.toBeNull();
+    return image!;
+  });
+  fireEvent.load(original);
+  expect(images.style.transform).toBe(zoomed);
+  fireEvent.keyDown(window, { key: "ArrowRight" });
+  expect(scale()).toBe(1);
+  expect(images.style.transform).toContain("translate(0px, 0px)");
+});
+
+test("viewer zoom handles WebKit pinch scale relative to each gesture start", async () => {
+  const { dialog } = await startViewer();
+  const { stage, scale } = zoomSurface(dialog);
+  const gesture = (type: string, value: number) => {
+    const event = Object.assign(new Event(type, { bubbles: true, cancelable: true }), { scale: value, clientX: 400, clientY: 300 });
+    fireEvent(stage, event);
+    return event;
+  };
+  expect(gesture("gesturestart", 1).defaultPrevented).toBe(true);
+  gesture("gesturechange", 2);
+  expect(scale()).toBe(2);
+  gesture("gesturechange", 3);
+  expect(scale()).toBe(3);
+  gesture("gesturestart", 1);
+  gesture("gesturechange", 2);
+  expect(scale()).toBe(6);
+  gesture("gesturechange", 100);
+  expect(scale()).toBe(6);
+  gesture("gesturechange", 0.01);
+  expect(scale()).toBe(1);
+});
+
+for (const [deltaY, deltaMode] of [[-100, 0], [-6.25, 1]]) {
+  test(`viewer zoom plain wheel notch is gradual (deltaMode=${deltaMode})`, async () => {
+    const { dialog } = await startViewer();
+    const { stage, scale } = zoomSurface(dialog);
+    fireEvent.wheel(stage, { deltaY, deltaMode, clientX: 400, clientY: 300 });
+    expect(scale()).toBeGreaterThan(1.2);
+    expect(scale()).toBeLessThan(1.5);
+    expect(scale()).toBeCloseTo(1.221402758);
+    fireEvent.wheel(stage, { deltaY: -100, ctrlKey: true, clientX: 400, clientY: 300 });
+    expect(scale()).toBeCloseTo(3.320116923);
+  });
+}
+
+for (const [width, height, expectedX, expectedY] of [
+  [1600, 1200, 800, 600],
+  [200, 1200, 0, 600],
+  [300, 200, 50, 0],
+]) {
+  test(`viewer zoom keeps fitted ${width}x${height} image edges at the stage`, async () => {
+    const { dialog, ui } = await startViewer({ original: { a2: new Promise(() => {}) } });
+    const { stage, images } = zoomSurface(dialog);
+    const image = await ui.findByRole("img", { name: "photo.jpg" });
+    Object.defineProperties(image, { naturalWidth: { value: width }, naturalHeight: { value: height } });
+    fireEvent.load(image);
+    expect(image.classList.contains("is-small")).toBe(width < 400 && height < 400);
+    doubleClickStage(stage,{ clientX: 400, clientY: 300 });
+    const pointer = (type: string, x: number, y: number) => fireEvent(stage, Object.assign(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, button: 0 }), { pointerId: 1 }));
+    pointer("pointerdown", 400, 300);
+    pointer("pointermove", 10000, 10000);
+    expect(images.style.transform).toBe(`translate(${expectedX}px, ${expectedY}px) scale(3)`);
+    pointer("pointermove", -10000, -10000);
+    expect(images.style.transform).toBe(`translate(${-expectedX}px, ${-expectedY}px) scale(3)`);
+    pointer("pointerup", -10000, -10000);
+    doubleClickStage(stage,{ clientX: 400, clientY: 300 });
+    fireEvent.wheel(stage, { deltaY: -100, clientX: 700, clientY: 500 });
+    fireEvent.wheel(stage, { deltaY: 100, clientX: 100, clientY: 100 });
+    expect(images.style.transform).toBe("translate(0px, 0px) scale(1)");
+  });
+}
+
+for (const [zoomIn, zoomOut] of [[100, 99], [63, 63]]) {
+  test(`viewer zoom snaps near-fit wheel scale to exactly one and stops dragging (${zoomIn}, ${zoomOut})`, async () => {
+    const { dialog } = await startViewer();
+    const { stage, images, scale } = zoomSurface(dialog);
+    fireEvent.wheel(stage, { deltaY: -zoomIn, clientX: 700, clientY: 500 });
+    fireEvent.wheel(stage, { deltaY: zoomOut, clientX: 100, clientY: 100 });
+    expect(scale()).toBe(1);
+    expect(images.style.transform).toBe("translate(0px, 0px) scale(1)");
+    const down = Object.assign(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 400, clientY: 300, button: 0 }), { pointerId: 1 });
+    fireEvent(stage, down);
+    expect(down.defaultPrevented).toBe(false);
+    doubleClickStage(stage,{ clientX: 400, clientY: 300 });
+    expect(scale()).toBe(3);
+  });
+}
+
+test("viewer zoom re-clamps fitted image after window resize", async () => {
+  const { dialog, ui } = await startViewer({ original: { a2: new Promise(() => {}) } });
+  const { stage, images, scale } = zoomSurface(dialog);
+  const image = await ui.findByRole("img", { name: "photo.jpg" });
+  Object.defineProperties(image, { naturalWidth: { value: 1600 }, naturalHeight: { value: 1200 } });
+  fireEvent.load(image);
+  doubleClickStage(stage,{ clientX: 0, clientY: 0 });
+  expect(images.style.transform).toBe("translate(800px, 600px) scale(3)");
+  vi.mocked(stage.getBoundingClientRect).mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 400, bottom: 300, width: 400, height: 300, toJSON() {} });
+  Object.defineProperties(images, { clientWidth: { value: 400 }, clientHeight: { value: 300 } });
+  fireEvent(window, new Event("resize"));
+  expect(scale()).toBe(3);
+  expect(images.style.transform).toBe("translate(400px, 300px) scale(3)");
+});
+
+test("viewer zoom keeps native listeners registered across navigation and removes them on close", async () => {
+  const { dialog, ui } = await startViewer({}, [photo, secondPhoto]);
+  const { stage, images, scale } = zoomSurface(dialog);
+  doubleClickStage(stage,{ clientX: 400, clientY: 300 });
+  fireEvent.keyDown(window, { key: "ArrowRight" });
+  expect(images.style.transform).toBe("translate(0px, 0px) scale(1)");
+  fireEvent.wheel(stage, { deltaY: -100, clientX: 400, clientY: 300 });
+  expect(scale()).toBeCloseTo(1.221402758);
+  await userEvent.click(ui.getByRole("button", { name: "Close image" }));
+  expect(dialog).not.toBeInTheDocument();
+  const transform = images.style.transform;
+  for (const type of ["wheel", "gesturestart", "gesturechange"]) {
+    const event = type === "wheel"
+      ? createEvent.wheel(stage, { deltaY: -100, cancelable: true })
+      : Object.assign(new Event(type, { cancelable: true }), { scale: 2 });
+    fireEvent(stage, event);
+    expect(event.defaultPrevented).toBe(false);
+  }
+  fireEvent(window, new Event("resize"));
+  expect(images.style.transform).toBe(transform);
 });

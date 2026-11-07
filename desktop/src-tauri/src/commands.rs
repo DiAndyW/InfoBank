@@ -315,6 +315,16 @@ pub async fn thumbnail(state: State<'_, AppState>, id: String) -> Result<String,
 }
 
 #[tauri::command]
+pub async fn attachment_stored(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+    cache::stored(&state, &id, now_us())
+}
+
+#[tauri::command]
+pub async fn attachment_original(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    Ok(cache::file(&state, &id, now_us()).await?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

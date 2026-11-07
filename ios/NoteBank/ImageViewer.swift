@@ -4,6 +4,15 @@ import SwiftUI
 
 @MainActor @Observable
 final class ImagePreviewState {
+    static let decodedOriginals: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 256 << 20
+        return cache
+    }()
+
+    private let id: String?
+    private let decoded: NSCache<NSString, UIImage>
+    private var fetching = false
     private let thumbnail: UIImage?
     private let isVideo: Bool
     private var generation = UUID()
@@ -14,18 +23,37 @@ final class ImagePreviewState {
     private(set) var loading = false
     private(set) var error: String?
 
-    init(thumbnail: UIImage?, isVideo: Bool = false) {
+    init(thumbnail: UIImage?, isVideo: Bool = false, id: String? = nil,
+         decoded: NSCache<NSString, UIImage> = ImagePreviewState.decodedOriginals) {
         self.thumbnail = thumbnail
         self.isVideo = isVideo
-        image = thumbnail
+        self.id = isVideo ? nil : id
+        self.decoded = decoded
+        image = cachedImage ?? thumbnail
+    }
+
+    private var cachedImage: UIImage? {
+        id.flatMap { decoded.object(forKey: $0 as NSString) }
+    }
+
+    func activate() {
+        if let cachedImage { image = cachedImage }
     }
 
     func load(open: () async throws -> URL, release: @escaping () -> Void) async {
-        guard !loading, file == nil else { return }
+        guard !fetching, file == nil else { return }
         let current = generation
-        loading = true
+        let cached = cachedImage
+        if let cached { image = cached }
+        fetching = true
+        loading = cached == nil
         error = nil
-        defer { if generation == current { loading = false } }
+        defer {
+            if generation == current {
+                loading = false
+                fetching = false
+            }
+        }
         do {
             let url = try await open()
             guard generation == current, !Task.isCancelled else { release(); return }
@@ -36,8 +64,13 @@ final class ImagePreviewState {
                 player?.play()
                 return
             }
+            if cached != nil {
+                file = url
+                releaseFile = release
+                return
+            }
             // Bound decoded memory while preserving orientation; sharing still uses the original.
-            let decoded = await Task.detached(priority: .userInitiated) {
+            let original = await Task.detached(priority: .userInitiated) {
                 guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                       let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                         kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -48,12 +81,15 @@ final class ImagePreviewState {
                 return UIImage(cgImage: image)
             }.value
             guard generation == current, !Task.isCancelled else { release(); return }
-            guard let decoded else {
+            guard let original else {
                 release()
                 error = "This image couldn't be displayed."
                 return
             }
-            image = decoded
+            if let id, let cgImage = original.cgImage {
+                decoded.setObject(original, forKey: id as NSString, cost: cgImage.bytesPerRow * cgImage.height)
+            }
+            image = original
             file = url
             releaseFile = release
         } catch {
@@ -70,6 +106,7 @@ final class ImagePreviewState {
         file = nil
         image = thumbnail
         loading = false
+        fetching = false
     }
 }
 
@@ -86,56 +123,81 @@ struct ImageViewer: View {
     let open: (String) async throws -> URL
     let thumbnail: (String) async -> UIImage?
     let release: (String) -> Void
+    @State private var files: [String: URL] = [:]
+    @State private var sharing = false
+    @State private var barHeight: CGFloat = 0
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack {
+        let position = images.firstIndex { $0.id == selectedID } ?? 0
+        let selected = images[position]
+        let kind = selected.isVideo ? "video" : "image"
+        ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
+            // The pager runs under the bar so a swipe that starts on the bar still pages.
             TabView(selection: $selectedID) {
                 ForEach(images) { image in
                     ImagePreviewPage(item: image, active: selectedID == image.id,
-                                     position: (images.firstIndex(where: { $0.id == image.id }) ?? 0) + 1, count: images.count,
                                      open: { try await open(image.id) },
                                      thumbnail: { await thumbnail(image.id) },
-                                     release: { release(image.id) })
+                                     release: { release(image.id) },
+                                     onFile: { files[image.id] = $0 })
+                        .padding(.top, barHeight)
                         .tag(image.id)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
+            HStack {
+                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                    .accessibilityLabel("Close \(kind)")
+                    .keyboardShortcut(.cancelAction)
+                VStack(spacing: 2) {
+                    Text(selected.filename).lineLimit(1)
+                    if images.count > 1 { Text("\(position + 1) of \(images.count)").font(.caption).foregroundStyle(.secondary) }
+                }
+                .frame(maxWidth: .infinity)
+                Button { sharing = true } label: {
+                    Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Share \(kind)")
+                .disabled(files[selected.id] == nil)
+            }
+            .padding(.horizontal, 8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { barHeight = $0 }
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $sharing) {
+            if let file = files[selectedID] { ImageShareSheet(file: file) }
+        }
     }
 }
 
 private struct ImagePreviewPage: View {
     let item: ImagePreviewItem
     let active: Bool
-    let position: Int
-    let count: Int
     let open: () async throws -> URL
     let thumbnail: () async -> UIImage?
     let release: () -> Void
+    let onFile: (URL?) -> Void
     @State private var state: ImagePreviewState
     @State private var retry = 0
-    @State private var sharing = false
     @State private var zoomed = false
     @State private var pullDown: CGFloat = 0
     @Environment(\.dismiss) private var dismiss
 
-    init(item: ImagePreviewItem, active: Bool, position: Int, count: Int, open: @escaping () async throws -> URL,
-         thumbnail: @escaping () async -> UIImage?, release: @escaping () -> Void) {
+    init(item: ImagePreviewItem, active: Bool, open: @escaping () async throws -> URL,
+         thumbnail: @escaping () async -> UIImage?, release: @escaping () -> Void, onFile: @escaping (URL?) -> Void) {
         self.item = item
         self.active = active
-        self.position = position
-        self.count = count
         self.open = open
         self.thumbnail = thumbnail
         self.release = release
-        _state = State(initialValue: ImagePreviewState(thumbnail: item.thumbnail, isVideo: item.isVideo))
+        self.onFile = onFile
+        _state = State(initialValue: ImagePreviewState(thumbnail: item.thumbnail, isVideo: item.isVideo, id: item.id))
     }
 
     var body: some View {
-        let kind = item.isVideo ? "video" : "image"
         ZStack {
             if let player = state.player {
                 VideoPlayer(player: player)
@@ -145,34 +207,10 @@ private struct ImagePreviewPage: View {
             if state.loading { ProgressView().tint(.white).padding(12).background(.black.opacity(0.6), in: Capsule()) }
         }
         .offset(y: pullDown)
-        .simultaneousGesture(DragGesture(minimumDistance: 20)
-            .onChanged { drag in
-                guard !zoomed, drag.translation.height > abs(drag.translation.width) else { return }
-                pullDown = drag.translation.height
-            }
-            .onEnded { drag in
-                if !zoomed, drag.translation.height > 100, drag.translation.height > abs(drag.translation.width) { dismiss() }
-                else { withAnimation(.spring) { pullDown = 0 } }
-            })
-        .safeAreaInset(edge: .top) {
-            HStack {
-                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                    .accessibilityLabel("Close \(kind)")
-                    .keyboardShortcut(.cancelAction)
-                VStack(spacing: 2) {
-                    Text(item.filename).lineLimit(1)
-                    if count > 1 { Text("\(position) of \(count)").font(.caption).foregroundStyle(.secondary) }
-                }
-                .frame(maxWidth: .infinity)
-                Button { sharing = true } label: {
-                    Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Share \(kind)")
-                .disabled(state.file == nil)
-            }
-            .padding(.horizontal, 8)
-            .background(.black)
-        }
+        .gesture(PullDownGesture(zoomed: zoomed, onChange: { pullDown = $0 }, onEnd: { distance in
+            if distance > 100 { dismiss() }
+            else { withAnimation(.spring) { pullDown = 0 } }
+        }))
         .safeAreaInset(edge: .bottom) {
             if let error = state.error {
                 VStack(spacing: 8) {
@@ -185,13 +223,57 @@ private struct ImagePreviewPage: View {
         }
         .task(id: active ? retry : -1) {
             guard active else { state.close(); return }
+            state.activate()
             if state.image == nil { state.image = await thumbnail() }
             guard !Task.isCancelled else { return }
             await state.load(open: open, release: release)
         }
-        .onDisappear { state.close() }
-        .sheet(isPresented: $sharing) {
-            if let file = state.file { ImageShareSheet(file: file) }
+        .onChange(of: state.file) { onFile(state.file) }
+        .onDisappear {
+            state.close()
+            onFile(nil)
+        }
+    }
+}
+
+// A SwiftUI DragGesture here blocks fast horizontal flicks; this pan refuses them so the pager gets them.
+private struct PullDownGesture: UIGestureRecognizerRepresentable {
+    let zoomed: Bool
+    let onChange: (CGFloat) -> Void
+    let onEnd: (CGFloat) -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var zoomed = false
+
+        func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            guard !zoomed, let pan = gesture as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: nil)
+            return velocity.y > abs(velocity.x)
+        }
+
+        func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func updateUIGestureRecognizer(_ pan: UIPanGestureRecognizer, context: Context) {
+        context.coordinator.zoomed = zoomed
+    }
+
+    func handleUIGestureRecognizerAction(_ pan: UIPanGestureRecognizer, context: Context) {
+        let translation = pan.translation(in: nil)
+        let downward = translation.y > abs(translation.x) ? translation.y : 0
+        switch pan.state {
+        case .changed: if downward > 0 { onChange(downward) }
+        case .ended: onEnd(downward)
+        case .cancelled, .failed: onEnd(0)
+        default: break
         }
     }
 }

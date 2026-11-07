@@ -33,6 +33,8 @@
     "allow-stage-attachment-bytes",
     "allow-unstage-attachment",
     "allow-thumbnail",
+    "allow-attachment-stored",
+    "allow-attachment-original",
     "allow-copy-item",
     "allow-prepare-copy-items",
     "allow-finish-copy-items",

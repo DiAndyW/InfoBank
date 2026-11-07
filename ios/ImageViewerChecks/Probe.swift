@@ -116,6 +116,133 @@ struct Checks: View {
         assert(video.player == nil && video.file == nil && videoReleases == 1)
         results.append("a video is handed to a player without image decoding and released once on close")
 
+        let decoded = NSCache<NSString, UIImage>()
+        let first = ImagePreviewState(thumbnail: image, id: "a", decoded: decoded)
+        assert(first.image === image)
+        await first.load(open: { file }, release: {})
+        let original = first.image!
+        assert(original !== image && decoded.object(forKey: "a") === original)
+        first.close()
+        let reopened = ImagePreviewState(thumbnail: image, id: "a", decoded: decoded)
+        assert(reopened.image === original && reopened.file == nil)
+        results.append("reopening immediately reuses the decoded original")
+
+        var cachedReleases = 0
+        await reopened.load(open: {
+            assert(!reopened.loading)
+            return file
+        }, release: { cachedReleases += 1 })
+        assert(reopened.image === original && reopened.file == file && reopened.error == nil)
+        reopened.close(); reopened.close()
+        assert(cachedReleases == 1 && reopened.file == nil && reopened.image === image)
+        results.append("cache hit opens without a spinner and pins the file until close")
+
+        let cachedFailure = ImagePreviewState(thumbnail: image, id: "a", decoded: decoded)
+        await cachedFailure.load(open: {
+            assert(!cachedFailure.loading)
+            throw CocoaError(.fileReadNoSuchFile)
+        }, release: { cachedReleases += 1 })
+        assert(cachedFailure.image === original && cachedFailure.file == nil)
+        assert(cachedFailure.error != nil && !cachedFailure.loading && cachedReleases == 1)
+        results.append("cache hit preserves the sharp image when opening the file fails")
+
+        let invalidCached = ImagePreviewState(thumbnail: image, id: "broken", decoded: decoded)
+        await invalidCached.load(open: { corrupt }, release: {})
+        assert(invalidCached.error != nil && decoded.object(forKey: "broken") == nil)
+        results.append("failed decoding never populates the cache")
+
+        let cachedVideo = ImagePreviewState(thumbnail: image, isVideo: true, id: "a", decoded: decoded)
+        assert(cachedVideo.image === image)
+        await cachedVideo.load(open: { corrupt }, release: {})
+        assert(cachedVideo.image === image && decoded.object(forKey: "a") === original)
+        cachedVideo.close()
+        assert(cachedVideo.image === image)
+        results.append("videos never read the decoded image cache")
+
+        assert(ImagePreviewState.decodedOriginals.totalCostLimit == 256 << 20)
+        results.append("shared decoded image cache has a 256 MiB cost limit")
+
+        let fetching = ImagePreviewState(thumbnail: image, id: "a", decoded: decoded)
+        resume = nil
+        let fetchingTask = Task {
+            await fetching.load(open: {
+                assert(!fetching.loading)
+                return await withCheckedContinuation { resume = $0 }
+            }, release: { cachedReleases += 1 })
+        }
+        while resume == nil { await Task.yield() }
+        await fetching.load(open: { assertionFailure("duplicate open"); return file }, release: {})
+        resume!.resume(returning: file)
+        await fetchingTask.value
+        assert(fetching.file == file && fetching.image === original)
+        fetching.close()
+        assert(cachedReleases == 2)
+        results.append("cache hit prevents reentrant loading while opening the file")
+
+        let activating = ImagePreviewState(thumbnail: nil, id: "a", decoded: decoded)
+        activating.close()
+        activating.activate()
+        assert(activating.image === original && !activating.loading && activating.file == nil)
+        var activationResume: CheckedContinuation<URL, Never>?
+        var openedSharp = false
+        let activationTask = Task {
+            await activating.load(open: {
+                openedSharp = activating.image === original && !activating.loading
+                return await withCheckedContinuation { activationResume = $0 }
+            }, release: {})
+        }
+        while activationResume == nil { await Task.yield() }
+        assert(openedSharp && activating.image === original && !activating.loading)
+        activationResume!.resume(returning: file)
+        await activationTask.value
+        assert(activating.file == file)
+        activating.close()
+        activating.activate()
+        await activating.load(open: {
+            assert(activating.image === original && !activating.loading)
+            throw CocoaError(.fileReadNoSuchFile)
+        }, release: { assertionFailure("failed open must not release") })
+        assert(activating.image === original && activating.file == nil && activating.error != nil && !activating.loading)
+        results.append("activation synchronously restores sharp image before open and preserves it on failure")
+
+        let lifetimeCache = NSCache<NSString, UIImage>()
+        let lifetime = ImagePreviewState(thumbnail: image, id: "lifetime", decoded: lifetimeCache)
+        await lifetime.load(open: { file }, release: {})
+        weak var heldDecode: UIImage?
+        heldDecode = lifetime.image
+        await reopened.load(open: { file }, release: {})
+        let closedZoom = ZoomingImageView()
+        closedZoom.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
+        closedZoom.setImage(reopened.image!)
+        closedZoom.layoutIfNeeded()
+        closedZoom.setZoomScale(2, animated: false)
+        assert(closedZoom.zoomScale == 2)
+        lifetime.close()
+        results.append(lifetime.image === image && lifetimeCache.object(forKey: "lifetime") != nil
+            ? "close restores thumbnail while original stays cached" : "FAIL: close restores thumbnail while original stays cached")
+        reopened.close()
+        closedZoom.setImage(reopened.image!)
+        results.append(closedZoom.zoomScale == 1
+            ? "close resets real image view zoom" : "FAIL: close resets real image view zoom")
+        closedZoom.setImage(image)
+        lifetimeCache.removeAllObjects()
+        await Task.yield()
+        results.append(heldDecode == nil
+            ? "closed state releases evicted decode" : "FAIL: closed state releases evicted decode")
+
+        let costCache = NSCache<NSString, UIImage>()
+        let costFirst = ImagePreviewState(thumbnail: nil, id: "cost-first", decoded: costCache)
+        await costFirst.load(open: { file }, release: {})
+        let costImage = costFirst.image!.cgImage!
+        costCache.totalCostLimit = costImage.bytesPerRow * costImage.height * 3 / 2
+        costFirst.close()
+        let costSecond = ImagePreviewState(thumbnail: nil, id: "cost-second", decoded: costCache)
+        await costSecond.load(open: { file }, release: {})
+        let firstEvicted = costCache.object(forKey: "cost-first") == nil
+        costSecond.close()
+        results.append(firstEvicted
+            ? "decode costs evict first image when two exceed the cache limit" : "FAIL: decode costs evict first image when two exceed the cache limit")
+
         let output = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("result.json")
         try! JSONSerialization.data(withJSONObject: results).write(to: output)
     }
