@@ -22,7 +22,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 kbd { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--ink-muted); }
 
 /* App layout */
-.nb-app { --sidebar-width: clamp(14rem, 23vw, 20rem); --rail-width: calc(28px + 2 * var(--space-2)); display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; transition: grid-template-columns 180ms ease; }
+.nb-app { --rail-width: calc(28px + 2 * var(--space-2)); display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); height: 100vh; transition: grid-template-columns 180ms ease; }
 .nb-app.is-sidebar-collapsed { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
 .nb-sidebar-slot { grid-area: 1 / 1; min-width: 0; min-height: 0; overflow: clip; }
 .nb-sidebar-slot > .nb-sidebar { height: 100%; width: 100%; }
