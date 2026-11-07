@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory(prefix="notebank-image-viewer-checks-") as temp
     with (app / "Info.plist").open("wb") as output:
         plistlib.dump(dict(CFBundleIdentifier=identifier, CFBundleExecutable="ImageChecks", CFBundleName="Image Checks", CFBundleVersion="1", CFBundlePackageType="APPL", LSRequiresIPhoneOS=True, UILaunchScreen={}), output)
     sdk = run("xcrun", "--sdk", "iphonesimulator", "--show-sdk-path")
-    run("xcrun", "swiftc", "-sdk", sdk, "-target", f"{run('uname', '-m')}-apple-ios26.0-simulator",
+    run("xcrun", "swiftc", "-swift-version", "6", "-sdk", sdk, "-target", f"{run('uname', '-m')}-apple-ios26.0-simulator",
         "-parse-as-library", "-module-cache-path", "/tmp/notebank-paste-checks-module-cache",
         str(repo / "ios/NoteBank/ImageViewer.swift"), str(repo / "ios/ImageViewerChecks/Probe.swift"),
         "-o", str(app / "ImageChecks"), env=dict(os.environ, SDKROOT=sdk))
@@ -39,7 +39,8 @@ with tempfile.TemporaryDirectory(prefix="notebank-image-viewer-checks-") as temp
         while not result.exists() and time.monotonic() < deadline:
             time.sleep(0.2)
         checks = json.loads(result.read_text())
-        assert len(checks) == 10, checks
+        assert not any(check.startswith("FAIL:") for check in checks), checks
+        assert len(checks) == 22, checks
         print(f"{len(checks)} native image viewer checks passed")
         for check in checks:
             print("- " + check)

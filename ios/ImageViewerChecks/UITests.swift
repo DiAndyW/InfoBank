@@ -2,6 +2,53 @@ import XCTest
 
 final class ImageViewerUITests: XCTestCase {
     @MainActor
+    private func waitUntilHittable(_ element: XCUIElement) -> XCTWaiter.Result {
+        XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: element)], timeout: 3)
+    }
+
+    @MainActor
+    func testFastSwipeOverTheImagePages() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Open images"].tap()
+        XCTAssertTrue(app.buttons["Close image"].waitForExistence(timeout: 5))
+        for velocity in [1500.0, 4000.0] {
+            let title = app.staticTexts[velocity == 1500 ? "second.jpg" : "third.jpg"]
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)).press(
+                forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)),
+                withVelocity: XCUIGestureVelocity(rawValue: velocity), thenHoldForDuration: 0)
+            XCTAssertEqual(waitUntilHittable(title), .completed, "A \(Int(velocity)) pt/s swipe didn't page")
+        }
+    }
+
+    @MainActor
+    func testSwipeOnTheBarPages() throws {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["Open images"].tap()
+        XCTAssertTrue(app.buttons["Close image"].waitForExistence(timeout: 5))
+        let start = app.staticTexts["first.jpg"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: -150, dy: 0)),
+                    withVelocity: XCUIGestureVelocity(rawValue: 1000), thenHoldForDuration: 0)
+        XCTAssertEqual(waitUntilHittable(app.staticTexts["second.jpg"]), .completed)
+    }
+
+    @MainActor
+    func testTheBarStaysPutWhilePaging() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--mid-page"]
+        app.launch()
+        app.buttons["Open images"].tap()
+        XCTAssertTrue(app.images["second.jpg"].waitForExistence(timeout: 5))
+        let share = app.buttons.matching(NSPredicate(format: "label == 'Share image'"))
+        let close = app.buttons.matching(NSPredicate(format: "label == 'Close image'"))
+        XCTAssertEqual(share.count, 1)
+        XCTAssertEqual(close.count, 1)
+        XCTAssertLessThan(close.firstMatch.frame.maxX, app.frame.midX)
+        XCTAssertGreaterThan(share.firstMatch.frame.minX, app.frame.midX)
+    }
+
+    @MainActor
     func testOpenPageZoomShareAndClose() throws {
         let app = XCUIApplication()
         app.launch()

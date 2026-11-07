@@ -33,6 +33,13 @@ struct GalleryFixture: View {
                     try images.first(where: { $0.id == id })!.thumbnail!.jpegData(compressionQuality: 0.9)!.write(to: file)
                     return file
                 }, thumbnail: { _ in nil }, release: { _ in })
+                .task {
+                    guard ProcessInfo.processInfo.arguments.contains("--mid-page") else { return }
+                    try? await Task.sleep(for: .seconds(1.5))
+                    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+                    guard let pager = windows.compactMap({ pagingScrollView(in: $0) }).first else { return }
+                    pager.contentOffset.x += pager.bounds.width * 0.4
+                }
             }
             .task {
                 if ProcessInfo.processInfo.arguments.contains("--record") {
@@ -50,6 +57,12 @@ struct GalleryFixture: View {
                 }, thumbnail: { _ in nil }, release: { _ in })
             }
     }
+}
+
+@MainActor
+private func pagingScrollView(in view: UIView) -> UIScrollView? {
+    if let scroll = view as? UIScrollView, scroll.isPagingEnabled { return scroll }
+    return view.subviews.compactMap { pagingScrollView(in: $0) }.first
 }
 
 @MainActor
