@@ -170,6 +170,10 @@ pub fn run() {
             if let Some(failure) = failure {
                 app.manage(failure);
             }
+            // WebView2 runs a page's commands while its window is being created, so state must exist first.
+            for window in &app.config().app.windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), window)?.build()?;
+            }
             if show_main_at_launch(&std::env::args().collect::<Vec<_>>(), failed) {
                 show_main(app.handle());
             }
@@ -279,6 +283,14 @@ mod tests {
         .to_vec();
         expected.sort();
         assert_eq!(quick, expected);
+    }
+
+    #[test]
+    fn no_window_opens_before_startup_has_set_up_its_state() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let windows = config["app"]["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().all(|w| w["create"] == false), "{windows:?}");
     }
 
     #[test]
