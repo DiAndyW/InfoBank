@@ -2,8 +2,9 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEve
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedItem, type Topic, type View, type Target } from "./api";
-import { Attachments } from "./attachments";
+import { doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedAttachment, type FeedItem, type Topic, type View, type Target } from "./api";
+import ImageViewer from "./ImageViewer";
+import { Attachments, viewable } from "./attachments";
 import { copyWholeItem } from "./api";
 import Composer from "./Composer";
 import CaptureDestination from "./CaptureDestination";
@@ -65,7 +66,20 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
   const homeChosen = topics.find((t) => t.id === homeTopic && !t.archived);
   useEffect(() => { if (homeTopic && !homeChosen) setHomeTopic(null); }, [topics]);
   const displayed = useRef<{ key: string; items: FeedItem[] }>({ key: "", items: [] });
+  const [viewing, setViewing] = useState<{ item: string; attachment: string; images: FeedAttachment[]; view: string } | null>(null);
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
+  const [closedCount, setClosedCount] = useState(0);
   const [items, setItems] = useState<FeedItem[]>([]); // newest first, as list_items returns them
+  const images = items.find(it => it.id === viewing?.item)?.attachments.filter(viewable) ?? viewing?.images ?? [];
+  const viewingExists = images.some(a => a.id === viewing?.attachment);
+  function closeViewer() {
+    setViewing(null);
+    setClosedCount(count => count + 1);
+  }
+  useEffect(() => {
+    if (viewing && (!viewingExists || viewing.view !== JSON.stringify(view))) closeViewer();
+  }, [viewing, viewingExists, view]);
   const [exhausted, setExhausted] = useState(false);
   const pages = useRef(1);
   const listRef = useRef<HTMLDivElement>(null);
@@ -226,7 +240,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
     const previous = displayed.current;
     displayed.current = { key, items: all };
     const removed = previous.key === key && previous.items.some((it) => !all.some((next) => next.id === it.id));
-    if (view.kind === "tunnel" && removed && document.startViewTransition && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+    if (view.kind === "tunnel" && removed && !viewingRef.current && document.startViewTransition && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
       document.startViewTransition(() => flushSync(() => setItems(all))).ready.catch(() => {});
     } else setItems(all);
     setLoadedView(key);
@@ -436,7 +450,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             )}
                           </p>
                         )}
-                        {it.attachments.length > 0 && <Attachments list={it.attachments} />}
+                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} closedCount={closedCount} />}
                       </div>
                       <div className="nb-item-meta" inert={selection.selecting}>
                         {place && (
@@ -590,7 +604,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
       )}
       <div hidden={noComposer || selection.selecting} className="nb-main-composer">
         <Composer
-          acceptsDrops={!noComposer && !covered}
+          acceptsDrops={!noComposer && !covered && !viewing}
           picker={home ? <CaptureDestination topics={topics.filter((t) => !t.archived)} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={setHomeTopic} /> : undefined}
           target={home ? homeTunnel ? { kind: "tunnel" } : homeChosen ? { kind: "topic", id: homeChosen.id } : { kind: "inbox" } : view.kind === "topic" ? { kind: "topic", id: view.id } : view.kind === "tunnel" ? { kind: "tunnel" } : { kind: "inbox" }}
           placeholder={home ? homeTunnel ? "Send to your other devices…" : "Capture something…" : view.kind === "tunnel" ? "Send to your other devices…" : `Write to ${current ? current.name : "Inbox"}…`}
@@ -600,6 +614,8 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
           }}
         />
       </div>
+      {viewing && viewingExists && <ImageViewer images={images} selected={viewing.attachment}
+        onSelect={attachment => setViewing({ ...viewing, attachment, images })} onClose={closeViewer} />}
     </main>
   );
 }

@@ -12,7 +12,7 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows).app_manifest(tauri_build::AppManifest::new().commands(&[
         "get_settings", "save_settings", "trash_after_copy", "set_trash_after_copy", "double_click_interval_ms", "list_topics", "capture", "move_item", "edit_item", "discard_item", "resolve_conflict", "trash_item",
         "restore_item", "nav_counts", "create_topic", "picker_topic", "rename_topic", "archive_topic", "unarchive_topic",
-        "delete_topic", "pick_files", "stage_attachment_bytes", "unstage_attachment", "thumbnail",
+        "delete_topic", "pick_files", "stage_attachment_bytes", "unstage_attachment", "thumbnail", "attachment_stored", "attachment_original",
         "open_attachment", "reveal_attachment", "list_items", "search_items", "sync_status",
         "set_quick_capture_shortcut", "set_quick_capture_on", "autostart_on", "set_autostart", "dismiss_quick_capture", "startup_error",
         "show_data_folder", "quit", "copy_item", "prepare_copy_items", "finish_copy_items", "discard_copy_items", "set_items_trashed",

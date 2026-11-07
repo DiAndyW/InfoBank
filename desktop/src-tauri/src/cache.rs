@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{AppState, files, sync};
 
-pub const FILE_CACHE_BYTES: i64 = 2 << 30;
+pub const FILE_CACHE_BYTES: i64 = 500 << 20;
 const THUMBNAIL_KEEP_US: i64 = 60 * 24 * 60 * 60 * 1_000_000;
 const OFFLINE: &str = "Can't download while offline";
 pub const MAX_THUMBNAIL_BYTES: u64 = 1 << 20;
@@ -113,6 +113,11 @@ pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBu
         }
     }
     download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), Size::AtMost(MAX_THUMBNAIL_BYTES), now_us).await
+}
+
+pub fn stored(state: &AppState, id: &str, now_us: i64) -> Result<bool, String> {
+    let id = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?.to_string();
+    Ok(cached(state, &id, "file", now_us)?.is_some())
 }
 
 pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, String> {
@@ -248,6 +253,71 @@ mod tests {
     fn kept(conn: &Connection, kind: &str) -> Vec<String> {
         let mut stmt = conn.prepare("SELECT attachment_id FROM cached_files WHERE kind = ?1 ORDER BY attachment_id").unwrap();
         stmt.query_map([kind], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn the_cap_keeps_500_mb_of_the_most_recently_used_files() {
+        let (d, conn) = fresh();
+        put(&d, &conn, "older", "file", 400 << 20, 1, 0, true);
+        put(&d, &conn, "newer", "file", 200 << 20, 2, 0, true);
+        put(&d, &conn, "unsent", "file", 600 << 20, 0, 0, false);
+        evict(&conn, d.path(), 10, FILE_CACHE_BYTES).unwrap();
+        assert_eq!(kept(&conn, "file"), ["newer", "unsent"]);
+        assert!(d.path().join("files/unsent/f.png").exists());
+    }
+
+    #[tokio::test]
+    async fn stored_looks_for_the_original_and_never_the_thumbnail() {
+        let (d, conn) = fresh();
+        let original = uuid::Uuid::new_v4().to_string();
+        let thumbnail_only = uuid::Uuid::new_v4().to_string();
+        let absent = uuid::Uuid::new_v4().to_string();
+        let missing = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &original, "file", 1, 0, 0, true);
+        put(&d, &conn, &thumbnail_only, "thumbnail", 1, 0, 0, true);
+        put(&d, &conn, &missing, "file", 1, 0, 0, true);
+        std::fs::remove_file(d.path().join(format!("files/{missing}/f.png"))).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        assert!(stored(&state, &original, 10).unwrap());
+        assert!(!stored(&state, &thumbnail_only, 10).unwrap());
+        assert!(!stored(&state, &absent, 10).unwrap());
+        assert!(!stored(&state, &missing, 10).unwrap());
+        assert_eq!(kept(&state.db.lock().unwrap(), "file"), [original]);
+        assert_eq!(stored(&state, "malformed", 10).unwrap_err(), "Unknown attachment");
+    }
+
+    #[tokio::test]
+    async fn stored_finds_an_original_that_has_not_been_uploaded() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, false);
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        assert!(stored(&state, &id, 10).unwrap());
+    }
+
+    #[tokio::test]
+    async fn stored_finds_an_image_whose_preview_is_the_original() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, true);
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        assert_eq!(thumbnail(&state, &id, 10).await.unwrap(), d.path().join(format!("files/{id}/f.png")));
+        assert!(stored(&state, &id, 10).unwrap());
+    }
+
+    #[tokio::test]
+    async fn file_never_returns_the_thumbnail_when_the_original_is_absent() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "thumbnail", 1, 0, 0, true);
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        assert_eq!(file(&state, &id, 10).await.unwrap_err(), OFFLINE);
+        assert!(d.path().join(format!("thumbnails/{id}.jpg")).exists());
+        assert!(kept(&state.db.lock().unwrap(), "file").is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
+import { attachmentStored, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
 import { Icon } from "./icons";
 
 const REVEAL_LABEL = navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in Finder";
@@ -11,26 +11,33 @@ export function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function Attachment({ a }: { a: FeedAttachment }) {
+export function viewable(a: FeedAttachment): boolean {
+  return !a.runnable && a.mime_type.startsWith("image/");
+}
+
+function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id: string) => void; closedCount: number }) {
   const [src, setSrc] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const busy = useRef(false);
   const [refused, setRefused] = useState(false);
   const image = !a.runnable && (a.has_thumbnail || a.mime_type.startsWith("image/"));
   const video = a.mime_type.startsWith("video/");
 
   useEffect(() => {
-    if (!image) return;
+    if (!image || src) return;
     let live = true;
     thumbnail(a.id).then((path) => live && setSrc(convertFileSrc(path)), () => {});
     return () => {
       live = false;
     };
-  }, [a.id, image]);
+  }, [a.id, image, closedCount]);
 
   async function fetchThen(action: (id: string) => Promise<void>) {
-    if (note === "Downloading…") return;
-    setNote("Downloading…");
+    if (busy.current) return;
+    busy.current = true;
     try {
+      const stored = await attachmentStored(a.id).catch(() => false);
+      setNote(stored ? null : "Downloading…");
       await action(a.id);
       setNote(null);
       if (image && !src) {
@@ -38,12 +45,16 @@ function Attachment({ a }: { a: FeedAttachment }) {
       }
     } catch (err) {
       setNote(String(err));
+    } finally {
+      busy.current = false;
     }
   }
 
   function open() {
     if (a.runnable) setRefused(true);
-    else fetchThen(openAttachment);
+    else if (viewable(a)) {
+      onView(a.id);
+    } else fetchThen(openAttachment);
   }
 
   if (refused) {
@@ -62,7 +73,7 @@ function Attachment({ a }: { a: FeedAttachment }) {
     );
   }
   return image ? (
-    <button type="button" className="nb-thumb" onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
+    <button type="button" className="nb-thumb" data-attachment-id={a.id} onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
       {src ? (
         <>
           <img src={src} alt={a.filename} onError={() => setSrc(null)} />
@@ -92,12 +103,12 @@ function Attachment({ a }: { a: FeedAttachment }) {
   );
 }
 
-export function Attachments({ list }: { list: FeedAttachment[] }) {
+export function Attachments({ list, onView, closedCount }: { list: FeedAttachment[]; onView: (id: string) => void; closedCount: number }) {
   return (
     <div className="nb-item-files">
       {list.map((a) => (
         // has_thumbnail in the key remounts it, and so refetches, once the Server makes one.
-        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} />
+        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} onView={onView} closedCount={closedCount} />
       ))}
     </div>
   );

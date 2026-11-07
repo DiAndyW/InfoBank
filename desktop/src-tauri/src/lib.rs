@@ -200,6 +200,8 @@ pub fn run() {
             commands::stage_attachment_bytes,
             commands::unstage_attachment,
             commands::thumbnail,
+            commands::attachment_stored,
+            commands::attachment_original,
             commands::copy_item,
             commands::prepare_copy_items,
             commands::finish_copy_items,
