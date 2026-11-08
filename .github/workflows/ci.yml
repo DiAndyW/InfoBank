@@ -95,6 +95,9 @@ jobs:
           set -euo pipefail
           cargo test --locked | tee rust-tests.log
           python -c 'import re; from pathlib import Path; assert re.search(r"test result: ok\. [1-9][0-9]* passed", Path("rust-tests.log").read_text()), "No Rust tests ran"'
+      - name: WebKit binary IPC transport
+        if: runner.os == 'macOS'
+        run: swift desktop/tests/ipc-transport.swift
       - name: Native application build
         working-directory: desktop
         run: npm run tauri -- build --no-bundle

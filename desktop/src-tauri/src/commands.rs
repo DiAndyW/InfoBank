@@ -438,6 +438,45 @@ mod tests {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
     #[test]
+    fn binary_attachment_staging_preserves_bytes_and_filename_in_both_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![stage_attachment_bytes])
+            .build(tauri::generate_context!(test = true))
+            .unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let bytes = vec![0, 137, 80, 78, 71, 13, 10, 255];
+        let filename = "截图 café.png";
+        for label in ["main", "quick-capture"] {
+            let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::default()).build().unwrap();
+            let send = |body| {
+                let mut headers = tauri::http::HeaderMap::new();
+                headers.insert("x-filename", percent_encoding::utf8_percent_encode(filename, percent_encoding::NON_ALPHANUMERIC).to_string().parse().unwrap());
+                get_ipc_response(&window, tauri::webview::InvokeRequest {
+                    cmd: "stage_attachment_bytes".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: window.url().unwrap(),
+                    body,
+                    headers,
+                    invoke_key: INVOKE_KEY.to_string(),
+                })
+            };
+            let staged = send(tauri::ipc::InvokeBody::Raw(bytes.clone())).unwrap().deserialize::<serde_json::Value>().unwrap();
+            assert_eq!(staged["filename"], filename);
+            assert_eq!(staged["size_bytes"], bytes.len());
+            assert_eq!(staged["mime_type"], "image/png");
+            let path = dir.path().join("files").join(staged["id"].as_str().unwrap()).join(filename);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            let count = std::fs::read_dir(dir.path().join("files")).unwrap().count();
+            assert_eq!(send(serde_json::json!(bytes).into()).unwrap_err(), serde_json::json!("Expected the file's bytes"));
+            assert_eq!(std::fs::read_dir(dir.path().join("files")).unwrap().count(), count);
+        }
+    }
+
+    #[test]
     fn only_the_main_window_can_clear_a_draft() {
         let dir = tempfile::tempdir().unwrap();
         let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
