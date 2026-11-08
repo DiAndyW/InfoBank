@@ -448,7 +448,7 @@ mod tests {
                     cmd: "capture".into(),
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
-                    url: "tauri://localhost".parse().unwrap(),
+                    url: window.url().unwrap(),
                     body: serde_json::json!({ "text": "note", "attachmentIds": [], "target": { "kind": "inbox" }, "draft": draft }).into(),
                     headers: Default::default(),
                     invoke_key: INVOKE_KEY.to_string(),
