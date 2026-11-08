@@ -1,11 +1,11 @@
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcut, GlobalShortcutExt, Shortcut};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::shortcut::Hotkey;
-use crate::{AppState, cache, feed, files, search, settings, topics};
+use crate::{AppState, cache, drafts, feed, files, search, settings, topics};
 
 fn now_us() -> i64 {
     chrono::Utc::now().timestamp_micros()
@@ -89,7 +89,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<settings::Settin
     settings::get(&state.db.lock().unwrap(), &state.secret)
 }
 
-fn changed(app: &AppHandle, state: &AppState) {
+fn changed<R: Runtime>(app: &AppHandle<R>, state: &AppState) {
     state.wake.notify_one();
     let _ = app.emit("items-changed", ());
 }
@@ -248,14 +248,29 @@ pub async fn unstage_attachment(state: State<'_, AppState>, id: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn capture(
-    app: AppHandle,
+pub async fn list_drafts(state: State<'_, AppState>) -> Result<Vec<drafts::Draft>, String> {
+    drafts::list(&state.db.lock().unwrap())
+}
+
+#[tauri::command]
+pub async fn save_draft(state: State<'_, AppState>, place: String, text: String, home_topic_id: Option<String>) -> Result<(), String> {
+    drafts::save(&state.db.lock().unwrap(), &place, &text, home_topic_id.as_deref())
+}
+
+#[tauri::command]
+pub async fn capture<R: Runtime>(
+    app: AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     state: State<'_, AppState>,
     text: String,
     attachment_ids: Vec<String>,
     target: feed::Target,
+    draft: Option<String>,
 ) -> Result<(), String> {
-    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, &target, now_us())?;
+    if draft.is_some() && window.label() != "main" {
+        return Err("Only the main window has drafts".into());
+    }
+    feed::capture(&state.db.lock().unwrap(), &state.dir, &text, &attachment_ids, &target, draft.as_deref(), now_us())?;
     changed(&app, &state);
     Ok(())
 }
@@ -405,4 +420,47 @@ pub fn show_data_folder(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn quit(app: AppHandle) {
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keyring_core::api::CredentialStoreApi;
+    use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder};
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    #[test]
+    fn only_the_main_window_can_clear_a_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        drafts::save(&conn, "home", "keep me", None).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![capture])
+            .build(tauri::generate_context!(test = true))
+            .unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let send = |label: &str, draft: Option<&str>| {
+            let window = app.get_webview_window(label).unwrap_or_else(|| WebviewWindowBuilder::new(&app, label, WebviewUrl::default()).build().unwrap());
+            get_ipc_response(
+                &window,
+                tauri::webview::InvokeRequest {
+                    cmd: "capture".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: "tauri://localhost".parse().unwrap(),
+                    body: serde_json::json!({ "text": "note", "attachmentIds": [], "target": { "kind": "inbox" }, "draft": draft }).into(),
+                    headers: Default::default(),
+                    invoke_key: INVOKE_KEY.to_string(),
+                },
+            )
+        };
+        let stored = || drafts::list(&app.state::<AppState>().db.lock().unwrap()).unwrap().len();
+
+        send("quick-capture", None).unwrap();
+        assert!(send("quick-capture", Some("home")).is_err());
+        assert_eq!(stored(), 1);
+        assert!(send("main", Some("home")).is_ok());
+        assert_eq!(stored(), 0);
+    }
 }

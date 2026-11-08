@@ -31,6 +31,7 @@ struct PlacesView: View {
     let composer: ComposerModel
     let status: SyncStatus
     let notices: NoticeCenter
+    let onUndoClear: (DraftPlace) -> Void
     let onShow: (String) -> Void
     let onSearch: () -> Void
     let openSettings: () -> Void
@@ -143,7 +144,7 @@ struct PlacesView: View {
             .padding(.bottom, 12)
             ScrollView {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    HomeComposerView(model: composer, store: store, topics: places.topics, wake: wake).padding(.bottom, 20)
+                    HomeComposerView(model: composer, store: store, topics: places.topics, wake: wake, notices: notices).padding(.bottom, 20)
                     VStack(spacing: 0) {
                         row(.inbox, "Inbox", places.inboxCount)
                         Divider().overlay(palette.line)
@@ -171,7 +172,7 @@ struct PlacesView: View {
             .scrollDismissesKeyboard(.interactively)
         }
         .overlay(alignment: .bottom) {
-            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { error = $0 })
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { error = $0 }, onUndoClear: onUndoClear)
         }
         .contentShape(.rect)
         .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }

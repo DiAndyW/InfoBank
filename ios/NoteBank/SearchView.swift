@@ -7,6 +7,7 @@ private enum DayEnd: Identifiable {
 }
 
 struct SearchView: View {
+    let onUndoClear: (DraftPlace) -> Void
     let topics: [TopicPlace]
     let archived: [TopicPlace]
     let onOpen: (String) -> Void
@@ -22,8 +23,9 @@ struct SearchView: View {
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
 
-    init(services: Services, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(services: Services, onUndoClear: @escaping (DraftPlace) -> Void, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         _model = State(wrappedValue: SearchModel(store: services.store, place: place))
+        self.onUndoClear = onUndoClear
         store = services.store
         notices = services.notices
         wake = services.wake
@@ -235,7 +237,7 @@ struct SearchView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottom) {
-            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onOpen, onError: { batch.error = $0 })
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onOpen, onError: { batch.error = $0 }, onUndoClear: onUndoClear)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if batch.selection.isSelecting {

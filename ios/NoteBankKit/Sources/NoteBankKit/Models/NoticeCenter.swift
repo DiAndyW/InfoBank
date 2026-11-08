@@ -3,7 +3,7 @@ import Observation
 
 public struct Notice: Equatable, Identifiable {
     public let id = UUID()
-    public enum Action: Equatable { case show, dismiss, undoTrash, undoMove(Destination), undoBatchTrash([String]) }
+    public enum Action: Equatable { case show, dismiss, undoTrash, undoClear(DraftPlace), undoMove(Destination), undoBatchTrash([String]) }
 
     public var actionTitle: String { action == .show ? "Show" : action == .dismiss ? "Dismiss" : "Undo" }
 
@@ -44,6 +44,10 @@ public final class NoticeCenter {
 
     public func postRestored(itemID: String) {
         current = Notice(message: "Item restored", itemID: itemID, action: .show)
+    }
+
+    public func postCleared(_ place: DraftPlace) {
+        current = Notice(message: "Cleared", itemID: "", action: .undoClear(place))
     }
 
     public func dismiss() { current = nil }

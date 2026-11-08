@@ -9,7 +9,7 @@ type Props = {
   tunnel: boolean;
   topicId: string | null;
   onTunnelChange: (on: boolean) => void;
-  onTopicChange: (id: string | null) => void;
+  onTopicChange: (id: string | null, created?: Topic) => void;
 };
 
 export default function CaptureDestination({ topics, tunnel, topicId, onTunnelChange, onTopicChange }: Props) {
@@ -21,7 +21,8 @@ export default function CaptureDestination({ topics, tunnel, topicId, onTunnelCh
 
   async function create(name: string, from: HTMLElement) {
     try {
-      onTopicChange((await pickerTopic(name)).id);
+      const topic = await pickerTopic(name);
+      onTopicChange(topic.id, topic);
       draftBox(from)?.focus();
       return null;
     } catch (err) {
@@ -64,7 +65,7 @@ export default function CaptureDestination({ topics, tunnel, topicId, onTunnelCh
       <NewTopicDialog onClose={() => setNaming(false)}
         onCreated={(topic) => {
           setNaming(false);
-          onTopicChange(topic.id);
+          onTopicChange(topic.id, topic);
         }} />
     )}
   </>;

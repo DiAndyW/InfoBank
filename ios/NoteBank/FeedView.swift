@@ -35,7 +35,8 @@ struct FeedView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.palette) private var palette
     @State private var model: FeedModel
-    @State private var composer: ComposerModel
+    private let composers: Composers
+    let onUndoClear: (DraftPlace) -> Void
     @State private var highlighted: String?
     @State private var visible = false
     @State private var scrollsToNewest = false
@@ -54,9 +55,11 @@ struct FeedView: View {
     @State private var batch: BatchItemActions
 
     init(
-        place: FeedPlace, topicName: String?, services: Services, status: SyncStatus, openSettings: @escaping () -> Void,
+        place: FeedPlace, topicName: String?, services: Services, composers: Composers, onUndoClear: @escaping (DraftPlace) -> Void, status: SyncStatus, openSettings: @escaping () -> Void,
         onShow: @escaping (String) -> Void, onSearch: @escaping (SearchPlace) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
     ) {
+        self.composers = composers
+        self.onUndoClear = onUndoClear
         self.store = services.store
         self.transfers = services.transfers
         self.place = place
@@ -77,6 +80,19 @@ struct FeedView: View {
         }
         _title = State(wrappedValue: title)
         _model = State(wrappedValue: FeedModel(store: services.store, place: place.query))
+    }
+
+    private var draftPlace: DraftPlace? {
+        switch place {
+        case .inbox: .inbox
+        case .tunnel: .tunnel
+        case .topic(let id): .topic(id)
+        case .trash: nil
+        }
+    }
+
+    private var composer: ComposerModel? {
+        guard let draftPlace, !model.topicUnavailable else { return nil }
         let destination: Destination = switch place {
         case .inbox, .trash: .inbox
         case .tunnel: .tunnel
@@ -84,10 +100,10 @@ struct FeedView: View {
         }
         let placeholder = switch place {
         case .tunnel: "Send to your other devices…"
-        case .topic: "Capture to \(topicName ?? "")"
+        case .topic: "Capture to \(model.topicName ?? title)"
         default: "Capture to the Inbox"
         }
-        _composer = State(wrappedValue: ComposerModel(store: services.store, destination: destination, placeholder: placeholder, onCaptured: services.wake))
+        return composers.model(for: draftPlace, destination: destination, placeholder: placeholder)
     }
 
     private var searchPlace: SearchPlace? {
@@ -233,15 +249,15 @@ struct FeedView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { actionError = $0 })
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { actionError = $0 }, onUndoClear: onUndoClear)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if batch.selection.isSelecting {
                 BatchActionsBar(batch: batch, items: model.items, trash: place == .trash, tunnel: place == .tunnel)
             } else {
                 VStack(spacing: 8) {
-                    if place != .trash && !model.topicUnavailable {
-                        ComposerView(model: composer) {
+                    if let composer, let draftPlace {
+                        ComposerView(model: composer, onClear: { notices.postCleared(draftPlace) }) {
                             scrollsToNewest = true
                             model.reload()
                         }

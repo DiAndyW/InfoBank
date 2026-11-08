@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ComposerView: View {
     @Bindable var model: ComposerModel
+    let onClear: () -> Void
     let onSent: () -> Void
     @Environment(\.palette) private var palette
 
@@ -14,10 +15,26 @@ struct ComposerView: View {
                 ComposerInput(text: $model.text, placeholder: model.placeholder) { provider, type in
                     model.importPaste(provider, type: type)
                 }
+                    .padding(.trailing, model.canClear ? 44 : 0)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
                     .background(palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 20))
                     .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(palette.line))
+                    .overlay(alignment: .topTrailing) {
+                        if model.canClear {
+                            Button {
+                                model.clear()
+                                onClear()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(palette.inkMuted)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Clear")
+                        }
+                    }
                 Button {
                     if model.send() { onSent() }
                 } label: {

@@ -1,6 +1,7 @@
 mod cache;
 mod clipboard;
 mod commands;
+mod drafts;
 mod feed;
 mod files;
 mod ops;
@@ -66,9 +67,14 @@ impl AppState {
 }
 
 fn stage_dropped<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: String, dir: PathBuf, paths: Vec<PathBuf>) {
+    let drop_id = uuid::Uuid::new_v4().to_string();
+    let _ = app.emit_to(label.as_str(), "attachments-staging", &drop_id);
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = app.emit_to(label.as_str(), "attachments-staged", files::stage_paths(&dir, &paths));
+        let result = files::stage_paths(&dir, &paths);
+        let _ = app.emit_to(label.as_str(), "attachments-staged", serde_json::json!({
+            "drop_id": drop_id, "staged": result.staged, "errors": result.errors,
+        }));
     });
 }
 
@@ -187,6 +193,8 @@ pub fn run() {
             commands::set_trash_after_copy,
             commands::list_topics,
             commands::capture,
+            commands::list_drafts,
+            commands::save_draft,
             commands::move_item,
             commands::edit_item,
             commands::discard_item,
@@ -317,12 +325,22 @@ mod tests {
         let quick = WebviewWindowBuilder::new(&app, "quick-capture", WebviewUrl::default()).build().unwrap();
         let (tx, rx) = mpsc::channel();
         let to_main = tx.clone();
-        main.listen("attachments-staged", move |_| to_main.send("main").unwrap());
-        quick.listen("attachments-staged", move |_| tx.send("quick-capture").unwrap());
+        main.listen("attachments-staged", move |_| to_main.send(("main", String::new())).unwrap());
+        let started = tx.clone();
+        quick.listen("attachments-staging", move |event| started.send(("start", event.payload().to_string())).unwrap());
+        quick.listen("attachments-staged", move |event| tx.send(("quick-capture", event.payload().to_string())).unwrap());
 
         stage_dropped(app.handle(), "quick-capture".into(), dir.path().to_path_buf(), vec![]);
 
-        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), "quick-capture");
+        let (kind, start) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(kind, "start");
+        let drop_id: String = serde_json::from_str(&start).unwrap();
+        let (kind, result) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(kind, "quick-capture");
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["drop_id"], drop_id);
+        assert_eq!(result["staged"], serde_json::json!([]));
+        assert_eq!(result["errors"], serde_json::json!([]));
         assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "the main window heard it too");
     }
 }

@@ -58,6 +58,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "double_click_interval_ms") return opts.doubleClickIntervalMs ?? 500;
       if (cmd === "trash_after_copy") return opts.pulledTrashAfterCopy ? opts.pulledTrashAfterCopy() : trashAfterCopy;
       if (cmd === "set_trash_after_copy") { trashAfterCopy = (args as { on: boolean }).on; return null; }
+      if (cmd === "list_drafts") return [];
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
       if (cmd === "list_items") return opts.items ? opts.items(args) : [];
@@ -401,7 +402,7 @@ test("Enter captures and Shift+Enter adds a line", async () => {
   expect(box).toHaveValue("a\nb");
   expect(calls.some((c) => c.cmd === "capture")).toBe(false);
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "a\nb", attachmentIds: [], target: { kind: "inbox" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "inbox", text: "a\nb", attachmentIds: [], target: { kind: "inbox" } } });
   expect(box).toHaveValue("");
 });
 
@@ -660,7 +661,7 @@ test("an Attachment alone can be sent", async () => {
   await userEvent.click(await screen.findByRole("button", { name: "Attach files" }));
   await screen.findByText("scan.png");
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "", attachmentIds: ["s1"], target: { kind: "inbox" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "inbox", text: "", attachmentIds: ["s1"], target: { kind: "inbox" } } });
   await vi.waitFor(() => expect(screen.queryByText("scan.png")).not.toBeInTheDocument());
 });
 
@@ -695,7 +696,7 @@ for (const count of [1, 3]) {
     expect(box).toHaveValue("caption\nsecond line");
     for (const file of staged) await screen.findByText(file.filename);
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(calls).toContainEqual({ cmd: "capture", args: { text: "caption\nsecond line", attachmentIds: staged.map((file) => file.id), target: { kind: "inbox" } } });
+    expect(calls).toContainEqual({ cmd: "capture", args: { draft: "inbox", text: "caption\nsecond line", attachmentIds: staged.map((file) => file.id), target: { kind: "inbox" } } });
   });
 }
 
@@ -1176,7 +1177,7 @@ test("capturing in a Topic files the Item there", async () => {
   expect(await screen.findByPlaceholderText("Write to Inbox…")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Gym" }));
   await userEvent.type(await screen.findByPlaceholderText("Write to Gym…"), "squat 100{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat 100", attachmentIds: [], target: { kind: "topic", id: "g" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "topic:g", text: "squat 100", attachmentIds: [], target: { kind: "topic", id: "g" } } });
 });
 
 test("an archived Topic shows a bar instead of the composer", async () => {
@@ -1624,17 +1625,19 @@ test("a second Move to Trash replaces the Notice, and Undo restores the second I
   expect(calls.filter((c) => c.cmd === "restore_item")).toEqual([{ cmd: "restore_item", args: { itemId: "2" } }]);
 });
 
-test("a new Undo Notice gets its own 6 seconds", async () => {
+test("a new Undo Notice gets its own 4 seconds", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)] });
     render(<App />);
     await trashOf("squat 100", user);
-    await act(async () => vi.advanceTimersByTime(6000));
+    await act(async () => vi.advanceTimersByTime(3000));
     await trashOf("bench 70", user);
-    await act(async () => vi.advanceTimersByTime(4000));
+    await act(async () => vi.advanceTimersByTime(3000));
     expect(screen.getByText("Item moved to Trash")).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(screen.queryByText("Item moved to Trash")).not.toBeInTheDocument();
   } finally {
     vi.useRealTimers();
   }
@@ -3007,25 +3010,27 @@ test("a new desktop opens Home with the sidebar and captures to a chosen Topic o
   await userEvent.click(screen.getByRole("button", { name: "Topic" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Gym" }));
   await userEvent.type(screen.getByRole("textbox", { name: "New Item" }), "squat{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "squat", attachmentIds: [], target: { kind: "topic", id: "g" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "home", text: "squat", attachmentIds: [], target: { kind: "topic", id: "g" } } });
   await userEvent.click(screen.getByRole("switch", { name: "Tunnel" }));
   await userEvent.type(screen.getByRole("textbox", { name: "New Item" }), "transfer{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "transfer", attachmentIds: [], target: { kind: "tunnel" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "home", text: "transfer", attachmentIds: [], target: { kind: "tunnel" } } });
 });
 
-test("Home and Topic feeds share the unsent draft but Topic capture stays fixed", async () => {
+test("Home and Topic feeds keep separate drafts and Topic capture stays fixed", async () => {
   const calls = backend(configured, { topics: [topic("g", "Gym")] });
   localStorage.removeItem("place");
   render(<App />);
   const box = await screen.findByRole("textbox", { name: "New Item" });
   await userEvent.type(box, "keep draft");
   await userEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "Gym" }));
-  expect(box).toHaveValue("keep draft");
+  expect(box).toHaveValue("");
+  await userEvent.type(box, "topic draft");
   expect(screen.queryByRole("switch", { name: "Tunnel" })).not.toBeInTheDocument();
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "keep draft", attachmentIds: [], target: { kind: "topic", id: "g" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "topic:g", text: "topic draft", attachmentIds: [], target: { kind: "topic", id: "g" } } });
   await userEvent.click(screen.getByRole("button", { name: "Home" }));
   expect(screen.getByRole("switch", { name: "Tunnel" })).toBeInTheDocument();
+  expect(box).toHaveValue("keep draft");
 });
 
 test("typing a new name in the destination offers Create, which picks the new Topic without sending the draft", async () => {
@@ -3044,7 +3049,7 @@ test("typing a new name in the destination offers Create, which picks the new To
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   expect(box).toHaveFocus();
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "tile ideas", attachmentIds: [], target: { kind: "topic", id: "new" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "home", text: "tile ideas", attachmentIds: [], target: { kind: "topic", id: "new" } } });
 });
 
 test("typing an open Topic's name offers no Create, and Enter picks that Topic", async () => {
@@ -3144,7 +3149,7 @@ test("Home drops a now-archived destination without discarding the draft", async
   expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Inbox");
   expect(box).toHaveValue("keep");
   await userEvent.type(box, "{Enter}");
-  expect(calls).toContainEqual({ cmd: "capture", args: { text: "keep", attachmentIds: [], target: { kind: "inbox" } } });
+  expect(calls).toContainEqual({ cmd: "capture", args: { draft: "home", text: "keep", attachmentIds: [], target: { kind: "inbox" } } });
 });
 
 test("Tunnel removal uses the native transition after the saved deletion arrives", async () => {

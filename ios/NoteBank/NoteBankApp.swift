@@ -61,7 +61,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [Route] = []
     @State private var places: PlacesModel
-    @State private var home: ComposerModel
+    @State private var composers: Composers
     @State private var setup: SettingsModel
     @State private var status = SyncStatus.notConfigured
     @State private var showingSettings = false
@@ -75,7 +75,25 @@ struct RootView: View {
         self.services = services
         _places = State(wrappedValue: PlacesModel(store: services.store))
         _setup = State(wrappedValue: services.settingsModel())
-        _home = State(wrappedValue: ComposerModel(store: services.store, destination: .inbox, placeholder: "Capture something…", onCaptured: services.wake))
+        _composers = State(wrappedValue: Composers(store: services.store, onCaptured: services.wake))
+    }
+
+    private func undoClear(_ place: DraftPlace) {
+        let destination: Destination
+        let placeholder: String
+        switch place {
+        case .home: composers.home.undoClear(); return
+        case .inbox:
+            destination = .inbox
+            placeholder = "Capture to the Inbox"
+        case .tunnel:
+            destination = .tunnel
+            placeholder = "Send to your other devices…"
+        case .topic(let id):
+            destination = .topic(id)
+            placeholder = "Capture to \(places.places.topics.first { $0.id == id }?.name ?? "")"
+        }
+        composers.model(for: place, destination: destination, placeholder: placeholder).undoClear()
     }
 
     private func itemPlace(_ itemID: String) -> FeedPlace {
@@ -148,7 +166,7 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: home, status: status, notices: services.notices, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
+                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: composers.home, status: status, notices: services.notices, onUndoClear: undoClear, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Route.self) { route in
                             switch route {
@@ -157,6 +175,8 @@ struct RootView: View {
                                     place: place,
                                     topicName: (places.places.topics + places.archived).first { .topic($0.id) == place }?.name,
                                     services: services,
+                                    composers: composers,
+                                    onUndoClear: undoClear,
                                     status: status,
                                     openSettings: { showingSettings = true },
                                     onShow: show,
@@ -164,7 +184,7 @@ struct RootView: View {
                                     foregrounds: foregrounds,
                                     target: $target)
                             case .search(let place):
-                                SearchView(services: services, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
+                                SearchView(services: services, onUndoClear: undoClear, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
                             }
                         }
                 }
@@ -204,6 +224,12 @@ struct RootView: View {
             path = []
             showingSettings = false
         }
+        .onChange(of: places.places.topics) { _, topics in
+            if let id = composers.home.homeTopicID, !topics.contains(where: { $0.id == id }) {
+                composers.home.homeTopicID = nil
+                composers.home.dropMissingTopic(open: topics)
+            }
+        }
         .onChange(of: places.places.topics + places.archived) { _, topics in
             if path.contains(where: { route in
                 if case .place(.topic(let id)) = route { return !topics.contains { $0.id == id } }
@@ -211,6 +237,7 @@ struct RootView: View {
             }) { path = [] }
         }
         .onChange(of: path) { _, path in
+            composers.flush()
             if case .place = path.last { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
             let trail = path.compactMap { if case .place(let place) = $0 { place } else { nil } }
             savedPlace = switch trail.last {
@@ -222,6 +249,7 @@ struct RootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase != .active { composers.flush() }
             switch phase {
             case .active:
                 backgroundEpisode += 1

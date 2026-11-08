@@ -150,12 +150,14 @@ struct ItemNoticeView: View {
     let wake: () -> Void
     let onShow: (String) -> Void
     let onError: (String) -> Void
+    let onUndoClear: (DraftPlace) -> Void
 
     var body: some View {
         if let notice = notices.current {
             NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: {
                 do {
                     switch notice.action {
+                    case .undoClear(let place): onUndoClear(place); notices.dismiss(); return
                     case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
                     case .undoBatchTrash(let ids): try store.restore(itemIDs: ids, nowUs: Time.nowUs())
                     case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())

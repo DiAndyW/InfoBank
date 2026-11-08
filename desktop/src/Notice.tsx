@@ -21,9 +21,9 @@ export default function Notice({ message, action, onClose }: { message: string; 
 
   useEffect(() => {
     if (held || !focused || busy) return;
-    const timer = setTimeout(onClose, action?.label === "Undo" ? 6000 : 4000);
+    const timer = setTimeout(onClose, 4000);
     return () => clearTimeout(timer);
-  }, [held, focused, action?.label, busy]);
+  }, [held, focused, busy]);
 
   return (
     <div
