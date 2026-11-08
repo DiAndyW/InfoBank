@@ -208,7 +208,12 @@ export default function App() {
     if (!undo || editing || (covered && !notice?.inSearch)) return;
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement).closest("input, textarea, [contenteditable]");
-      if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || typing || dialogOpen()) return;
+      if (e.key !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || dialogOpen()) return;
+      if (e.defaultPrevented) {
+        if (notice?.message === "Cleared") setNotice(current => current?.id === undoID ? null : current);
+        return;
+      }
+      if (typing) return;
       e.preventDefault();
       void Promise.resolve(undo.onAction()).then(result => { if (result !== false) setNotice(current => current?.id === undoID ? null : current); });
     };

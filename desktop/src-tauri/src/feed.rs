@@ -125,6 +125,7 @@ pub fn capture(
     text: &str,
     attachment_ids: &[String],
     target: &Target,
+    draft: Option<&str>,
     now_us: i64,
 ) -> Result<(), String> {
     let text = checked_text(text)?;
@@ -158,6 +159,9 @@ pub fn capture(
         pin(&tx, a, now_us)?;
     }
     ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), tunnel, text, attachments }, now_us)?;
+    if let Some(place) = draft {
+        tx.execute("DELETE FROM drafts WHERE place = ?1", [place]).map_err(|e| e.to_string())?;
+    }
     tx.commit().map_err(|e| e.to_string())
 }
 
@@ -429,10 +433,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_deletes_its_draft_in_the_same_transaction() {
+        let (d, conn) = fresh();
+        crate::drafts::save(&conn, "inbox", "b", None).unwrap();
+        capture(&conn, d.path(), "b", &[], &Target::Inbox, Some("inbox"), 1).unwrap();
+        assert!(crate::drafts::list(&conn).unwrap().is_empty());
+        let items = list_items(&conn, &View::Inbox, None, 0).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text.as_deref(), Some("b"));
+        assert_eq!(count(&conn, "outbox"), 1);
+
+        crate::drafts::save(&conn, "inbox", "kept", None).unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_draft_delete BEFORE DELETE ON drafts
+            BEGIN SELECT RAISE(ABORT, 'refused'); END;").unwrap();
+        assert!(capture(&conn, d.path(), "kept", &[], &Target::Inbox, Some("inbox"), 2).is_err());
+        assert_eq!(count(&conn, "items"), 1);
+        assert_eq!(count(&conn, "outbox"), 1);
+        assert_eq!(crate::drafts::list(&conn).unwrap()[0].text, "kept");
+    }
+
+    #[test]
+    fn failed_capture_keeps_the_draft() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO topics (id, name, archived_at) VALUES ('x', 'Archived', 1)", []).unwrap();
+        crate::drafts::save(&conn, "topic:x", "draft", None).unwrap();
+        assert!(capture(&conn, d.path(), "draft", &[], &Target::Topic { id: "x".into() }, Some("topic:x"), 1).is_err());
+        assert_eq!(crate::drafts::list(&conn).unwrap(), vec![crate::drafts::Draft {
+            place: "topic:x".into(), text: "draft".into(), home_topic_id: None,
+        }]);
+        assert_eq!(count(&conn, "items"), 0);
+        assert_eq!(count(&conn, "outbox"), 0);
+    }
+
+    #[test]
     fn batch_trash_and_restore_are_atomic_and_queue_each_item_once() {
         let (d, conn) = fresh();
         for text in ["first", "second"] {
-            capture(&conn, d.path(), text, &[], &Target::Tunnel, 1).unwrap();
+            capture(&conn, d.path(), text, &[], &Target::Tunnel, None, 1).unwrap();
         }
         let ids: Vec<String> = list_items(&conn, &View::Tunnel, None, 0).unwrap().into_iter().map(|i| i.id).collect();
         conn.execute("DELETE FROM outbox", []).unwrap();
@@ -452,8 +489,8 @@ mod tests {
     #[test]
     fn batch_rejects_unavailable_or_wrong_state_items_without_partial_changes() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "first", &[], &Target::Inbox, 1).unwrap();
-        capture(&conn, d.path(), "second", &[], &Target::Inbox, 2).unwrap();
+        capture(&conn, d.path(), "first", &[], &Target::Inbox, None, 1).unwrap();
+        capture(&conn, d.path(), "second", &[], &Target::Inbox, None, 2).unwrap();
         let ids: Vec<String> = list_items(&conn, &View::Inbox, None, 0).unwrap().into_iter().map(|i| i.id).collect();
         conn.execute("UPDATE items SET sync_error = 'invalid' WHERE id = ?1", [&ids[1]]).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
@@ -480,7 +517,7 @@ mod tests {
     #[test]
     fn capture_writes_the_item_and_its_op_together() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "  hello\n", &[], &Target::Inbox, 1_760_000_000_123_456).unwrap();
+        capture(&conn, d.path(), "  hello\n", &[], &Target::Inbox, None, 1_760_000_000_123_456).unwrap();
 
         let items = list_items(&conn, &View::All, None, 0).unwrap();
         assert_eq!(items.len(), 1);
@@ -507,12 +544,12 @@ mod tests {
         let (d, conn) = fresh();
         let too_long = "x".repeat(MAX_ITEM_TEXT_BYTES + 1);
         for text in ["", "  \n ", "a\0b", too_long.as_str()] {
-            assert!(capture(&conn, d.path(), text, &[], &Target::Inbox, 1).is_err(), "accepted {:.20?}", text);
+            assert!(capture(&conn, d.path(), text, &[], &Target::Inbox, None, 1).is_err(), "accepted {:.20?}", text);
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
         // The limit itself is allowed, so the guard above is the byte limit and not something stricter.
-        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), &"x".repeat(MAX_ITEM_TEXT_BYTES), &[], &Target::Inbox, None, 1).unwrap();
     }
 
     #[test]
@@ -577,7 +614,7 @@ mod tests {
     #[test]
     fn an_item_stops_pending_when_its_op_leaves_the_outbox() {
         let (d, conn) = fresh();
-        capture(&conn, d.path(), "hi", &[], &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), "hi", &[], &Target::Inbox, None, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(!list_items(&conn, &View::All, None, 0).unwrap()[0].pending);
     }
@@ -590,7 +627,7 @@ mod tests {
     fn an_attachment_is_captured_with_its_item_in_one_transaction() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), &Target::Inbox, 1_760_000_000_000_000).unwrap();
+        capture(&conn, d.path(), "  ", std::slice::from_ref(&id), &Target::Inbox, None, 1_760_000_000_000_000).unwrap();
 
         let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
         assert_eq!(item.text, None);
@@ -617,18 +654,18 @@ mod tests {
         let (d, conn) = fresh();
         let never_staged = uuid::Uuid::new_v4().to_string();
         for bad in ["../files", never_staged.as_str()] {
-            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], &Target::Inbox, 1).is_err(), "accepted {bad}");
+            assert!(capture(&conn, d.path(), "hi", &[bad.to_string()], &Target::Inbox, None, 1).is_err(), "accepted {bad}");
         }
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
-        assert!(capture(&conn, d.path(), " ", &[], &Target::Inbox, 1).is_err(), "blank with no attachments");
+        assert!(capture(&conn, d.path(), " ", &[], &Target::Inbox, None, 1).is_err(), "blank with no attachments");
     }
 
     #[test]
     fn an_item_stays_pending_until_its_files_are_uploaded() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), "photo", std::slice::from_ref(&id), &Target::Inbox, None, 1).unwrap();
         conn.execute("DELETE FROM outbox", []).unwrap();
         assert!(list_items(&conn, &View::All, None, 0).unwrap()[0].pending, "the file isn't on the Server yet");
         conn.execute("UPDATE attachments SET uploaded = 1", []).unwrap();
@@ -704,7 +741,7 @@ mod tests {
     fn discard_removes_a_refused_capture_and_its_files() {
         let (d, conn) = fresh();
         let id = png(&d);
-        capture(&conn, d.path(), "hi", std::slice::from_ref(&id), &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), "hi", std::slice::from_ref(&id), &Target::Inbox, None, 1).unwrap();
         conn.execute("UPDATE items SET sync_error = 'invalid'", []).unwrap();
         let file = d.path().join("files").join(&id).join("scan.png");
         assert!(file.exists());
@@ -895,7 +932,7 @@ mod tests {
     fn the_feed_marks_files_that_can_run_code() {
         let (d, conn) = fresh();
         let ids = ["setup.command", "report.pdf"].map(|n| crate::files::stage_bytes(d.path(), n, b"x").unwrap().id);
-        capture(&conn, d.path(), "", &ids, &Target::Inbox, 1).unwrap();
+        capture(&conn, d.path(), "", &ids, &Target::Inbox, None, 1).unwrap();
         let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
         assert_eq!(item.attachments.iter().map(|a| a.runnable).collect::<Vec<_>>(), [true, false]);
     }
@@ -918,7 +955,7 @@ mod tests {
     fn capture_files_the_item_in_the_topic() {
         let (d, conn) = fresh();
         with_topics(&conn);
-        capture(&conn, d.path(), "squat 100", &[], &Target::Topic { id: "t".into() }, 1).unwrap();
+        capture(&conn, d.path(), "squat 100", &[], &Target::Topic { id: "t".into() }, None, 1).unwrap();
         let ids: Vec<String> = list_items(&conn, &View::Topic { id: "t".into() }, None, 0).unwrap().into_iter().map(|i| i.id).collect();
         assert_eq!(ids.len(), 1);
         assert_eq!(outbox_ops(&conn)[0]["topic_id"], "t");
@@ -930,7 +967,7 @@ mod tests {
         with_topics(&conn);
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
         for id in ["a", "d", "nope"] {
-            assert!(capture(&conn, d.path(), "hi", &[], &Target::Topic { id: id.into() }, 1).is_err(), "captured into {id}");
+            assert!(capture(&conn, d.path(), "hi", &[], &Target::Topic { id: id.into() }, None, 1).is_err(), "captured into {id}");
             assert!(move_item(&conn, "i", &Target::Topic { id: id.into() }, 1).is_err(), "moved into {id}");
         }
         assert_eq!(count(&conn, "items"), 1);
@@ -972,7 +1009,7 @@ mod tests {
         let (d, conn) = fresh();
         with_topics(&conn);
         let target: Target = serde_json::from_value(serde_json::json!({"kind":"tunnel"})).unwrap();
-        capture(&conn, d.path(), "transfer", &[], &target, 1).unwrap();
+        capture(&conn, d.path(), "transfer", &[], &target, None, 1).unwrap();
         let id = list_items(&conn, &View::Tunnel, None, 0).unwrap()[0].id.clone();
         assert_eq!(outbox_ops(&conn)[0]["tunnel"], true);
         assert_eq!(outbox_ops(&conn)[0]["topic_id"], serde_json::Value::Null);

@@ -10,23 +10,9 @@ struct NoticeView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(message)
-                .font(.plex(.sans, 14, relativeTo: .callout))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onAction) {
-                Text(actionTitle)
-                    .font(.plex(.sansSemibold, 14, relativeTo: .callout))
-                    .underline()
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 44)
-            }
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel("Dismiss")
+        ViewThatFits(in: .horizontal) {
+            row(wrapping: false)
+            row(wrapping: true)
         }
         .foregroundStyle(palette.surface)
         .padding(.leading, 12)
@@ -36,8 +22,31 @@ struct NoticeView: View {
         .accessibilityElement(children: .contain)
         .task(id: "\(scenePhase == .active)\(message)") {
             guard scenePhase == .active else { return }
-            do { try await Task.sleep(for: .seconds(actionTitle == "Undo" ? 6 : 4)) } catch { return }
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
             onDismiss()
+        }
+    }
+
+    private func row(wrapping: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(message)
+                .font(.plex(.sans, 14, relativeTo: .callout))
+                .fixedSize(horizontal: !wrapping, vertical: wrapping)
+                .frame(maxWidth: wrapping ? .infinity : nil, alignment: .leading)
+            Button(action: onAction) {
+                Text(actionTitle)
+                    .font(.plex(.sansSemibold, 14, relativeTo: .callout))
+                    .underline()
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 44)
+            }
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Dismiss")
         }
     }
 }

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import Composer from "./Composer";
 import QuickCapture from "./QuickCapture";
 import type { Staged, Topic } from "./api";
@@ -75,7 +75,7 @@ test("Enter captures into the Inbox and dismisses, leaving the text until the bo
   render(<QuickCapture />);
   await userEvent.type(box(), "milk{Enter}");
   await waitFor(() => expect(count(calls, "dismiss_quick_capture")).toBe(1));
-  expect(calls.find((c) => c.cmd === "capture")!.args).toEqual({ text: "milk", attachmentIds: [], target: { kind: "inbox" } });
+  expect(calls.find((c) => c.cmd === "capture")!.args).toEqual({ text: "milk", attachmentIds: [], draft: null, target: { kind: "inbox" } });
   expect(box()).toHaveValue("milk");
   await act(() => emit("quick-capture-hidden"));
   expect(box()).toHaveValue("");
@@ -162,7 +162,7 @@ test("New Topic… opens the New Topic dialog, which makes the Topic and returns
   expect(count(calls, "capture")).toBe(0);
   expect(box()).toHaveFocus();
   await userEvent.type(box(), "{Enter}");
-  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args).toEqual({ text: "tile ideas", attachmentIds: [], target: { kind: "topic", id: "new" } }));
+  await waitFor(() => expect(calls.find((c) => c.cmd === "capture")?.args).toEqual({ text: "tile ideas", attachmentIds: [], draft: null, target: { kind: "topic", id: "new" } }));
 });
 
 test("Escape steps back one level at a time; an archived name is refused in place", async () => {
@@ -327,7 +327,7 @@ test("quick capture remembers the Tunnel switch, hides the picker, and sends to 
   expect(box()).toHaveAttribute("placeholder", "Send to your other devices…");
   expect(box().closest(".nb-composer")).toHaveClass("is-tunnel");
   await userEvent.type(box(), "transfer{Enter}");
-  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "transfer", attachmentIds: [], target: { kind: "tunnel" } } }));
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "transfer", attachmentIds: [], draft: null, target: { kind: "tunnel" } } }));
   await act(() => emit("quick-capture-hidden"));
   await act(() => emit("quick-capture-shown"));
   expect(screen.getByRole("switch", { name: "Tunnel" })).toBeChecked();
@@ -337,7 +337,7 @@ test("quick capture remembers the Tunnel switch, hides the picker, and sends to 
   await userEvent.click(screen.getByRole("switch", { name: "Tunnel" }));
   expect(picker()).toHaveTextContent("Inbox");
   await userEvent.type(box(), "normal{Enter}");
-  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "normal", attachmentIds: [], target: { kind: "inbox" } } }));
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "capture", args: { text: "normal", attachmentIds: [], draft: null, target: { kind: "inbox" } } }));
 });
 
 
@@ -360,4 +360,19 @@ test("hiding quick capture also closes its destination menu", async () => {
   await act(() => emit("quick-capture-hidden"));
   await act(() => emit("quick-capture-shown"));
   expect(screen.queryByRole("menu", { name: "Topic" })).not.toBeInTheDocument();
+});
+
+test("quick capture has no drafts", async () => {
+  const calls = quickBackend();
+  render(<QuickCapture />);
+  await screen.findByRole("textbox", { name: "New Item" });
+  vi.useFakeTimers();
+  try {
+    fireEvent.change(box(), { target: { value: "hello" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(count(calls, "save_draft")).toBe(0);
+    expect(count(calls, "list_drafts")).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
 });

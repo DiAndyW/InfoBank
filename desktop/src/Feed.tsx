@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEve
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedAttachment, type FeedItem, type Topic, type View, type Target } from "./api";
+import { listDrafts, type Draft, doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedAttachment, type FeedItem, type Topic, type View, type Target } from "./api";
 import ImageViewer from "./ImageViewer";
 import { Attachments, viewable } from "./attachments";
 import { copyWholeItem } from "./api";
@@ -56,6 +56,17 @@ function refusal(reason: string) {
 export default function Feed({ home, view, topics, covered, editor, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [homeTunnel, setHomeTunnel] = useState(() => localStorage.getItem("tunnelSwitch") === "true");
   const [homeTopic, setHomeTopic] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Draft[] | null>(null);
+  const homeTopicChanged = useRef(false);
+  const [homeCreated, setHomeCreated] = useState<Topic | null>(null);
+  useEffect(() => {
+    let active = true;
+    listDrafts().then((rows) => {
+      if (!active) return;
+      setDrafts(rows);
+    }).catch((err) => onError("Couldn't load drafts", err));
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const changed = (event: StorageEvent) => {
       if (event.key === "tunnelSwitch") setHomeTunnel(event.newValue === "true");
@@ -63,8 +74,12 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, []);
-  const homeChosen = topics.find((t) => t.id === homeTopic && !t.archived);
-  useEffect(() => { if (homeTopic && !homeChosen) setHomeTopic(null); }, [topics]);
+  const listedHomeTopic = topics.find((t) => t.id === homeTopic && !t.archived);
+  const homeChosen = listedHomeTopic ?? (homeCreated?.id === homeTopic ? homeCreated : undefined);
+  useEffect(() => {
+    setHomeCreated(null);
+    if (homeTopic && !listedHomeTopic) setHomeTopic(null);
+  }, [topics]);
   const displayed = useRef<{ key: string; items: FeedItem[] }>({ key: "", items: [] });
   const [viewing, setViewing] = useState<{ item: string; attachment: string; images: FeedAttachment[]; view: string } | null>(null);
   const viewingRef = useRef(viewing);
@@ -595,7 +610,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
           </button>
         </div>
       )}
-      {/* Hidden, not unmounted: the draft and staged files are shared by every view. */}
+      {/* Keep the per-place drafts alive across navigation. */}
       {trash && (
         <div className="nb-archived-bar">
           <Icon name="trash" />
@@ -604,8 +619,10 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
       )}
       <div hidden={noComposer || selection.selecting} className="nb-main-composer">
         <Composer
+          onNotice={onNotice}
+          drafts={{ place: home ? "home" : view.kind === "topic" ? `topic:${view.id}` : view.kind, initial: drafts, homeTopicId: homeChosen?.id ?? null, restoreHomeTopic: (id) => { if (!homeTopicChanged.current) setHomeTopic(id); } }}
           acceptsDrops={!noComposer && !covered && !viewing}
-          picker={home ? <CaptureDestination topics={topics.filter((t) => !t.archived)} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={setHomeTopic} /> : undefined}
+          picker={home ? <CaptureDestination topics={[...topics.filter((t) => !t.archived), ...(homeCreated && !topics.some((t) => t.id === homeCreated.id) ? [homeCreated] : [])]} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={(id, created) => { homeTopicChanged.current = true; if (created) setHomeCreated(created); setHomeTopic(id); }} /> : undefined}
           target={home ? homeTunnel ? { kind: "tunnel" } : homeChosen ? { kind: "topic", id: homeChosen.id } : { kind: "inbox" } : view.kind === "topic" ? { kind: "topic", id: view.id } : view.kind === "tunnel" ? { kind: "tunnel" } : { kind: "inbox" }}
           placeholder={home ? homeTunnel ? "Send to your other devices…" : "Capture something…" : view.kind === "tunnel" ? "Send to your other devices…" : `Write to ${current ? current.name : "Inbox"}…`}
           onCaptured={() => {

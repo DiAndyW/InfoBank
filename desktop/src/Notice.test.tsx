@@ -2,7 +2,7 @@ import { act, fireEvent, render } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import Notice from "./Notice";
 
-for (const [label, duration] of [[undefined, 4000], ["Show", 4000], ["Undo", 6000]] as const) {
+for (const [label, duration] of [[undefined, 4000], ["Show", 4000], ["Undo", 4000]] as const) {
   test(`${label ?? "informational"} notice expires after ${duration}ms of active display`, async () => {
     vi.useFakeTimers();
     const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -27,7 +27,9 @@ test("Undo stays available while hovered and restarts its window on release", as
     await act(async () => vi.advanceTimersByTime(10000));
     expect(close).not.toHaveBeenCalled();
     fireEvent.mouseLeave(getByRole("status"));
-    await act(async () => vi.advanceTimersByTime(6000));
+    await act(async () => vi.advanceTimersByTime(3999));
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(1));
     expect(close).toHaveBeenCalledOnce();
   } finally { focus.mockRestore(); vi.useRealTimers(); }
 });

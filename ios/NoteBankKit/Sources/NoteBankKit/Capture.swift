@@ -21,7 +21,7 @@ public enum Destination: Hashable, Sendable {
 extension Store {
     static let maxItemTextBytes = 1 << 20
 
-    public func capture(text: String, attachmentIDs: [String] = [], to destination: Destination, nowUs: Int64) throws -> String {
+    public func capture(text: String, attachmentIDs: [String] = [], to destination: Destination, draft: DraftPlace? = nil, nowUs: Int64) throws -> String {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.utf8.count <= Store.maxItemTextBytes else { throw CaptureError.tooLong }
         guard !text.utf8.contains(0) else { throw CaptureError.unsavableCharacter }
@@ -60,6 +60,7 @@ extension Store {
                 try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [attachment["id"] as! String])
             }
             try db.execute(sql: "INSERT INTO outbox (op) VALUES (?)", arguments: [String(decoding: op, as: UTF8.self)])
+            if let draft { try db.execute(sql: "DELETE FROM drafts WHERE place = ?", arguments: [draft.key]) }
         }
         return itemID
     }

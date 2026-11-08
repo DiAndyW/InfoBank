@@ -1,11 +1,12 @@
-import { useRef, useState, type ClipboardEvent } from "react";
+import { useRef, useState, type Dispatch, type SetStateAction, type ClipboardEvent } from "react";
 import { MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, type Staged, type StagedFiles } from "./api";
 import { formatSize } from "./attachments";
 import Dialog from "./Dialog";
 import { Icon } from "./icons";
 
-export function useStaging() {
-  const [staged, setStaged] = useState<Staged[]>([]);
+export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetStateAction<Staged[]>> }) {
+  const [localStaged, setLocalStaged] = useState<Staged[]>([]);
+  const { staged, setStaged } = state ?? { staged: localStaged, setStaged: setLocalStaged };
   const latest = useRef(staged);
   latest.current = staged;
   const [errors, setErrors] = useState<string[]>([]);

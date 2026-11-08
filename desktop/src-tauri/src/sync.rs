@@ -927,12 +927,12 @@ pub(crate) mod server_tests {
         let a = device(&server, &server.secret);
         let b = device(&server, &server.secret);
 
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "captured offline", &[], &feed::Target::Inbox, None, T0).unwrap();
         assert!(matches!(sync(&a).await, Err(SyncError::Failed(_))));
         assert_eq!(count(&a, "outbox"), 1, "a failed push lost the op");
 
         server.start();
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], &feed::Target::Inbox, T0 + 1_000_000).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "captured later", &[], &feed::Target::Inbox, None, T0 + 1_000_000).unwrap();
         assert_eq!(sync(&b).await, Ok(true));
         assert_eq!(sync(&a).await, Ok(true));
         assert_eq!(count(&a, "outbox"), 0);
@@ -947,7 +947,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, &server.secret);
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "once", &[], &feed::Target::Inbox, None, T0).unwrap();
         let op: String = a.db.lock().unwrap().query_row("SELECT op FROM outbox", [], |r| r.get(0)).unwrap();
         sync(&a).await.unwrap();
         a.db.lock().unwrap().execute("INSERT INTO outbox (op) VALUES (?1)", [&op]).unwrap();
@@ -963,7 +963,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let a = device(&server, "not-the-secret");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, None, T0).unwrap();
         assert_eq!(sync(&a).await, Err(SyncError::Unauthorized));
         assert_eq!(count(&a, "outbox"), 1);
     }
@@ -974,7 +974,7 @@ pub(crate) mod server_tests {
         server.start();
         let a = device(&server, &server.secret);
         for i in 0..501 {
-            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], &feed::Target::Inbox, T0 + i).unwrap();
+            feed::capture(&a.db.lock().unwrap(), &a.dir, &format!("item {i}"), &[], &feed::Target::Inbox, None, T0 + i).unwrap();
         }
         sync(&a).await.unwrap();
         assert_eq!(count(&a, "outbox"), 0);
@@ -1106,7 +1106,7 @@ pub(crate) mod server_tests {
 
     fn capture_png(d: &Device, text: &str) -> String {
         let id = crate::files::stage_bytes(&d.dir, "pixel.png", PIXEL_PNG).unwrap().id;
-        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&d.db.lock().unwrap(), &d.dir, text, std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
         id
     }
 
@@ -1231,7 +1231,7 @@ pub(crate) mod server_tests {
         let a = device_at(&url, "secret");
         let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
         let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, None, T0).unwrap();
         a.db.lock().unwrap().execute("DELETE FROM outbox", []).unwrap();
         a.db.lock().unwrap().execute("UPDATE attachments SET uploaded = 1", []).unwrap();
         assert_eq!(crate::thumbnails::upload(&a, &url, "secret").await, Ok(false));
@@ -1258,7 +1258,7 @@ pub(crate) mod server_tests {
         let a = device(&server, &server.secret);
         let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
         let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, None, T0).unwrap();
         let (op, device_id): (String, String) = a.db.lock().unwrap().query_row(
             "SELECT op, (SELECT device_id FROM device) FROM outbox", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
         let body = serde_json::json!({"device_id": device_id, "ops": [serde_json::from_str::<serde_json::Value>(&op).unwrap()]});
@@ -1283,7 +1283,7 @@ pub(crate) mod server_tests {
         let a = device(&server, &server.secret);
         let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
         let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "HEIC", std::slice::from_ref(&staged.id), &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         assert!(flag(&a, "has_thumbnail", &staged.id));
         let b = device(&server, &server.secret);
@@ -1347,7 +1347,7 @@ pub(crate) mod server_tests {
         });
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
 
         let started = std::time::Instant::now();
         assert_eq!(upload_pending(&a, &url, "s").await, Ok(true));
@@ -1397,7 +1397,7 @@ pub(crate) mod server_tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let a = device_at(&url, "s");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "kept", &[], &feed::Target::Inbox, None, T0).unwrap();
         let op_id: String = a.db.lock().unwrap().query_row("SELECT json_extract(op, '$.id') FROM outbox", [], |r| r.get(0)).unwrap();
         let results = serde_json::json!({"results": [{"op_id": op_id, "status": "rejected", "reason": "invalid"}]});
         switch_then_reply(listener, a._dir.path().join("notebank.db"), results.to_string());
@@ -1414,7 +1414,7 @@ pub(crate) mod server_tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "note.bin", b"data").unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
         switch_then_reply(listener, a._dir.path().join("notebank.db"), String::new());
 
         assert_eq!(upload_pending(&a, &url, "s").await, Ok(false));
@@ -1444,7 +1444,7 @@ pub(crate) mod server_tests {
         let url = stall(b"");
         let a = device_at(&url, "s");
         let id = crate::files::stage_bytes(&a.dir, "big.bin", &vec![0; 16 << 20]).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
         let res = tokio::time::timeout(IDLE_TIMEOUT * 3, upload_pending(&a, &url, "s")).await.expect("never gave up");
         assert!(matches!(res, Err(SyncError::Failed(e)) if e.contains("stalled")));
     }
@@ -1568,7 +1568,7 @@ pub(crate) mod server_tests {
         let a = device(&server, &server.secret);
         let name = format!("{}.png", "x".repeat(251));
         let id = crate::files::stage_bytes(&a.dir, &name, PIXEL_PNG).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         let b = device(&server, &server.secret);
         sync(&b).await.unwrap();
@@ -1583,7 +1583,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let b = device(&server, &server.secret);
-        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&b.db.lock().unwrap(), &b.dir, "from b", &[], &feed::Target::Inbox, None, T0).unwrap();
         sync(&b).await.unwrap();
         let a = device(&server, &server.secret);
         let id = capture_png(&a, "photo");
@@ -1619,7 +1619,7 @@ pub(crate) mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, None, T0 + SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
@@ -1654,7 +1654,7 @@ pub(crate) mod server_tests {
 
         topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 10 * SECOND).unwrap();
         sync(&b).await.unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, T0 + 20 * SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, None, T0 + 20 * SECOND).unwrap();
         sync(&a).await.unwrap();
 
         let item = only_item(&a);
@@ -1690,7 +1690,7 @@ pub(crate) mod server_tests {
     async fn two_devices_on_one_item(server: &mut TestServer) -> (Device, Device, String) {
         server.start();
         let (a, b) = (device(server, &server.secret), device(server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
@@ -1831,7 +1831,7 @@ pub(crate) mod server_tests {
     async fn ops_on_a_refused_capture_are_silent() {
         let (url, _) = fake_server(|req| answers(req, &[("rejected", "invalid"), ("rejected", "not_found")]), 200);
         let a = device_at(&url, "secret");
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, None, T0).unwrap();
         let item = only_item(&a);
         edit(&a, &item, "shoes, size 9", 0, T0 + SECOND);
 
@@ -1876,8 +1876,8 @@ pub(crate) mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "keep me", &[], &feed::Target::Topic { id: gym.clone() }, T0 + SECOND).unwrap();
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], &feed::Target::Topic { id: gym.clone() }, T0 + 2 * SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "keep me", &[], &feed::Target::Topic { id: gym.clone() }, None, T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "bin me", &[], &feed::Target::Topic { id: gym.clone() }, None, T0 + 2 * SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let items = feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap();
@@ -1900,7 +1900,7 @@ pub(crate) mod server_tests {
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let gym = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, T0 + SECOND).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, None, T0 + SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         assert_eq!(place(&b, &only_item(&b)), (Some(gym), false));
@@ -1961,7 +1961,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         let item = only_item(&a);
 
@@ -1985,7 +1985,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);
@@ -2012,7 +2012,7 @@ pub(crate) mod server_tests {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
-        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, T0).unwrap();
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "shoes", &[], &feed::Target::Inbox, None, T0).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
         let item = only_item(&a);

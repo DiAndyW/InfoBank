@@ -4,24 +4,77 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 public final class ComposerModel {
-    public var text = ""
-    public private(set) var attachments: [StagedAttachment] = []
+    public var text = "" {
+        didSet {
+            if !text.isEmpty { cleared = nil }
+            scheduleDraftSave()
+        }
+    }
+    public var homeTopicID: String? {
+        didSet { if draft == .home { scheduleDraftSave() } }
+    }
+    public private(set) var attachments: [StagedAttachment] = [] {
+        didSet { if !attachments.isEmpty { cleared = nil } }
+    }
     private var imports = 0
     public var isImporting: Bool { imports > 0 }
     public private(set) var error: String?
-    public let placeholder: String
+    public var placeholder: String
     public var destination: Destination
 
+    private let draft: DraftPlace?
+    private var pendingSave: Task<Void, Never>?
+    private var cleared: (text: String, attachments: [StagedAttachment])?
+    private var isSending = false
     private let store: Store
     private let onCaptured: @MainActor () -> Void
 
     public var canSend: Bool { !isImporting && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty) }
 
-    public init(store: Store, destination: Destination, placeholder: String, onCaptured: @escaping @MainActor () -> Void) {
+    public init(store: Store, destination: Destination, placeholder: String, draft: DraftPlace? = nil, initial: Draft? = nil, onCaptured: @escaping @MainActor () -> Void) {
         self.store = store
         self.onCaptured = onCaptured
         self.destination = destination
         self.placeholder = placeholder
+        self.draft = draft
+        self.text = initial?.text ?? ""
+        self.homeTopicID = initial?.homeTopicID
+    }
+
+    private func scheduleDraftSave() {
+        pendingSave?.cancel()
+        guard draft != nil else { return }
+        pendingSave = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(300)) }
+            catch { return }
+            self?.flushDraft()
+        }
+    }
+
+    public func flushDraft() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        guard let draft else { return }
+        do { try store.saveDraft(draft, text: text, homeTopicID: homeTopicID) }
+        catch { self.error = error.localizedDescription }
+    }
+
+    public var canClear: Bool { !isSending && (!text.isEmpty || !attachments.isEmpty) }
+
+    public func clear() {
+        guard canClear else { return }
+        cleared = (text, attachments)
+        text = ""
+        attachments = []
+        flushDraft()
+    }
+
+    public func undoClear() {
+        guard let snapshot = cleared else { return }
+        cleared = nil
+        text = snapshot.text
+        attachments = snapshot.attachments
+        flushDraft()
     }
 
     public func dropMissingTopic(open: [TopicPlace]) {
@@ -76,15 +129,23 @@ public final class ComposerModel {
     }
 
     public func send() -> Bool {
-        guard !isImporting else { return false }
+        guard !isImporting && !isSending else { return false }
+        isSending = true
+        defer { isSending = false }
+        pendingSave?.cancel()
+        pendingSave = nil
         do {
-            _ = try store.capture(text: text, attachmentIDs: attachments.map(\.id), to: destination, nowUs: Time.nowUs())
+            _ = try store.capture(text: text, attachmentIDs: attachments.map(\.id), to: destination, draft: draft, nowUs: Time.nowUs())
         } catch {
             self.error = error.localizedDescription
+            flushDraft()
             return false
         }
+        cleared = nil
         attachments = []
         text = ""
+        pendingSave?.cancel()
+        pendingSave = nil
         error = nil
         onCaptured()
         return true

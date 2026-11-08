@@ -62,8 +62,12 @@ export const resolveConflict = (itemId: string, keep: "theirs" | "mine") =>
 export const trashItem = (itemId: string) => invoke<void>("trash_item", { itemId });
 export const restoreItem = (itemId: string) => invoke<void>("restore_item", { itemId });
 export const navCounts = () => invoke<Counts>("nav_counts");
-export const capture = (text: string, attachmentIds: string[], target: Target) =>
-  invoke<void>("capture", { text, attachmentIds, target });
+export type Draft = { place: string; text: string; home_topic_id: string | null };
+export const listDrafts = () => invoke<Draft[]>("list_drafts");
+export const saveDraft = (place: string, text: string, homeTopicId: string | null) =>
+  invoke<void>("save_draft", { place, text, homeTopicId });
+export const capture = (text: string, attachmentIds: string[], target: Target, draft?: string) =>
+  invoke<void>("capture", { text, attachmentIds, target, draft: draft ?? null });
 export const doubleClickIntervalMs = () => invoke<number>("double_click_interval_ms");
 export const trashAfterCopy = () => invoke<boolean | null>("trash_after_copy");
 export const setTrashAfterCopy = (on: boolean) => invoke<void>("set_trash_after_copy", { on });

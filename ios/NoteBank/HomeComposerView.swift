@@ -6,14 +6,22 @@ struct HomeComposerView: View {
     let store: Store
     let topics: [TopicPlace]
     let wake: () -> Void
+    let notices: NoticeCenter
     @AppStorage("tunnelSwitch", store: Theme.store) private var tunnelOn = false
-    @State private var chip = Destination.inbox
     @State private var focusRequest = 0
     @State private var handledRequest: UUID?
     @State private var naming = false
     @State private var awaitedTopic: String?
     private let requests = ComposeRequests.shared
     @Environment(\.palette) private var palette
+
+    private var chip: Destination {
+        get { model.homeTopicID.map(Destination.topic) ?? .inbox }
+        nonmutating set {
+            model.homeTopicID = if case .topic(let id) = newValue { id } else { nil }
+            sync()
+        }
+    }
 
     private var chipTitle: String {
         if case .topic(let id) = chip, let topic = topics.first(where: { $0.id == id }) { return topic.name }
@@ -23,7 +31,7 @@ struct HomeComposerView: View {
     private func sync() {
         model.destination = chip
         model.dropMissingTopic(open: topics)
-        chip = model.destination
+        model.homeTopicID = if case .topic(let id) = model.destination { id } else { nil }
         if tunnelOn { model.destination = .tunnel }
     }
 
@@ -36,6 +44,7 @@ struct HomeComposerView: View {
             ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3, focusRequest: focusRequest) { provider, type in
                 model.importPaste(provider, type: type)
             }
+            .padding(.trailing, model.canClear ? 44 : 0)
             StagedAttachmentsView(model: model)
             HStack(spacing: 8) {
                 Toggle("Tunnel", isOn: $tunnelOn)
@@ -66,6 +75,7 @@ struct HomeComposerView: View {
                 HStack(spacing: 0) {
                     AttachmentPicker(model: model)
                     Button {
+                        sync()
                         _ = model.send()
                     } label: {
                         Image(systemName: "arrow.up")
@@ -91,9 +101,23 @@ struct HomeComposerView: View {
         .padding(.bottom, 4)
         .background(tunnelOn ? palette.accentSoft : palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(tunnelOn ? palette.accent : palette.line))
+        .overlay(alignment: .topTrailing) {
+            if model.canClear {
+                Button {
+                    model.clear()
+                    notices.postCleared(.home)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(palette.inkMuted)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear")
+            }
+        }
         .onAppear(perform: sync)
         .onChange(of: tunnelOn) { sync() }
-        .onChange(of: chip) { sync() }
         .onChange(of: topics) {
             if let id = awaitedTopic, topics.contains(where: { $0.id == id }) {
                 awaitedTopic = nil
@@ -119,6 +143,7 @@ struct HomeComposerView: View {
                 tunnelOn = false
                 chip = .inbox
             }
+            sync()
             focusRequest += 1
         }
     }

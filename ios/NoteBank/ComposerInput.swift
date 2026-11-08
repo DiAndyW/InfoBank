@@ -25,7 +25,8 @@ struct ComposerInput: UIViewRepresentable {
 
     func updateUIView(_ view: AttachmentTextView, context: Context) {
         context.coordinator.parent = self
-        if view.markedTextRange == nil && view.text != text { view.text = text }
+        // An empty model means Clear or Send: drop any in-progress IME composition with it.
+        if view.text != text && (view.markedTextRange == nil || text.isEmpty) { view.text = text }
         view.placeholder = placeholder
         view.accessibilityLabel = minimumLines > 1 ? "Capture" : placeholder
         let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: PlexFont.serif.rawValue, size: 17) ?? UIFont.systemFont(ofSize: 17))

@@ -346,7 +346,7 @@ mod tests {
              INSERT INTO topics (id, name) VALUES ('old', 'Old');",
         )
         .unwrap();
-        crate::feed::capture(&conn, d.path(), "unsynced", &[], &crate::feed::Target::Inbox, 2).unwrap();
+        crate::feed::capture(&conn, d.path(), "unsynced", &[], &crate::feed::Target::Inbox, None, 2).unwrap();
         crate::topics::create(&conn, "Mine", 3).unwrap();
         let count = |table: &str| -> i64 { conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap() };
 
@@ -541,7 +541,7 @@ mod tests {
         let (d, conn, secret) = connected_to_a();
         conn.execute("DELETE FROM attachments", []).unwrap();
         let staged = crate::files::stage_bytes(d.path(), "k.txt", b"hello").unwrap();
-        crate::feed::capture(&conn, d.path(), "kept", std::slice::from_ref(&staged.id), &crate::feed::Target::Inbox, 2).unwrap();
+        crate::feed::capture(&conn, d.path(), "kept", std::slice::from_ref(&staged.id), &crate::feed::Target::Inbox, None, 2).unwrap();
 
         save(&conn, &secret, "https://b.example.com", Some("new"), Stranded::default()).unwrap();
         crate::files::sweep_staged(&conn, d.path()).unwrap();
@@ -566,7 +566,7 @@ mod tests {
         )
         .unwrap();
         let staged = crate::files::stage_bytes(d.path(), "k.txt", b"hello").unwrap();
-        crate::feed::capture(&conn, d.path(), "kept", &[staged.id], &crate::feed::Target::Inbox, 6).unwrap();
+        crate::feed::capture(&conn, d.path(), "kept", &[staged.id], &crate::feed::Target::Inbox, None, 6).unwrap();
         let kept: String = conn.query_row("SELECT id FROM items WHERE text = 'kept'", [], |r| r.get(0)).unwrap();
         crate::ops::queue(
             &conn,
@@ -607,12 +607,12 @@ mod tests {
     fn a_capture_into_an_old_topic_is_kept_but_a_move_into_one_counts() {
         let (d, conn, secret) = connected_to_a();
         conn.execute("DELETE FROM attachments", []).unwrap();
-        crate::feed::capture(&conn, d.path(), "kept", &[], &crate::feed::Target::Topic { id: "old".into() }, 2).unwrap();
+        crate::feed::capture(&conn, d.path(), "kept", &[], &crate::feed::Target::Topic { id: "old".into() }, None, 2).unwrap();
         save(&conn, &secret, "https://b.example.com", Some("new"), Stranded::default()).unwrap();
 
         let (d, conn, secret) = connected_to_a();
         conn.execute("DELETE FROM attachments", []).unwrap();
-        crate::feed::capture(&conn, d.path(), "kept", &[], &crate::feed::Target::Inbox, 2).unwrap();
+        crate::feed::capture(&conn, d.path(), "kept", &[], &crate::feed::Target::Inbox, None, 2).unwrap();
         let kept: String = conn.query_row("SELECT id FROM items WHERE text = 'kept'", [], |r| r.get(0)).unwrap();
         crate::ops::queue(&conn, crate::ops::Op::MoveItem { item_id: kept, topic_id: Some("old".into()), tunnel: false }, 3).unwrap();
         let (changes, files, _) = stranded_error(save(&conn, &secret, "https://b.example.com", Some("new"), Stranded::default()));
@@ -623,7 +623,7 @@ mod tests {
     fn first_save_counts_nothing_and_keeps_pre_setup_captures() {
         let (d, conn, secret) = env();
         let staged = crate::files::stage_bytes(d.path(), "k.txt", b"hello").unwrap();
-        crate::feed::capture(&conn, d.path(), "early", &[staged.id], &crate::feed::Target::Inbox, 1).unwrap();
+        crate::feed::capture(&conn, d.path(), "early", &[staged.id], &crate::feed::Target::Inbox, None, 1).unwrap();
         crate::topics::create(&conn, "Mine", 2).unwrap();
         save(&conn, &secret, "https://a.example.com", Some("s3cret"), Stranded::default()).unwrap();
         assert_eq!((count(&conn, "items"), count(&conn, "topics"), count(&conn, "attachments")), (1, 1, 1));
