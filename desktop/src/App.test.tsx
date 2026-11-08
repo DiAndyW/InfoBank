@@ -1,4 +1,4 @@
-import { act, createEvent, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -1632,8 +1632,10 @@ test("a new Undo Notice gets its own 4 seconds", async () => {
     backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)] });
     render(<App />);
     await trashOf("squat 100", user);
+    const first = await screen.findByText("Item moved to Trash");
     await act(async () => vi.advanceTimersByTime(3000));
     await trashOf("bench 70", user);
+    await waitFor(() => expect(screen.getByText("Item moved to Trash")).not.toBe(first));
     await act(async () => vi.advanceTimersByTime(3000));
     expect(screen.getByText("Item moved to Trash")).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTime(1000));
