@@ -6,7 +6,8 @@ struct ItemActionsView: View {
     let store: Store
     var copiesWholeItem = false
     var onSelect: (() -> Void)?
-    let onCopy: () -> Void
+    enum Copy { case item, text }
+    let onCopy: (Copy) -> Void
     let onChanged: (_ trashed: Bool, _ moved: Bool) -> Void
 
     private enum Page { case commands, edit, move, conflict }
@@ -56,7 +57,8 @@ struct ItemActionsView: View {
                 case .commands:
                     List {
                         if let onSelect, item.syncError == nil { Button("Select", systemImage: "checkmark.circle", action: onSelect) }
-                        if copiesWholeItem || item.text != nil { Button(copiesWholeItem ? "Copy Item" : "Copy Text", systemImage: "doc.on.doc", action: onCopy) }
+                        if copiesWholeItem { Button("Copy Item", systemImage: "doc.on.doc") { onCopy(.item) } }
+                        if item.text != nil { Button("Copy Text", systemImage: "doc.on.doc") { onCopy(.text) } }
                         if item.syncError != nil {
                             Button("Discard…", systemImage: "trash", role: .destructive) { discard = true }
                         } else {

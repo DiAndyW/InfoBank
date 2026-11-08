@@ -367,7 +367,9 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
               const place = trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
-              const copy = view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
+              const copyParts = view.kind === "tunnel" && !it.sync_error;
+              const copyText = () => navigator.clipboard.writeText(it.text!).then(() => { if (view.kind === "tunnel") onNotice("Copied text"); }, (e) => onError("Couldn't copy the text", e));
+              const copy = [...(view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : []), ...(it.text ? [{ label: "Copy text", onSelect: copyText }] : [])];
               const heading = trash
                 ? daysRemaining(it.purge_at_us)
                 : time.toDateString() === today
@@ -413,7 +415,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                         if (selection.selecting || e.metaKey || e.ctrlKey) e.stopPropagation();
                       }}
                       onClick={view.kind === "tunnel" && !it.sync_error ? (e) => {
-                        if (selection.selecting || e.metaKey || e.ctrlKey || e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
+                        if (selection.selecting || e.metaKey || e.ctrlKey || e.detail !== 1 || covered || !document.getSelection()?.isCollapsed || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
                         copyItem(it, true);
                       } : undefined}
                       onDoubleClick={trash || it.sync_error ? undefined : (e) => {
@@ -465,7 +467,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                             )}
                           </p>
                         )}
-                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} closedCount={closedCount} />}
+                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} onCopied={copyParts ? (filename) => onNotice(`Copied ${filename}`) : undefined} copyButtonVisible={!selection.selecting} closedCount={closedCount} />}
                       </div>
                       <div className="nb-item-meta" inert={selection.selecting}>
                         {place && (
@@ -491,6 +493,11 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
                           <span className="nb-pending" title="Not synced yet">
                             <Icon name="pending" label="Not synced yet" />
                           </span>
+                        )}
+                        {copyParts && !selection.selecting && it.text && it.attachments.length > 0 && (
+                          <button type="button" className="nb-iconbtn nb-reveal" aria-label="Copy text" title="Copy text" onClick={copyText}>
+                            <Icon name="copy" />
+                          </button>
                         )}
                         {!trash && <time className={sameMinute ? "nb-item-time nb-reveal" : "nb-item-time"}>{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
                         {trash ? (

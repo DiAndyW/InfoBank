@@ -46,7 +46,7 @@ struct FeedView: View {
     @State private var copyTask: Task<Void, Never>?
     @State private var copies = 0
     @State private var commands: FeedItem?
-    @State private var copyAfterSheet: FeedItem?
+    @State private var copyAfterSheet: (item: FeedItem, choice: ItemActionsView.Copy)?
     @State private var actionError: String?
     @State private var asking: FeedItem?
     @State private var renameTopic = false
@@ -272,10 +272,16 @@ struct FeedView: View {
         .onChange(of: model.items) { _, items in batch.reconcile(items) }
         .onChange(of: batch.error) { _, error in if let error { actionError = error; batch.error = nil } }
         .sheet(item: $commands, onDismiss: {
-            if let item = copyAfterSheet {
+            if let pending = copyAfterSheet {
                 copyAfterSheet = nil
-                if place == .tunnel { copy(item) }
-                else if let text = item.text { UIPasteboard.general.string = text }
+                switch pending.choice {
+                case .item: copy(pending.item)
+                case .text:
+                    if let text = pending.item.text {
+                        UIPasteboard.general.string = text
+                        if place == .tunnel { notices.postCopiedText() }
+                    }
+                }
             }
         }) { item in
             if place == .trash {
@@ -301,8 +307,8 @@ struct FeedView: View {
                 copyTask?.cancel()
                 commands = nil
                 batch.selection.begin(item.id)
-            }, onCopy: {
-                copyAfterSheet = item
+            }, onCopy: { choice in
+                copyAfterSheet = (item, choice)
                 commands = nil
             }, onChanged: { trashed, moved in
                 model.reload()
