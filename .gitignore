@@ -6,3 +6,6 @@ thoughts.md
 ios/NoteBankKit/.build/
 ios/**/xcuserdata/
 *.xcuserstate
+
+package/
+tools/
