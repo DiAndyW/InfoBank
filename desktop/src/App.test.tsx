@@ -49,7 +49,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       calls.push({ cmd, args });
       await opts.gates?.[cmd];
       if (opts.failing?.[cmd]) throw opts.failing[cmd];
-      if (cmd === "copy_item") return null;
+      if (cmd === "copy_item" || cmd === "copy_attachment") return null;
       if (cmd === "prepare_copy_items") return "prepared-batch";
       if (["finish_copy_items", "discard_copy_items", "set_items_trashed"].includes(cmd)) return null;
       if (cmd === "startup_error") return opts.startup ?? null;
@@ -2724,6 +2724,8 @@ test("a Tunnel row copies once and shows Copied when trash after copy is off", a
   render(<App />);
   await user.click(await openTunnel());
   expect(await screen.findByText("Copied")).toBeInTheDocument();
+  expect(screen.queryByText("Copied text")).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Copied .+$/)).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "copy_item", args: { itemId: "tunnel-note" } });
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -2783,13 +2785,146 @@ test("links, attachments, and row buttons in the Tunnel never copy or trash", as
   render(<App />);
   await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
   await user.click(screen.getByRole("link", { name: "https://example.com" }));
-  await user.click(screen.getByRole("button", { name: /note.pdf/ }));
+  await user.click(screen.getByRole("button", { name: "Open note.pdf" }));
   await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
   await new Promise((resolve) => setTimeout(resolve, 650));
   expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
   expect(calls.some((c) => c.cmd === "plugin:opener|open_url")).toBe(true);
   expect(calls.some((c) => c.cmd === "open_attachment")).toBe(true);
   expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+});
+
+const mixedTunnelItem = () => ({ ...tunnelItem(), attachments: [report, photo] });
+
+test("a refused runnable Tunnel Attachment remains copyable", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [{ ...tunnelItem(), attachments: [installer] }] });
+  render(<App />);
+  await openTunnel();
+  await user.click(screen.getByRole("button", { name: "Open setup.command" }));
+  await user.click(screen.getByRole("button", { name: "Copy setup.command" }));
+  expect(await screen.findByText("Copied setup.command")).toBeInTheDocument();
+  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+  expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a3" } });
+});
+
+test("Copy text outside the Tunnel keeps its existing confirmation behavior", async () => {
+  const user = userEvent.setup();
+  backend(configured, { items: () => [filed("1", "in the inbox", null)] });
+  render(<App />);
+  await screen.findByText("in the inbox");
+  await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Copy text" }));
+  expect(await navigator.clipboard.readText()).toBe("in the inbox");
+  expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+});
+
+test("a Tunnel Attachment's copy button copies only that file and never trashes", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await openTunnel();
+  expect(screen.getByRole("button", { name: "Copy photo.jpg" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
+  expect(await screen.findByText("Copied report.pdf")).toBeInTheDocument();
+  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+  expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a1" } });
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => ["copy_item", "trash_after_copy", "trash_item"].includes(c.cmd))).toBe(false);
+});
+
+test("a failed Attachment copy shows why on the file", async () => {
+  const user = userEvent.setup();
+  backend(configured, { items: () => [mixedTunnelItem()], failing: { copy_attachment: "Can't download while offline" } });
+  render(<App />);
+  await openTunnel();
+  await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
+  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+});
+
+test("a Tunnel Item with files has a Copy text button that copies only the text", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await openTunnel();
+  const item = screen.getByRole("article");
+  const copyButton = within(item).getByRole("button", { name: "Copy text" });
+  const meta = item.querySelector<HTMLElement>(".nb-item-meta")!;
+  const time = within(meta).getByRole("time");
+  expect(meta.contains(copyButton)).toBe(true);
+  expect(copyButton.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(item.querySelector(".nb-item-text")?.contains(copyButton)).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Select" }));
+  expect(within(item).queryByRole("button", { name: "Copy text" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Done" }));
+  await user.click(screen.getByRole("button", { name: "Copy text" }));
+  expect(await screen.findByText("Copied text")).toBeInTheDocument();
+  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+  expect(await navigator.clipboard.readText()).toBe("transfer this");
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => ["copy_item", "trash_after_copy", "trash_item"].includes(c.cmd))).toBe(false);
+});
+
+test("an attachment-only Tunnel Item has no Copy text button", async () => {
+  backend(configured, { items: () => [{ ...tunnelItem(), text: null, attachments: [report] }] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  await screen.findByRole("article");
+  expect(screen.queryByRole("button", { name: "Copy text" })).not.toBeInTheDocument();
+});
+
+test("a text-only Tunnel Item has no Copy text button, and other places have no copy buttons", async () => {
+  const user = userEvent.setup();
+  backend(configured, { items: (args) => (args.view?.kind === "tunnel" ? [tunnelItem()] : [{ ...filed("1", "in the inbox", null), attachments: [report] }]) });
+  render(<App />);
+  await screen.findByText("in the inbox");
+  expect(screen.queryByRole("button", { name: /^Copy/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /^Tunnel/ }));
+  await screen.findByText("transfer this");
+  expect(screen.queryByRole("button", { name: /^Copy/ })).not.toBeInTheDocument();
+});
+
+test("the Tunnel menu offers Copy Item and Copy text", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  await openTunnel();
+  await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  const menu = screen.getByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent).slice(0, 4)).toEqual(["Edit", "Move to", "Copy Item", "Copy text"]);
+  await user.click(within(menu).getByRole("menuitem", { name: "Copy text" }));
+  expect(await navigator.clipboard.readText()).toBe("transfer this");
+  expect(await screen.findByText("Copied text")).toBeInTheDocument();
+  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+});
+
+test("Attachment copy buttons hide during multi-select without remounting their opener", async () => {
+  const user = userEvent.setup();
+  backend(configured, { items: () => [mixedTunnelItem()] });
+  render(<App />);
+  await openTunnel();
+  const item = screen.getByRole("article");
+  const opener = within(item).getByRole("button", { name: "Open report.pdf" });
+  expect(within(item).getByRole("button", { name: "Copy report.pdf" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Select" }));
+  expect(within(item).queryByRole("button", { name: "Copy report.pdf" })).not.toBeInTheDocument();
+  expect(within(item).getByRole("button", { name: "Open report.pdf" })).toBe(opener);
+  await user.click(screen.getByRole("button", { name: "Done" }));
+  expect(within(item).getByRole("button", { name: "Copy report.pdf" })).toBeInTheDocument();
+  expect(within(item).getByRole("button", { name: "Open report.pdf" })).toBe(opener);
+});
+
+test("finishing a text selection in a Tunnel Item doesn't copy it", async () => {
+  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+  render(<App />);
+  const text = await openTunnel();
+  document.getSelection()!.selectAllChildren(text);
+  fireEvent.click(text, { detail: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+  document.getSelection()!.removeAllRanges();
 });
 
 test("a failed clipboard write never changes the setting or trashes", async () => {

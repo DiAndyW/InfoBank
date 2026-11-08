@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { attachmentStored, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
+import { attachmentStored, copyAttachment, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
 import { Icon } from "./icons";
 
 const REVEAL_LABEL = navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in Finder";
@@ -15,7 +15,7 @@ export function viewable(a: FeedAttachment): boolean {
   return !a.runnable && a.mime_type.startsWith("image/");
 }
 
-function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id: string) => void; closedCount: number }) {
+function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount }: { a: FeedAttachment; onView: (id: string) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
   const [src, setSrc] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const busy = useRef(false);
@@ -33,7 +33,7 @@ function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id
   }, [a.id, image, closedCount]);
 
   async function fetchThen(action: (id: string) => Promise<void>) {
-    if (busy.current) return;
+    if (busy.current) return false;
     busy.current = true;
     try {
       const stored = await attachmentStored(a.id).catch(() => false);
@@ -43,8 +43,10 @@ function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id
       if (image && !src) {
         try { setSrc(convertFileSrc(await thumbnail(a.id))); } catch {}
       }
+      return true;
     } catch (err) {
       setNote(String(err));
+      return false;
     } finally {
       busy.current = false;
     }
@@ -57,22 +59,19 @@ function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id
     } else fetchThen(openAttachment);
   }
 
-  if (refused) {
-    return (
-      <div className="nb-file is-blocked">
-        <Icon name="alert" />
-        <span className="nb-file-text">
-          <span className="nb-file-name">NoteBank won't open {a.filename} because it can run code.</span>
-          {note && <span className="nb-file-meta">{note}</span>}
-        </span>
-        <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment)}>
-          <Icon name="reveal" />
-          {REVEAL_LABEL}
-        </button>
-      </div>
-    );
-  }
-  return image ? (
+  const opener = refused ? (
+    <div className="nb-file is-blocked">
+      <Icon name="alert" />
+      <span className="nb-file-text">
+        <span className="nb-file-name">NoteBank won't open {a.filename} because it can run code.</span>
+        {note && <span className="nb-file-meta">{note}</span>}
+      </span>
+      <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment)}>
+        <Icon name="reveal" />
+        {REVEAL_LABEL}
+      </button>
+    </div>
+  ) : image ? (
     <button type="button" className="nb-thumb" data-attachment-id={a.id} onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
       {src ? (
         <>
@@ -101,14 +100,23 @@ function Attachment({ a, onView, closedCount }: { a: FeedAttachment; onView: (id
       </span>
     </button>
   );
+  if (!onCopied) return opener;
+  return (
+    <div className="nb-attachment">
+      {opener}
+      {copyButtonVisible && <button type="button" className="nb-iconbtn nb-reveal nb-attachment-copy" aria-label={`Copy ${a.filename}`} title="Copy" onClick={() => fetchThen(copyAttachment).then((ok) => ok && onCopied(a.filename))}>
+        <Icon name="copy" />
+      </button>}
+    </div>
+  );
 }
 
-export function Attachments({ list, onView, closedCount }: { list: FeedAttachment[]; onView: (id: string) => void; closedCount: number }) {
+export function Attachments({ list, onView, onCopied, copyButtonVisible, closedCount }: { list: FeedAttachment[]; onView: (id: string) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
   return (
     <div className="nb-item-files">
       {list.map((a) => (
         // has_thumbnail in the key remounts it, and so refetches, once the Server makes one.
-        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} onView={onView} closedCount={closedCount} />
+        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} onView={onView} onCopied={onCopied} copyButtonVisible={copyButtonVisible} closedCount={closedCount} />
       ))}
     </div>
   );

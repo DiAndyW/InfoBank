@@ -62,6 +62,15 @@ pub async fn set_items_trashed(app: AppHandle, state: State<'_, AppState>, item_
 
 #[tauri::command]
 pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    write_clipboard(app, crate::clipboard::prepare(&state, &item_id, now_us()).await?).await
+}
+
+#[tauri::command]
+pub async fn copy_attachment(app: AppHandle, state: State<'_, AppState>, attachment_id: String) -> Result<(), String> {
+    write_clipboard(app, crate::clipboard::prepare_attachment(&state, &attachment_id, now_us()).await?).await
+}
+
+async fn write_clipboard(app: AppHandle, payload: crate::clipboard::Payload) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let owner = app
         .get_webview_window("main")
@@ -69,7 +78,6 @@ pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: Stri
         .hwnd()
         .map_err(|_| "Couldn't access the clipboard window")?
         .0 as usize;
-    let payload = crate::clipboard::prepare(&state, &item_id, now_us()).await?;
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         #[cfg(target_os = "windows")]

@@ -42,6 +42,10 @@ public final class NoticeCenter {
         current = Notice(message: "\(count) \(count == 1 ? "Item" : "Items") \(copied ? "copied" : "restored")", itemID: "", action: .dismiss)
     }
 
+    public func postCopiedText() {
+        current = Notice(message: "Copied text", itemID: "", action: .dismiss)
+    }
+
     public func postRestored(itemID: String) {
         current = Notice(message: "Item restored", itemID: itemID, action: .show)
     }

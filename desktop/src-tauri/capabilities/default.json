@@ -38,6 +38,7 @@
     "allow-attachment-stored",
     "allow-attachment-original",
     "allow-copy-item",
+    "allow-copy-attachment",
     "allow-prepare-copy-items",
     "allow-finish-copy-items",
     "allow-discard-copy-items",
