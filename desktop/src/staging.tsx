@@ -13,11 +13,23 @@ export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetSt
   // Bumped by discard, so a paste still staging then is unstaged instead of reappearing.
   const generation = useRef(0);
 
+  const pending = useRef(new Set<Promise<void>>());
+  function start() {
+    let finish!: () => void;
+    const task = new Promise<void>(resolve => { finish = resolve; });
+    pending.current.add(task);
+    return () => { pending.current.delete(task); finish(); };
+  }
+  async function wait() {
+    while (pending.current.size > 0) await Promise.all([...pending.current]);
+  }
+
   function failed(more: string[]) {
     if (more.length > 0) setErrors((all) => [...all, ...more]);
   }
 
   async function add(stage: () => Promise<Staged>) {
+    const finish = start();
     const at = generation.current;
     try {
       const s = await stage();
@@ -25,6 +37,8 @@ export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetSt
       setStaged((all) => [...all, s]);
     } catch (err) {
       failed([String(err)]);
+    } finally {
+      finish();
     }
   }
 
@@ -52,7 +66,12 @@ export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetSt
     unstage(id).catch(() => {});
   }
 
-  const pick = () => pickFiles().then(addAll, (err) => failed([String(err)]));
+  async function pick() {
+    const finish = start();
+    try { addAll(await pickFiles()); }
+    catch (err) { failed([String(err)]); }
+    finally { finish(); }
+  }
 
   const dialog = errors.length > 0 && (
     <Dialog
@@ -80,7 +99,7 @@ export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetSt
     setStaged([]);
   }
 
-  return { staged, setStaged, addAll, onPaste, remove, pick, discard, dialog };
+  return { start, wait, staged, setStaged, addAll, onPaste, remove, pick, discard, dialog };
 }
 
 type Chip = { id: string; filename: string; mime_type: string; size_bytes: number };

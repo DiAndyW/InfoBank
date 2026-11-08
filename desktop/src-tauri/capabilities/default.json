@@ -54,6 +54,9 @@
     "allow-dismiss-quick-capture",
     "allow-startup-error",
     "allow-show-data-folder",
-    "allow-quit"
+    "allow-quit",
+    "allow-update-status",
+    "allow-check-for-updates",
+    "allow-restart-to-update"
   ]
 }

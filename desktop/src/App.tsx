@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, itemTarget, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
+import { getSettings, itemTarget, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, updateStatus, checkForUpdates, restartToUpdate, type UpdateInfo, type UpdateStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
+import type { ComposerHandle } from "./Composer";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
 import Feed from "./Feed";
@@ -35,9 +36,19 @@ export default function App() {
   const [status, setStatus] = useState<SyncStatus>("synced");
   // Rust only announces a change, so a stale read that lands after one would stick.
   const statusEvents = useRef(0);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const latestUpdate = useRef<UpdateStatus | null>(null);
   const [theme, setTheme] = useState(storedTheme);
 
   useEffect(() => applyTheme(theme), [theme]);
+
+  useEffect(() => {
+    const unlisten = listen<UpdateStatus>("update-status", (e) => {
+      latestUpdate.current = e.payload;
+      setUpdate((current) => current ? { ...current, status: e.payload } : current);
+    });
+    return () => { unlisten.then((stop) => stop()); };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen<SyncStatus>("sync-status", (e) => {
@@ -55,6 +66,9 @@ export default function App() {
   const noticeId = useRef(0);
   const show = (message: string, action?: NoticeData["action"]) => setNotice({ id: ++noticeId.current, message, action });
   const editor = useRef<EditorHandle>(null);
+  const composer = useRef<ComposerHandle>(null);
+  const [restartFiles, setRestartFiles] = useState(0);
+  const restarting = useRef(false);
   const [searchText, setSearchText] = useState("");
   const [resultsOpen, setResultsOpen] = useState(false);
   const searchField = useRef<HTMLInputElement>(null);
@@ -104,6 +118,43 @@ export default function App() {
     return true;
   };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
+  async function restart(confirmedFiles = 0) {
+    composer.current?.freeze(true);
+    try {
+      await Promise.all([composer.current?.saveDrafts(), composer.current?.waitForStaging()]);
+    } catch (err) {
+      restarting.current = false;
+      composer.current?.freeze(false);
+      showError("Couldn't save your drafts", err);
+      return;
+    }
+    const files = composer.current?.unsentFiles() ?? 0;
+    if (files > confirmedFiles) {
+      setRestartFiles(files);
+      return;
+    }
+    try {
+      await restartToUpdate();
+    } catch (err) {
+      composer.current?.freeze(false);
+      showError("Couldn't update", err);
+    } finally {
+      restarting.current = false;
+    }
+  }
+  const cancelRestart = () => {
+    composer.current?.freeze(false);
+    setRestartFiles(0);
+    restarting.current = false;
+  };
+  const onRestart = () => {
+    if (restarting.current) return;
+    restarting.current = true;
+    const files = composer.current?.unsentFiles() ?? 0;
+    if (files > 0) setRestartFiles(files);
+    else void restart();
+  };
+  const onCheckForUpdates = () => { checkForUpdates().catch((err) => showError("Couldn't update", err)); };
   const [dragging, setDragging] = useState<{ item: FeedItem; x: number; y: number } | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
 
@@ -241,11 +292,12 @@ export default function App() {
       const failure = await startupError();
       if (failure) return setStartup(failure);
       const seen = statusEvents.current;
-      const [s, t, st, c] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts()]);
+      const [s, t, st, c, u] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts(), updateStatus()]);
       setSettings(s);
       setTopics(sortedTopics(t));
       if (statusEvents.current === seen) setStatus(st);
       setCounts(c);
+      setUpdate({ ...u, status: latestUpdate.current ?? u.status });
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -291,13 +343,27 @@ export default function App() {
   }
   if (!settings) return null;
   const configured = settings.server_url !== null && settings.has_secret;
+  const errorDialog = error && (
+    <Dialog
+      alert
+      title={error.title}
+      onClose={() => setError(null)}
+      actions={
+        <button type="button" className="nb-btn nb-btn-primary" autoFocus onClick={() => setError(null)}>
+          OK
+        </button>
+      }
+    >
+      <p>{error.message}</p>
+    </Dialog>
+  );
   if (!configured) {
-    return <Settings initial={settings} theme={theme} onThemeChange={setTheme} onSaved={load} />;
+    return <><Settings initial={settings} theme={theme} onThemeChange={setTheme} onSaved={load} update={update} onCheckForUpdates={onCheckForUpdates} onRestart={onRestart} />{errorDialog}</>;
   }
   return (
     <div className={`nb-app${sidebarOpen ? "" : " is-sidebar-collapsed"}`}>
       <div className="nb-sidebar-slot" ref={sidebarSlot}>
-        <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
+        <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} update={update?.status ?? { state: "off" }} onRestart={onRestart} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
           collapsed={!sidebarOpen}
           toggle={<button ref={sidebarToggle} type="button" className="nb-iconbtn" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
             title={`${sidebarOpen ? "Hide" : "Show"} sidebar (⌘\\)`} aria-expanded={sidebarOpen} aria-controls="sidebar-content" onClick={toggleSidebar}>
@@ -328,6 +394,7 @@ export default function App() {
         topics={topics}
         covered={covered}
         editor={editor}
+        composer={composer}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
         onNotice={show}
@@ -377,6 +444,9 @@ export default function App() {
       {editing && (
         <Settings
           initial={settings}
+          update={update}
+          onCheckForUpdates={onCheckForUpdates}
+          onRestart={onRestart}
           theme={theme}
           onThemeChange={setTheme}
           onSaved={() => {
@@ -397,20 +467,17 @@ export default function App() {
           onError={showError}
         />
       )}
-      {error && (
-        <Dialog
-          alert
-          title={error.title}
-          onClose={() => setError(null)}
-          actions={
-            <button type="button" className="nb-btn nb-btn-primary" autoFocus onClick={() => setError(null)}>
-              OK
-            </button>
-          }
-        >
-          <p>{error.message}</p>
-        </Dialog>
+      {restartFiles > 0 && (
+        <Dialog alert title={`Restart and remove ${restartFiles} unsent ${restartFiles === 1 ? "file" : "files"}?`}
+          hint="Files you attached but haven't sent aren't kept across a restart."
+          onClose={cancelRestart}
+          actions={<>
+            <button type="button" className="nb-btn nb-btn-secondary" autoFocus onClick={cancelRestart}>Cancel</button>
+            <button type="button" className="nb-btn nb-btn-primary" onClick={() => { setRestartFiles(0); void restart(restartFiles); }}>Restart</button>
+          </>}
+        />
       )}
+      {errorDialog}
       {dragging && <DragCard item={dragging.item} x={dragging.x} y={dragging.y} />}
     </div>
   );

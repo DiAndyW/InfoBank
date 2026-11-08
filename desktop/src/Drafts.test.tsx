@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, expect, test, vi } from "vitest";
@@ -6,7 +6,7 @@ import App from "./App";
 import type { StagedFiles, Topic } from "./api";
 
 type Row = { place: string; text: string; home_topic_id: string | null };
-function backend(opts: { load?: Promise<Row[]>; capture?: Promise<void>; save?: Promise<void>; pick?: Promise<StagedFiles>; topicsRefresh?: Promise<Topic[]>; saveFailures?: number } = {}) {
+function backend(opts: { load?: Promise<Row[]>; capture?: Promise<void>; save?: Promise<void>; pick?: Promise<StagedFiles>; topicsRefresh?: Promise<Topic[]>; saveFailures?: number; updateReady?: boolean } = {}) {
   localStorage.setItem("place", "inbox");
   const drafts = new Map<string, Row>();
   const calls: { cmd: string; args: any }[] = [];
@@ -19,6 +19,7 @@ function backend(opts: { load?: Promise<Row[]>; capture?: Promise<void>; save?: 
     if (cmd === "picker_topic") { await emit("items-changed"); return { id: "books-id", name: args.name, archived: false, item_count: 0 }; }
     if (cmd === "list_topics") return [{ id: "work-id", name: "Work", archived: false, item_count: 0 }];
     if (cmd === "sync_status") return "synced";
+    if (cmd === "update_status") return { current_version: "0.1.0", status: opts.updateReady ? { state: "ready", version: "0.2.0" } : { state: "off" } };
     if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
     if (cmd === "list_items") return [];
     if (cmd === "startup_error" || cmd === "trash_after_copy") return null;
@@ -161,7 +162,6 @@ test("blur flushes the pending save", async () => {
   expect(drafts.get("inbox")?.text).toBe("hello");
 });
 
-
 test("a Home draft restored after its Topic was archived sends to the Inbox it shows", async () => {
   let load!: (rows: Row[]) => void;
   const { calls } = backend({ load: new Promise<Row[]>(r => { load = r; }), topicsRefresh: Promise.resolve([{ id: "work-id", name: "Work", archived: true, item_count: 0 }]) });
@@ -210,7 +210,6 @@ test("creating a Home destination survives a delayed Topics refresh", async () =
   await act(async () => release([{ id: "work-id", name: "Work", archived: false, item_count: 0 }, { id: "books-id", name: "Books", archived: false, item_count: 0 }]));
   expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Books");
 });
-
 
 test("typing in Home before drafts load keeps its text and destination together", async () => {
   let release!: (rows: Row[]) => void;
@@ -337,4 +336,49 @@ test("undo after typing new text does nothing", async () => {
   expect(box()).toHaveValue("");
   type("fresh"); await tick();
   expect(drafts.get("inbox")?.text).toBe("fresh");
+});
+
+test.each([false, true])("restart_waits_for_capture_and_preserves_only_failed_text (fails=%s)", async (fails) => {
+  let release!: () => void;
+  let reject!: (reason: string) => void;
+  let save!: () => void;
+  const { calls, drafts } = backend({
+    updateReady: true,
+    capture: new Promise<void>((resolve, fail) => { release = resolve; reject = fail; }),
+    save: new Promise<void>(r => { save = r; }),
+  });
+  await start(); vi.useFakeTimers();
+  type("keep until captured");
+  fireEvent.keyDown(box(), { key: "Enter" }); await settle();
+  expect(calls.some(c => c.cmd === "capture")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Restart" })); await settle();
+  expect(calls.some(c => c.cmd === "restart_to_update")).toBe(false);
+  await act(async () => { if (fails) reject("capture failed"); else release(); });
+  if (fails) {
+    expect(calls.find(c => c.cmd === "save_draft")?.args).toMatchObject({ place: "inbox", text: "keep until captured" });
+    expect(calls.some(c => c.cmd === "restart_to_update")).toBe(false);
+    await act(async () => save());
+    expect(drafts.get("inbox")?.text).toBe("keep until captured");
+  } else {
+    await tick(1000);
+    expect(calls.filter(c => c.cmd === "save_draft")).toHaveLength(0);
+    expect(drafts.has("inbox")).toBe(false);
+  }
+  expect(calls.filter(c => c.cmd === "restart_to_update")).toHaveLength(1);
+});
+
+
+test("restart_waits_for_the_open_picker_and_confirms_its_files", async () => {
+  let pick!: (files: StagedFiles) => void;
+  const { calls } = backend({ updateReady: true, pick: new Promise<StagedFiles>(r => { pick = r; }) });
+  await start();
+  fireEvent.click(screen.getByRole("button", { name: "Attach files" }));
+  await settle();
+  fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+  await settle();
+  expect(calls.some(c => c.cmd === "restart_to_update")).toBe(false);
+  await act(async () => pick({ staged: [{ id: "picked", filename: "picked.txt", size_bytes: 1, mime_type: "text/plain" }], errors: [] }));
+  const dialog = screen.getByRole("alertdialog", { name: "Restart and remove 1 unsent file?" });
+  await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Restart" })); });
+  expect(calls.filter(c => c.cmd === "restart_to_update")).toHaveLength(1);
 });

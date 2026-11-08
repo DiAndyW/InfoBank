@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NoteBank",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "app.notebank.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -44,6 +44,12 @@
         "enable": true,
         "scope": ["$APPDATA/thumbnails/**", "$APPDATA/files/**"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkwM0Y3QjU5QTgxQzY3QTIKUldTaVp4eW9XWHMva1BsdkwwYXdianNvLy9YY1IxbUZEUWdBaU5kY3l3MzJxQU5XSnJtZlBpRDgK",
+      "endpoints": ["https://github.com/DiAndyW/InfoBank/releases/latest/download/latest.json"]
     }
   },
   "bundle": {

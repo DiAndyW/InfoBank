@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { trashAfterCopy, setTrashAfterCopy, autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type Hotkey, type Stranded, type Settings as SettingsData } from "./api";
+import { trashAfterCopy, setTrashAfterCopy, autostartOn, saveSettings, setAutostart, setQuickCaptureOn, setQuickCaptureShortcut, type UpdateInfo, type Hotkey, type Stranded, type Settings as SettingsData } from "./api";
 import { useShownAfterDelay } from "./delay";
 import Dialog from "./Dialog";
 import Menu from "./Menu";
@@ -27,11 +27,33 @@ type Props = {
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
   onSaved: () => void;
+  update: UpdateInfo | null;
+  onCheckForUpdates: () => void;
+  onRestart: () => void;
   // Given once the app is set up: Settings is then a panel over the window, not the first-launch page.
   onCancel?: () => void;
 };
 
-export default function Settings({ initial, theme, onThemeChange, onSaved, onCancel }: Props) {
+export default function Settings({ initial, theme, onThemeChange, onSaved, onCancel, update, onCheckForUpdates, onRestart }: Props) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const status = update?.status;
+  let updateLine = "";
+  if (status?.state === "checking") updateLine = "Checking…";
+  else if (status?.state === "downloading") updateLine = `Downloading version ${status.version}…`;
+  else if (status?.state === "ready") updateLine = `Version ${status.version} is ready`;
+  else if (status?.state === "offline") updateLine = "No connection, try again later";
+  else if (status?.state === "failed") updateLine = "Couldn't update, try again later";
+  else if (status?.state === "up_to_date") {
+    const minutes = Math.max(0, Math.floor((now - Date.parse(status.checked_at)) / 60_000));
+    const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+    const checked = minutes < 1 ? "just now" : minutes < 60 ? relative.format(-minutes, "minute")
+      : minutes < 1440 ? relative.format(-Math.floor(minutes / 60), "hour") : relative.format(-Math.floor(minutes / 1440), "day");
+    updateLine = `Up to date, checked ${checked}`;
+  }
   const [themeOpen, setThemeOpen] = useState(false);
   const [url, setUrl] = useState(initial.server_url ?? "");
   const [secret, setSecret] = useState("");
@@ -226,6 +248,22 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
             <span role="alert" className="nb-field-error">
               {loginError}
             </span>
+          )}
+        </div>
+      )}
+      {update && (
+        <div className="nb-field">
+          <span className="nb-field-label">Version</span>
+          <span>{update.current_version}</span>
+          {updateLine && <span role="status">{updateLine}</span>}
+          {status?.state !== "off" && (
+            <div className="nb-shortcut-row">
+              {status?.state === "ready" ? (
+                <button type="button" className="nb-btn nb-btn-quiet" onClick={onRestart}>Restart to update</button>
+              ) : (
+                <button type="button" className="nb-btn nb-btn-quiet" disabled={status?.state === "checking" || status?.state === "downloading"} onClick={onCheckForUpdates}>Check for updates</button>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -1,6 +1,6 @@
 # Server updates
 
-CI runs Go tests with PostgreSQL 16, desktop tests/builds on both Windows and macOS, and Kit tests plus an unsigned iPhone simulator build. Creating a `server-vMAJOR.MINOR.PATCH` tag authorizes automatic Server installation after all checks pass and a complete signed release is published. App delivery remains separate.
+CI runs Go tests with PostgreSQL 16, desktop tests/builds on both Windows and macOS, and Kit tests plus an unsigned iPhone simulator build. Creating a `server-vMAJOR.MINOR.PATCH` tag authorizes automatic Server installation after all checks pass and a complete signed release is published. For desktop app releases, see [DESKTOP-RELEASES.md](DESKTOP-RELEASES.md).
 
 Automatic releases must preserve database and API compatibility with the previous Server and installed apps. Review migration reversibility by the old executable and old-client sync behaviour before tagging. A binary rollback does not undo migrations. Breaking changes require a separately coordinated rollout; a successful health check cannot prove compatibility.
 
@@ -8,7 +8,7 @@ Automatic releases must preserve database and API compatibility with the previou
 
 These are administrator setup steps, not actions performed by adding these files:
 
-1. Keep the private repository on GitHub Pro. Protect `main` with a ruleset requiring pull requests and the CI `checks` aggregate status. Run CI once to select the exact check context shown by GitHub. Require the branch to be up to date, block force pushes/deletion and disable routine administrator bypass. Do not require a second person's approval for this single-maintainer repository.
+1. The repository is public. Protect `main` with a ruleset requiring pull requests and the CI `checks` aggregate status. Run CI once to select the exact check context shown by GitHub. Require the branch to be up to date, block force pushes/deletion and disable routine administrator bypass. Do not require a second person's approval for this single-maintainer repository.
 2. Protect tags matching `server-v*` against updates and deletion, including routine bypass. Only the maintainer should authorize creation. Never reuse a version or replace published release assets. The release workflow independently runs all checks on the tagged commit and verifies main ancestry.
 3. On a trusted administrator machine, install Minisign and generate a dedicated CI signing key with `minisign -G -W -p release.pub -s release.key`. `-W` deliberately creates an unencrypted key for unattended signing. Keep a recovery copy in the password manager; add the complete private-key file as repository Actions secret `SERVER_RELEASE_MINISIGN_KEY` through GitHub's secret UI. Never commit it or print it to a terminal/log. Delete temporary plaintext copies after secure storage. Install only its public key on the VM.
 4. Keep signing-secret references restricted to the gated publish job. Protect workflow changes during review. A compromised workflow with access to this secret can sign arbitrary binaries; Minisign cannot detect that.

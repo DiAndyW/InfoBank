@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { archiveTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic } from "./api";
+import { archiveTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic, type UpdateStatus } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
 import NewTopicDialog from "./NewTopicDialog";
@@ -19,6 +19,8 @@ type Props = {
   selected: string;
   onSelect: (key: string) => void;
   status: SyncStatus;
+  update: UpdateStatus;
+  onRestart: () => void;
   onSettings: () => void;
   onError: (title: string, err: unknown) => void;
   onDelete: (topic: Topic) => void;
@@ -32,7 +34,7 @@ type Props = {
   searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ collapsed, toggle, topics, counts, selected, onSelect, status, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
+export default function Sidebar({ collapsed, toggle, topics, counts, selected, onSelect, status, update, onRestart, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
   // The field shows what's typed even mid-composition; the query only follows once the input method is done.
   const [draft, setDraft] = useState(search);
   const composing = useRef(false);
@@ -246,6 +248,13 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
         </div>
       </div>
       <div className="nb-sidebar-foot">
+        {update.state === "ready" && (
+          <div className="nb-sync" role="status">
+            <Icon name="syncing" />
+            <span style={{ flex: 1 }}>Update ready</span>
+            <button type="button" className="nb-btn nb-btn-quiet" onClick={onRestart}>Restart</button>
+          </div>
+        )}
         {status === "unauthorized" ? (
           <button className="nb-sync nb-sync-danger is-action" title="Open Settings" onClick={onSettings}>
             <Icon name="alert" />
