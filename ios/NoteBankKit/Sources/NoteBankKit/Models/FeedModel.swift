@@ -5,7 +5,7 @@ extension Store {
     func observeChanges(onChange: @escaping @MainActor @Sendable () -> Void, onError: @escaping @MainActor @Sendable (Error) -> Void)
         -> AnyDatabaseCancellable
     {
-        DatabaseRegionObservation(tracking: Table("items"), Table("outbox"), Table("topics"), Table("attachments"), Table("conflicts"), Table("attachment_uploads"))
+        DatabaseRegionObservation(tracking: Table("settings"), Table("items"), Table("outbox"), Table("topics"), Table("attachments"), Table("conflicts"), Table("attachment_uploads"))
             .start(
                 in: pool,
                 onError: { error in Task { @MainActor in onError(error) } },
@@ -19,6 +19,7 @@ public enum CopyOutcome: Equatable { case copied, trashed, ask }
 public final class FeedModel {
     private static let pageSize = 100
 
+    public private(set) var trashAfterCopy: Bool? = false
     public private(set) var items: [FeedItem] = []
     public private(set) var hasOlder = false
     public private(set) var topicUnavailable = false
@@ -35,7 +36,7 @@ public final class FeedModel {
         reload()
         observation = store.observeChanges(
             onChange: { [weak self] in self?.reload() },
-            onError: { [weak self] in self?.loadError = $0.localizedDescription })
+            onError: { [weak self] in self?.trashAfterCopy = false; self?.loadError = errorMessage($0) })
     }
 
     public func loadOlder() {
@@ -45,7 +46,7 @@ public final class FeedModel {
             hasOlder = page.count == Self.pageSize
             loadError = nil
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
         }
     }
 
@@ -62,13 +63,14 @@ public final class FeedModel {
                 }
                 loadError = nil
             } catch {
-                loadError = error.localizedDescription
+                loadError = errorMessage(error)
             }
         }
         return items.contains { $0.id == itemID }
     }
 
     public func reload() {
+        do { trashAfterCopy = try store.trashAfterCopy() } catch { trashAfterCopy = false }
         if case .topic(let id) = place {
             let topic = try? store.topic(id)
             topicUnavailable = topic?.archived != false
@@ -81,7 +83,7 @@ public final class FeedModel {
             hasOlder = try !store.items(in: place, before: oldest, limit: 1).isEmpty
             loadError = nil
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
         }
     }
 
@@ -90,14 +92,22 @@ public final class FeedModel {
             try store.discard(itemID: id)
             reload()
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
         }
     }
 
     public func copied(_ item: FeedItem) -> CopyOutcome {
+        do { return copied(item, preference: try store.trashAfterCopy()) }
+        catch {
+            loadError = errorMessage(error)
+            return .copied
+        }
+    }
+
+    public func copied(_ item: FeedItem, preference: Bool?) -> CopyOutcome {
         guard item.syncError == nil else { return .copied }
         do {
-            switch try store.trashAfterCopy() {
+            switch preference {
             case true?:
                 try store.trash(itemID: item.id, nowUs: Time.nowUs())
                 reload()
@@ -106,7 +116,7 @@ public final class FeedModel {
             case nil: return .ask
             }
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
             return .copied
         }
     }
@@ -120,7 +130,7 @@ public final class FeedModel {
             reload()
             return true
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
             return false
         }
     }
@@ -130,7 +140,7 @@ public final class FeedModel {
             try store.restore(itemID: itemID, nowUs: Time.nowUs())
             reload()
         } catch {
-            loadError = error.localizedDescription
+            loadError = errorMessage(error)
         }
     }
 }

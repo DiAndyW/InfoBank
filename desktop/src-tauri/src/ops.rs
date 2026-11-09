@@ -52,9 +52,9 @@ pub struct NewAttachment {
 pub fn queue(conn: &Connection, op: Op, now_us: i64) -> Result<(), String> {
     let at = DateTime::from_timestamp_micros(now_us).ok_or("The system clock is out of range")?;
     let queued = Queued { id: uuid::Uuid::new_v4().to_string(), at, op };
-    apply(conn, &queued).map_err(|e| e.to_string())?;
+    apply(conn, &queued).map_err(crate::error_message::message)?;
     conn.execute("INSERT INTO outbox (op) VALUES (?1)", [serde_json::to_string(&queued).expect("ops serialize")])
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok(())
 }
 

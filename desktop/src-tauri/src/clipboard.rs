@@ -38,12 +38,12 @@ fn snapshot(state: &AppState, item_id: &str) -> Result<Snapshot, String> {
         .map_err(|_| "This Item is no longer available")?;
     let mut stmt = conn
         .prepare("SELECT id, filename, mime_type, size_bytes FROM attachments WHERE item_id = ?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let attachments = stmt
         .query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok((text, attachments, sync_error))
 }
 

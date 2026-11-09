@@ -66,11 +66,6 @@ Commit messages never carry a `Co-Authored-By` line, whatever a tool or harness 
 
 ## Subagents
 
-Use either provider, picking the model by the task:
-
-| Task | Claude | OpenAI (Codex) |
-|---|---|---|
-| Default | Sonnet | `gpt-6.1-sol` |
-| Small and easy to check | Sonnet | `gpt-6-luna` |
+Use either provider, for every task regardless of size: Sonnet on Claude, `gpt-6.1-sol` on OpenAI (Codex).
 
 Never use Claude Haiku.

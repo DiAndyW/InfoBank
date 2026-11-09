@@ -35,7 +35,7 @@ public final class SettingsModel {
         refreshTrashAfterCopy()
         copyObservation = DatabaseRegionObservation(tracking: Table("settings"), Table("outbox")).start(
             in: store.pool,
-            onError: { [weak self] error in Task { @MainActor in self?.trashError = error.localizedDescription } },
+            onError: { [weak self] error in Task { @MainActor in self?.trashError = errorMessage(error) } },
             onChange: { [weak self] _ in Task { @MainActor in self?.refreshTrashAfterCopy() } })
         var keychainReadable = true
         do { hasSecret = try store.settings(secrets: secrets).hasSecret } catch {
@@ -63,7 +63,7 @@ public final class SettingsModel {
             stranded = refusal
             return false
         } catch {
-            self.error = error.localizedDescription
+            self.error = errorMessage(error)
             return false
         }
         load()
@@ -85,7 +85,7 @@ public final class SettingsModel {
             trashError = nil
             return true
         } catch {
-            trashError = error.localizedDescription
+            trashError = errorMessage(error)
             return false
         }
     }
@@ -94,7 +94,7 @@ public final class SettingsModel {
         do {
             trashAfterCopy = try store.trashAfterCopy() ?? false
             trashError = nil
-        } catch { trashError = error.localizedDescription }
+        } catch { trashError = errorMessage(error) }
     }
 
     private func load() {

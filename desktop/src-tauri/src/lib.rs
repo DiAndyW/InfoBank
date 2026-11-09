@@ -1,3 +1,4 @@
+mod error_message;
 mod cache;
 mod clipboard;
 mod commands;

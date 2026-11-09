@@ -51,7 +51,7 @@ public final class ShareCaptureModel {
             attachments = []
             error = nil
             return id
-        } catch { self.error = error.localizedDescription; return nil }
+        } catch { self.error = errorMessage(error); return nil }
     }
 
     public func newTopicProblem(named name: String) -> String? {

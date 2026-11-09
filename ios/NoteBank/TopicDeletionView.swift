@@ -21,7 +21,7 @@ struct TopicDeletionView: View {
             let page = try store.items(in: .topic(topic.id), before: cursors.last ?? nil, limit: 51)
             items = Array(page.prefix(50))
             next = page.count > 50 ? items.last?.cursor : nil
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = errorMessage(error) }
     }
 
     var body: some View {
@@ -73,7 +73,7 @@ struct TopicDeletionView: View {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete Topic", role: .destructive) {
                     do { try store.deleteTopic(topic.id, keeping: keep, nowUs: Time.nowUs()); wake(); dismiss() }
-                    catch { self.error = error.localizedDescription }
+                    catch { self.error = errorMessage(error) }
                 }
             } message: {
                 switch keep {

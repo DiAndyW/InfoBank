@@ -2,12 +2,11 @@ import SwiftUI
 
 struct NoticeView: View {
     let message: String
-    let actionTitle: String
-    let onAction: () -> Void
+    let actionTitle: String?
+    let onAction: (() -> Void)?
     let onDismiss: () -> Void
 
     @Environment(\.palette) private var palette
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -20,8 +19,7 @@ struct NoticeView: View {
         .padding(.vertical, 2)
         .background(palette.ink, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
-        .task(id: "\(scenePhase == .active)\(message)") {
-            guard scenePhase == .active else { return }
+        .task(id: message) {
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
             onDismiss()
         }
@@ -33,13 +31,15 @@ struct NoticeView: View {
                 .font(.plex(.sans, 14, relativeTo: .callout))
                 .fixedSize(horizontal: !wrapping, vertical: wrapping)
                 .frame(maxWidth: wrapping ? .infinity : nil, alignment: .leading)
-            Button(action: onAction) {
-                Text(actionTitle)
-                    .font(.plex(.sansSemibold, 14, relativeTo: .callout))
-                    .underline()
-                    .fixedSize()
-                    .padding(.horizontal, 8)
-                    .frame(minHeight: 44)
+            if let actionTitle, let onAction {
+                Button(action: onAction) {
+                    Text(actionTitle)
+                        .font(.plex(.sansSemibold, 14, relativeTo: .callout))
+                        .underline()
+                        .fixedSize()
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 44)
+                }
             }
             Button(action: onDismiss) {
                 Image(systemName: "xmark")

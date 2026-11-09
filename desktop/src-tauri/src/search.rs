@@ -125,7 +125,7 @@ pub fn search(conn: &Connection, query: &Query, before: Option<&Before>) -> Resu
             })
             .collect())
     };
-    run().map_err(|e| e.to_string())
+    run().map_err(crate::error_message::message)
 }
 
 #[cfg(test)]

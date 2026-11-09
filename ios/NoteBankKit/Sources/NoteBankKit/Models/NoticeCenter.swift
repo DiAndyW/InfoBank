@@ -3,13 +3,13 @@ import Observation
 
 public struct Notice: Equatable, Identifiable {
     public let id = UUID()
-    public enum Action: Equatable { case show, dismiss, undoTrash, undoClear(DraftPlace), undoMove(Destination), undoBatchTrash([String]) }
+    public enum Action: Equatable { case show, undoTrash, undoClear(DraftPlace), undoMove(Destination), undoBatchTrash([String]) }
 
-    public var actionTitle: String { action == .show ? "Show" : action == .dismiss ? "Dismiss" : "Undo" }
+    public var actionTitle: String? { guard let action else { return nil }; return action == .show ? "Show" : "Undo" }
 
     public let message: String
     public let itemID: String
-    public let action: Action
+    public let action: Action?
 }
 
 @MainActor @Observable
@@ -21,7 +21,7 @@ public final class NoticeCenter {
     public func post(_ notices: [SyncNotice]) {
         guard let last = notices.last else { return }
         let more = notices.count > 1 ? " And \(notices.count - 1) more." : ""
-        current = Notice(message: last.message + more, itemID: last.itemID, action: [.topic, .topicRenamed].contains(last.kind) ? .dismiss : .show)
+        current = Notice(message: last.message + more, itemID: last.itemID, action: [.topic, .topicRenamed].contains(last.kind) ? nil : .show)
     }
 
     public func postTrashed(itemID: String, copied: Bool = true) {
@@ -39,11 +39,11 @@ public final class NoticeCenter {
     }
 
     public func postBatchCompleted(count: Int, copied: Bool) {
-        current = Notice(message: "\(count) \(count == 1 ? "Item" : "Items") \(copied ? "copied" : "restored")", itemID: "", action: .dismiss)
+        current = Notice(message: "\(count) \(count == 1 ? "Item" : "Items") \(copied ? "copied" : "restored")", itemID: "", action: nil)
     }
 
     public func postCopiedText() {
-        current = Notice(message: "Copied text", itemID: "", action: .dismiss)
+        current = Notice(message: "Copied text", itemID: "", action: nil)
     }
 
     public func postRestored(itemID: String) {

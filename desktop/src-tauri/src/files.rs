@@ -105,7 +105,7 @@ pub fn unstage(conn: &Connection, dir: &Path, id: &str) -> Result<(), String> {
     let id = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?.to_string();
     let captured: bool = conn
         .query_row("SELECT EXISTS (SELECT 1 FROM attachments WHERE id = ?1)", [&id], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     if !captured {
         let _ = std::fs::remove_dir_all(dir.join("files").join(&id));
     }
@@ -121,7 +121,7 @@ pub fn sweep_staged(conn: &Connection, dir: &Path) -> Result<(), String> {
                 [entry.file_name().to_string_lossy()],
                 |r| r.get(0),
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(crate::error_message::message)?;
         if !known {
             let _ = std::fs::remove_dir_all(entry.path());
         }

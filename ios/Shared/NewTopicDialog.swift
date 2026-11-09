@@ -1,3 +1,4 @@
+import NoteBankKit
 import SwiftUI
 
 private struct NewTopicDialog: View {
@@ -13,7 +14,7 @@ private struct NewTopicDialog: View {
             try create(name)
             close()
         } catch {
-            failure = error.localizedDescription
+            failure = errorMessage(error)
         }
     }
 

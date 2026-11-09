@@ -6,7 +6,7 @@ import WidgetKit
 struct CaptureControlConfiguration: ControlConfigurationIntent {
     static let title: LocalizedStringResource = "Capture"
 
-    @Parameter(title: "Place") var place: CapturePlace?
+    @Parameter(title: "Place") var place:   CapturePlace?
 }
 
 struct CaptureControl: ControlWidget {

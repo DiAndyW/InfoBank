@@ -11,11 +11,11 @@ pub struct Settings {
 pub fn get(conn: &Connection, secret: &Entry) -> Result<Settings, String> {
     let server_url = conn
         .query_row("SELECT server_url FROM device", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let has_secret = match secret.get_password() {
         Ok(_) => true,
         Err(keyring_core::Error::NoEntry) => false,
-        Err(e) => return Err(format!("Couldn't read the keychain: {e}")),
+        Err(e) => return Err(format!("Couldn't read the keychain: {}", crate::error_message::message(e))),
     };
     Ok(Settings { server_url, has_secret, quick_capture: crate::shortcut::get(conn)? })
 }
@@ -115,7 +115,7 @@ fn stranded_message(s: Stranded) -> String {
 
 /// `server_url` must already be normalised.
 pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Option<&str>, confirmed: Stranded) -> Result<(), SaveError> {
-    let db = |e: rusqlite::Error| e.to_string();
+    let db = crate::error_message::message;
     let new_secret = match new_secret.map(str::trim) {
         Some("") => return Err("The secret can't be blank".to_string().into()),
         Some(s) => Some(s),
@@ -156,7 +156,7 @@ pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Opt
     // The keychain goes last so only a failed commit needs undoing.
     let mut replaced_secret = None;
     if let Some(s) = new_secret {
-        let keychain = |e: keyring_core::Error| format!("Couldn't save to the keychain: {e}");
+        let keychain = |e: keyring_core::Error| format!("Couldn't save to the keychain: {}", crate::error_message::message(e));
         replaced_secret = match secret.get_password() {
             Ok(previous) => Some(Some(previous)),
             Err(keyring_core::Error::NoEntry) => Some(None),
@@ -171,7 +171,7 @@ pub fn save(conn: &Connection, secret: &Entry, server_url: &str, new_secret: Opt
                 None => secret.delete_credential(),
             };
         }
-        return Err(e.to_string().into());
+        return Err(crate::error_message::message(e).into());
     }
     Ok(())
 }
@@ -192,13 +192,13 @@ pub async fn save_checked(
 }
 
 pub fn trash_after_copy(conn: &Connection) -> Result<Option<bool>, String> {
-    conn.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0)).map_err(|e| e.to_string())
+    conn.query_row("SELECT trash_after_copy FROM settings WHERE id = 1", [], |r| r.get(0)).map_err(crate::error_message::message)
 }
 
 pub fn set_trash_after_copy(conn: &Connection, on: bool, now_us: i64) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     crate::ops::queue(&tx, crate::ops::Op::SetTrashAfterCopy { value: on }, now_us)?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 #[cfg(test)]

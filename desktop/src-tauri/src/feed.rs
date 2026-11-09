@@ -116,7 +116,7 @@ fn pin(conn: &Connection, a: &ops::NewAttachment, now_us: i64) -> Result<(), Str
         (&a.id, format!("files/{}/{}", a.id, a.filename), a.size_bytes, now_us),
     )
     .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(crate::error_message::message)
 }
 
 pub fn capture(
@@ -143,26 +143,26 @@ pub fn capture(
     let attachments = staged_attachments(dir, attachment_ids)?;
     let item_id = uuid::Uuid::new_v4().to_string();
 
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     tx.execute(
         "INSERT INTO items (id, topic_id, text, capture_time, in_tunnel) VALUES (?1, ?2, ?3, ?4, ?5)",
         (&item_id, topic_id, &text, now_us, tunnel),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(crate::error_message::message)?;
     for a in &attachments {
         tx.execute(
             "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail)
              VALUES (?1, ?2, ?3, ?4, ?5, 0, 0)",
             (&a.id, &item_id, &a.filename, &a.mime_type, a.size_bytes),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
         pin(&tx, a, now_us)?;
     }
     ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), tunnel, text, attachments }, now_us)?;
     if let Some(place) = draft {
-        tx.execute("DELETE FROM drafts WHERE place = ?1", [place]).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM drafts WHERE place = ?1", [place]).map_err(crate::error_message::message)?;
     }
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 #[derive(Serialize, Debug)]
@@ -185,24 +185,24 @@ pub fn edit_item(
     let (current, trashed): (Option<String>, bool) = conn
         .query_row("SELECT text, deleted_at IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or(GONE)?;
     let files: Vec<String> = conn
         .prepare("SELECT id FROM attachments WHERE item_id = ?1")
         .and_then(|mut stmt| stmt.query_map([item_id], |r| r.get(0))?.collect())
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let adding = staged_attachments(dir, add_ids)?;
     let (removing, kept): (Vec<String>, Vec<String>) = files.into_iter().partition(|id| remove_ids.contains(id));
 
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
+    tx.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(crate::error_message::message)?;
     let item = || item_id.to_string();
     if text.is_none() && kept.is_empty() && adding.is_empty() {
         // Trash keeps the content, so Undo brings the whole Item back.
         if !trashed {
             ops::queue(&tx, ops::Op::TrashItem { item_id: item() }, now_us)?;
         }
-        tx.commit().map_err(|e| e.to_string())?;
+        tx.commit().map_err(crate::error_message::message)?;
         return Ok(Edited { trashed: true });
     }
     // Only SetText and AddAttachment restore on the Server, and saving an Item always brings it back.
@@ -220,7 +220,7 @@ pub fn edit_item(
     for attachment_id in removing {
         ops::queue(&tx, ops::Op::RemoveAttachment { item_id: item(), attachment_id }, now_us)?;
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit().map_err(crate::error_message::message)?;
     Ok(Edited { trashed: false })
 }
 
@@ -228,7 +228,7 @@ pub fn discard_item(conn: &Connection, dir: &Path, item_id: &str) -> Result<(), 
     let refused: bool = conn
         .query_row("SELECT sync_error IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| r.get(0))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or(GONE)?;
     if !refused {
         return Err("Only an Item the Server refused can be discarded".into());
@@ -236,12 +236,12 @@ pub fn discard_item(conn: &Connection, dir: &Path, item_id: &str) -> Result<(), 
     let cached: Vec<(String, String)> = conn
         .prepare("SELECT c.kind, c.path FROM cached_files c JOIN attachments a ON a.id = c.attachment_id WHERE a.item_id = ?1")
         .and_then(|mut stmt| stmt.query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-        .map_err(|e| e.to_string())?;
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     tx.execute("DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM attachments WHERE item_id = ?1)", [item_id])
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM items WHERE id = ?1", [item_id]).map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
+    tx.execute("DELETE FROM items WHERE id = ?1", [item_id]).map_err(crate::error_message::message)?;
+    tx.commit().map_err(crate::error_message::message)?;
     for (kind, path) in cached {
         let path = dir.join(path);
         let _ = std::fs::remove_file(&path);
@@ -263,54 +263,54 @@ pub fn resolve_conflict(conn: &Connection, dir: &Path, item_id: &str, keep: Keep
     let (text, mine): (Option<String>, bool) = conn
         .query_row("SELECT text, mine FROM conflicts WHERE item_id = ?1", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or("This conflict was already settled")?;
     if mine == matches!(keep, Keep::Theirs) {
-        conn.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM conflicts WHERE item_id = ?1", [item_id]).map_err(crate::error_message::message)?;
         return Ok(Edited { trashed: false });
     }
     let base_rev: i64 = conn
         .query_row(&format!("SELECT {EDIT_BASE} FROM items WHERE id = ?1"), [item_id], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     edit_item(conn, dir, item_id, text.as_deref().unwrap_or(""), &[], &[], base_rev, now_us)
 }
 
 pub fn set_many_trashed(conn: &Connection, item_ids: &[String], trashed: bool, now_us: i64) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     let mut seen = std::collections::HashSet::new();
     for id in item_ids.iter().filter(|id| seen.insert(id.as_str())) {
         let available = tx.query_row(
             "SELECT sync_error IS NULL AND (deleted_at IS NOT NULL) != ?2 AND (?2 OR purge_at IS NULL OR purge_at > ?3) AND (?2 OR text IS NOT NULL OR EXISTS(SELECT 1 FROM attachments WHERE item_id = items.id)) FROM items WHERE id = ?1",
             rusqlite::params![id, trashed, now_us], |r| r.get::<_, bool>(0),
-        ).optional().map_err(|e| e.to_string())?.unwrap_or(false);
+        ).optional().map_err(crate::error_message::message)?.unwrap_or(false);
         if !available { return Err(GONE.into()); }
         let op = if trashed { ops::Op::TrashItem { item_id: id.clone() } } else { ops::Op::RestoreItem { item_id: id.clone() } };
         ops::queue(&tx, op, now_us)?;
     }
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 pub fn set_trashed(conn: &Connection, item_id: &str, trashed: bool, now_us: i64) -> Result<(), String> {
     let in_trash: bool = conn
         .query_row("SELECT deleted_at IS NOT NULL FROM items WHERE id = ?1", [item_id], |r| r.get(0))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or(GONE)?;
     if in_trash == trashed {
         return Ok(());
     }
     let item_id = item_id.to_string();
     let op = if trashed { ops::Op::TrashItem { item_id } } else { ops::Op::RestoreItem { item_id } };
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     ops::queue(&tx, op, now_us)?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 pub fn move_item(conn: &Connection, item_id: &str, target: &Target, now_us: i64) -> Result<(), String> {
     let current: (Option<String>, bool) = conn
         .query_row("SELECT topic_id, in_tunnel FROM items WHERE id = ?1 AND deleted_at IS NULL", [item_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or(GONE)?;
     let (topic_id, tunnel) = match target {
         Target::Inbox => (None, false),
@@ -323,9 +323,9 @@ pub fn move_item(conn: &Connection, item_id: &str, target: &Target, now_us: i64)
     if let Some(id) = topic_id {
         crate::topics::require_open(conn, id)?;
     }
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     ops::queue(&tx, ops::Op::MoveItem { item_id: item_id.into(), topic_id: topic_id.map(String::from), tunnel }, now_us)?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 // Unsynced: an op still queued for the Item, or one of its files not uploaded yet.

@@ -127,9 +127,9 @@ extension Store {
 
     public func settings(secrets: SecretStore) throws(SettingsError) -> SettingsState {
         let url: String?
-        do { url = try serverURL() } catch { throw SettingsError(message: error.localizedDescription) }
+        do { url = try serverURL() } catch { throw SettingsError(message: errorMessage(error)) }
         do { return SettingsState(serverURL: url, hasSecret: try secrets.read() != nil) } catch {
-            throw SettingsError(message: "Couldn't read the keychain: \(error.localizedDescription)")
+            throw SettingsError(message: "Couldn't read the keychain: \(errorMessage(error))")
         }
     }
 
@@ -204,13 +204,13 @@ extension Store {
                         wroteSecret = true
                         try secrets.write(secret)
                     } catch {
-                        throw SettingsError(message: "Couldn't save to the keychain: \(error.localizedDescription)")
+                        throw SettingsError(message: "Couldn't save to the keychain: \(errorMessage(error))")
                     }
                 }
             }
         } catch {
             if wroteSecret, let previousSecret { try? secrets.write(previousSecret) }
-            throw error as? SettingsError ?? SettingsError(message: error.localizedDescription)
+            throw error as? SettingsError ?? SettingsError(message: errorMessage(error))
         }
     }
 }
