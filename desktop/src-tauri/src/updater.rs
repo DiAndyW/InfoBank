@@ -65,7 +65,7 @@ impl Source for PluginSource {
         update.timeout = Some(Duration::from_secs(10 * 60));
         let bytes = update.download(|_, _| {}, || {}).await.map_err(classify)?;
         Ok(Box::new(move |relaunch| {
-            update.restart_after_install(relaunch).install(bytes).map_err(|e| e.to_string())
+            update.restart_after_install(relaunch).install(bytes).map_err(crate::error_message::message)
         }))
     }
 }

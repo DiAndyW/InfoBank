@@ -17,7 +17,7 @@ struct PlacesView: View {
 
     private func run(_ action: () throws -> Void) {
         do { try action(); wake() }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = errorMessage(error) }
     }
 
     @ViewBuilder private func topicMenu(_ topic: TopicPlace, archived: Bool) -> some View {

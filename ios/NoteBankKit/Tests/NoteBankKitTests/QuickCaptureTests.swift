@@ -92,6 +92,49 @@ struct QuickCaptureTests {
 
 // The suspend notification is process-wide, so every other Store the tests open opts out of it.
 @Suite(.serialized) struct QuickCaptureSuspensionTests {
+    @Test @MainActor func successfulDraftSaveClearsSuspensionError() throws {
+        let store = try Store(at: tempStore().file)
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+        model.text = "Keep this draft"
+        store.suspendFileDatabaseAccess()
+        defer { store.resumeFileDatabaseAccess() }
+        model.flushDraft()
+        #expect(model.error == nil)
+        model.flushDraft()
+        #expect(model.error == nil)
+        model.flushDraft()
+        #expect(model.error == "Couldn't save your draft. Your text is still here.")
+        store.resumeFileDatabaseAccess()
+        model.flushDraft()
+        #expect(try store.drafts()[.inbox]?.text == "Keep this draft")
+        #expect(model.error == nil)
+        store.suspendFileDatabaseAccess()
+        model.flushDraft()
+        #expect(model.error == nil)
+        model.reportImportError("Send failed")
+        model.flushDraft()
+        model.flushDraft()
+        #expect(model.error == "Send failed")
+        #expect(!model.send())
+        model.flushDraft()
+        model.flushDraft()
+        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+        store.resumeFileDatabaseAccess()
+        model.flushDraft()
+        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+    }
+
+    @Test @MainActor func sendDatabaseFailureIsPlain() throws {
+        let store = try Store(at: tempStore().file)
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", onCaptured: {})
+        model.text = "keep"
+        store.suspendFileDatabaseAccess()
+        defer { store.resumeFileDatabaseAccess() }
+        #expect(!model.send())
+        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+        #expect(model.text == "keep")
+    }
+
     @Test func placeQueriesStoreClosesCleanlyWhileTheAppIsSuspended() throws {
         let file = try tempStore().file
         let app = try Store(at: file)

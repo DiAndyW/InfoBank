@@ -21,7 +21,7 @@ pub fn parse(s: &str) -> Result<Shortcut, String> {
 pub fn get(conn: &Connection) -> Result<Hotkey, String> {
     let (stored, on): (String, bool) = conn
         .query_row("SELECT quick_capture_shortcut, quick_capture_on FROM device", [], |r| Ok((r.get(0)?, r.get(1)?)))
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok(Hotkey { shortcut: parse(&stored)?.into_string(), on })
 }
 
@@ -30,7 +30,7 @@ pub fn set_shortcut(conn: &Connection, new: &str, register: impl FnOnce(&Shortcu
     if get(conn)?.on {
         register(&new)?;
     }
-    conn.execute("UPDATE device SET quick_capture_shortcut = ?1", [new.into_string()]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE device SET quick_capture_shortcut = ?1", [new.into_string()]).map_err(crate::error_message::message)?;
     get(conn)
 }
 
@@ -38,7 +38,7 @@ pub fn set_on(conn: &Connection, on: bool, register: impl FnOnce(&Shortcut) -> R
     if on {
         register(&parse(&get(conn)?.shortcut)?)?;
     }
-    conn.execute("UPDATE device SET quick_capture_on = ?1", [on]).map_err(|e| e.to_string())?;
+    conn.execute("UPDATE device SET quick_capture_on = ?1", [on]).map_err(crate::error_message::message)?;
     get(conn)
 }
 

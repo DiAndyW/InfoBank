@@ -382,3 +382,87 @@ test("restart_waits_for_the_open_picker_and_confirms_its_files", async () => {
   await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Restart" })); });
   expect(calls.filter(c => c.cmd === "restart_to_update")).toHaveLength(1);
 });
+
+test("composer grows with text and shrinks after Clear", async () => {
+  backend(); await start();
+  const el = box() as HTMLTextAreaElement;
+  let height = 56;
+  Object.defineProperty(el, "scrollHeight", { get: () => height });
+  height = 104;
+  type("wrapped text");
+  expect(el.style.height).toBe("104px");
+  height = 56;
+  fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+  expect(el.style.height).toBe("56px");
+});
+
+test("composer holds its row's height while measuring so the Feed above isn't resized", async () => {
+  backend(); await start();
+  const el = box() as HTMLTextAreaElement;
+  const row = el.parentElement!;
+  Object.defineProperty(row, "offsetHeight", { value: 152 });
+  const rowHeights: string[] = [];
+  Object.defineProperty(el, "scrollHeight", { get: () => { rowHeights.push(row.style.height); return 152; } });
+  type("wrapped text");
+  expect(rowHeights[0]).toBe("152px");
+  expect(row.style.height).toBe("");
+});
+
+test("composer refits when its row changes size, such as a sidebar toggle", async () => {
+  const observed = new Map<Element, ResizeObserverCallback>();
+  const Original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element) { observed.set(target, this.callback); }
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  try {
+    backend(); await start();
+    const el = box() as HTMLTextAreaElement;
+    const resize = () => observed.get(el.parentElement!)!([], {} as ResizeObserver);
+    let height = 104;
+    Object.defineProperty(el, "scrollHeight", { get: () => height });
+    Object.defineProperty(el, "clientHeight", { get: () => Math.min(height, 120) });
+    resize();
+    expect(el.style.height).toBe("104px");
+    expect(el.style.overflowY).toBe("hidden");
+    height = 200;
+    resize();
+    expect(el.style.height).toBe("200px");
+    expect(el.style.overflowY).toBe("auto");
+    height = 56;
+    resize();
+    expect(el.style.height).toBe("56px");
+    expect(el.style.overflowY).toBe("hidden");
+  } finally { globalThis.ResizeObserver = Original; }
+});
+
+test("draft failures wait for three attempts and clear on recovery", async () => {
+  const options = { saveFailures: 3 };
+  backend(options);
+  await start(); type("keep");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await act(async () => { fireEvent.blur(window); }); await settle();
+    expect(screen.queryByText("Couldn't save your draft. Your text is still here.") !== null).toBe(attempt === 3);
+    expect(screen.queryByText("disk full")).not.toBeInTheDocument();
+  }
+  await act(async () => { fireEvent.blur(window); }); await settle();
+  expect(screen.queryByText("Couldn't save your draft. Your text is still here.")).not.toBeInTheDocument();
+  options.saveFailures = 1;
+  type("keep editing");
+  await act(async () => { fireEvent.blur(window); }); await settle();
+  expect(screen.queryByText("Couldn't save your draft. Your text is still here.")).not.toBeInTheDocument();
+});
+
+test("draft failures and recovery preserve the Send error", async () => {
+  const failure = Promise.reject("Couldn't save your draft. Your text is still here.");
+  failure.catch(() => {});
+  backend({ capture: failure, saveFailures: 4 });
+  await start(); type("keep");
+  fireEvent.click(screen.getByRole("button", { name: "Send" })); await settle();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await act(async () => { fireEvent.blur(window); }); await settle();
+    expect(screen.getByText("Couldn't save your draft. Your text is still here.")).toBeInTheDocument();
+  }
+});

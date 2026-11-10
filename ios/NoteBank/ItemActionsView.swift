@@ -5,8 +5,10 @@ struct ItemActionsView: View {
     let item: FeedItem
     let store: Store
     var copiesWholeItem = false
+    var trashAfterCopy: Bool? = false
     var onSelect: (() -> Void)?
-    let onCopy: () -> Void
+    enum Copy { case item(Bool?), text }
+    let onCopy: (Copy) -> Void
     let onChanged: (_ trashed: Bool, _ moved: Bool) -> Void
 
     private enum Page { case commands, edit, move, conflict }
@@ -35,7 +37,7 @@ struct ItemActionsView: View {
     @Environment(\.palette) private var palette
 
     private func run(_ action: () throws -> Void) {
-        do { try action(); dismiss() } catch { self.error = error.localizedDescription }
+        do { try action(); dismiss() } catch { self.error = errorMessage(error) }
     }
 
     private func move(_ destination: Destination) {
@@ -56,7 +58,8 @@ struct ItemActionsView: View {
                 case .commands:
                     List {
                         if let onSelect, item.syncError == nil { Button("Select", systemImage: "checkmark.circle", action: onSelect) }
-                        if copiesWholeItem || item.text != nil { Button(copiesWholeItem ? "Copy Item" : "Copy Text", systemImage: "doc.on.doc", action: onCopy) }
+                        if copiesWholeItem { Button(trashAfterCopy == true ? "Copy & Trash" : "Copy Item", systemImage: "doc.on.doc") { onCopy(.item(trashAfterCopy)) } }
+                        if item.text != nil { Button("Copy Text", systemImage: "doc.on.doc") { onCopy(.text) } }
                         if item.syncError != nil {
                             Button("Discard…", systemImage: "trash", role: .destructive) { discard = true }
                         } else {
@@ -66,7 +69,7 @@ struct ItemActionsView: View {
                             Button("Edit", systemImage: "pencil") { beginEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "") }
                             Button("Move to…", systemImage: "folder") {
                                 do { topics = try store.places().topics; page = .move }
-                                catch { self.error = error.localizedDescription }
+                                catch { self.error = errorMessage(error) }
                             }
                             Section {
                                 Button("Move to Trash", systemImage: "trash", role: .destructive) {

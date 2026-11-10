@@ -39,7 +39,7 @@ struct AttachmentView: View {
                         pinned = true
                         error = nil
                     }
-                    catch { self.error = error.localizedDescription }
+                    catch { self.error = errorMessage(error) }
                     loading = false
                 }
             } label: {

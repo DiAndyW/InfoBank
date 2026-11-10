@@ -43,6 +43,8 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   const chain = useRef(Promise.resolve());
   const draftSaves = useRef(new Set<Promise<void>>());
   const draftFailure = useRef<{ reason: unknown } | null>(null);
+  const draftFailures = useRef(0);
+  const draftError = "Couldn't save your draft. Your text is still here.";
   function enqueue(action: () => Promise<void>) {
     const result = chain.current.then(action);
     chain.current = result.catch(() => {});
@@ -58,11 +60,16 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
     const homeTopicId = value.homeTopicId;
     const save = enqueue(() => saveDraft(key, text, homeTopicId));
     draftSaves.current.add(save);
-    save.then(() => draftSaves.current.delete(save), (err) => {
+    save.then(() => {
+      draftSaves.current.delete(save);
+      draftFailures.current = 0;
+      setFailure(previous => previous?.draft ? null : previous);
+    }, (err) => {
       draftSaves.current.delete(save);
       draftFailure.current = { reason: err };
       value.pending = true;
-      setError(String(err));
+      draftFailures.current += 1;
+      if (draftFailures.current >= 3) setFailure(previous => previous ?? { message: draftError, draft: true });
     });
   }
   function schedule(key = place) {
@@ -122,11 +129,35 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
       window.removeEventListener("blur", blur);
     };
   }, []);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ message: string; draft: boolean } | null>(null);
+  const error = failure?.message ?? null;
+  function setError(message: string | null) {
+    setFailure(message === null ? null : { message, draft: false });
+  }
   const [dragging, setDragging] = useState(false);
   const saving = useRef(false);
   const discardAfterSave = useRef(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
+
+  const fit = () => {
+    const el = textarea.current!;
+    const row = el.parentElement!;
+    // Collapsing the textarea must not resize the Feed above, or the browser clamps its scroll position.
+    row.style.height = `${row.offsetHeight}px`;
+    el.style.overflowY = "hidden";
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+    row.style.height = "";
+    el.style.overflowY = el.scrollHeight > el.clientHeight ? "auto" : "hidden";
+  };
+
+  useLayoutEffect(fit, [draft]);
+
+  useLayoutEffect(() => {
+    const observer = new ResizeObserver(fit);
+    observer.observe(textarea.current!.parentElement!);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const drops = new Map<string, { add: typeof addAll | null; finish: () => void }>();

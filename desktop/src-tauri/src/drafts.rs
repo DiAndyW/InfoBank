@@ -14,13 +14,13 @@ pub fn list(conn: &Connection) -> Result<Vec<Draft>, String> {
          AND NOT EXISTS (SELECT 1 FROM topics WHERE id = substr(drafts.place, 7) AND deleted_at IS NULL)",
         [],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(crate::error_message::message)?;
     conn.prepare(
         "SELECT place, text, (SELECT id FROM topics WHERE id = drafts.home_topic_id AND deleted_at IS NULL AND archived_at IS NULL)
          FROM drafts",
     )
         .and_then(|mut stmt| stmt.query_map([], |r| Ok(Draft { place: r.get(0)?, text: r.get(1)?, home_topic_id: r.get(2)? }))?.collect())
-        .map_err(|e| e.to_string())
+        .map_err(crate::error_message::message)
 }
 
 pub fn save(conn: &Connection, place: &str, text: &str, home_topic_id: Option<&str>) -> Result<(), String> {
@@ -34,13 +34,19 @@ pub fn save(conn: &Connection, place: &str, text: &str, home_topic_id: Option<&s
         )
     }
     .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(crate::error_message::message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store;
+
+    #[test]
+    fn database_failure_is_plain() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(save(&conn, "inbox", "keep", None).unwrap_err(), "NoteBank couldn't read or save its data. Try again.");
+    }
 
     #[test]
     fn save_then_list_round_trips_each_place() {

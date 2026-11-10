@@ -57,7 +57,10 @@ export function useStaging(state?: { staged: Staged[]; setStaged: Dispatch<SetSt
         failed([`${name} is over 100 MB`]);
         continue;
       }
-      add(async () => stageBytes(name, new Uint8Array(await file.arrayBuffer())));
+      add(async () => stageBytes(name, new Uint8Array(await file.arrayBuffer().catch((error: unknown) => {
+        console.error("Pasted file read failed", error instanceof DOMException ? error.name : "unknown");
+        throw "Couldn't read the pasted attachment.";
+      }))));
     }
   }
 

@@ -1,3 +1,4 @@
+mod error_message;
 mod cache;
 mod clipboard;
 mod commands;
@@ -222,6 +223,7 @@ pub fn run() {
             commands::attachment_stored,
             commands::attachment_original,
             commands::copy_item,
+            commands::copy_attachment,
             commands::prepare_copy_items,
             commands::finish_copy_items,
             commands::discard_copy_items,

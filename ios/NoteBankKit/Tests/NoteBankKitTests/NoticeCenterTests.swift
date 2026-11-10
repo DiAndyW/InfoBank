@@ -1,0 +1,23 @@
+import Testing
+@testable import NoteBankKit
+
+@MainActor struct NoticeCenterTests {
+    @Test func copiedTextReplacesCurrentNotice() {
+        let center = NoticeCenter()
+        center.postTrashed(itemID: "item")
+        let previousID = center.current?.id
+
+        center.postCopiedText()
+
+        #expect(center.current?.message == "Copied text")
+        #expect(center.current?.itemID == "")
+        #expect(center.current?.action == nil)
+        #expect(center.current?.id != previousID)
+    }
+
+    @Test func copiedTextHasNoAction() {
+        let center = NoticeCenter()
+        center.postCopiedText()
+        #expect(center.current?.action == nil)
+    }
+}

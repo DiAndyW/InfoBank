@@ -46,7 +46,7 @@ struct FeedView: View {
     @State private var copyTask: Task<Void, Never>?
     @State private var copies = 0
     @State private var commands: FeedItem?
-    @State private var copyAfterSheet: FeedItem?
+    @State private var copyAfterSheet: (item: FeedItem, choice: ItemActionsView.Copy)?
     @State private var actionError: String?
     @State private var asking: FeedItem?
     @State private var renameTopic = false
@@ -146,7 +146,7 @@ struct FeedView: View {
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
-    private func copy(_ item: FeedItem) {
+    private func copy(_ item: FeedItem, choice: ItemActionsView.Copy? = nil) {
         guard copyTask == nil, item.syncError == nil else { return }
         copyTask = Task { @MainActor in
             defer { copyTask = nil }
@@ -169,7 +169,9 @@ struct FeedView: View {
                     throw AttachmentError("Couldn't copy the complete Item")
                 }
                 copies += 1
-                let outcome = model.copied(item)
+                let outcome: CopyOutcome
+                if case .item(let preference) = choice { outcome = model.copied(item, preference: preference) }
+                else { outcome = model.copied(item) }
                 if outcome == .trashed {
                     copiedID = nil
                     notices.postTrashed(itemID: item.id)
@@ -177,7 +179,7 @@ struct FeedView: View {
                 if outcome == .ask { asking = item }
                 wake()
             } catch is CancellationError {
-            } catch { actionError = error.localizedDescription }
+            } catch { actionError = errorMessage(error) }
         }
     }
 
@@ -220,7 +222,10 @@ struct FeedView: View {
                 .padding(.bottom, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .scrollDismissesKeyboard(.interactively)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(.rect)
+            .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
             .defaultScrollAnchor(place == .trash ? .top : .bottom)
             .background(palette.surface)
@@ -253,7 +258,7 @@ struct FeedView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if batch.selection.isSelecting {
-                BatchActionsBar(batch: batch, items: model.items, trash: place == .trash, tunnel: place == .tunnel)
+                BatchActionsBar(batch: batch, items: model.items, trash: place == .trash, tunnel: place == .tunnel, trashAfterCopy: model.trashAfterCopy)
             } else {
                 VStack(spacing: 8) {
                     if let composer, let draftPlace {
@@ -272,10 +277,16 @@ struct FeedView: View {
         .onChange(of: model.items) { _, items in batch.reconcile(items) }
         .onChange(of: batch.error) { _, error in if let error { actionError = error; batch.error = nil } }
         .sheet(item: $commands, onDismiss: {
-            if let item = copyAfterSheet {
+            if let pending = copyAfterSheet {
                 copyAfterSheet = nil
-                if place == .tunnel { copy(item) }
-                else if let text = item.text { UIPasteboard.general.string = text }
+                switch pending.choice {
+                case .item: copy(pending.item, choice: pending.choice)
+                case .text:
+                    if let text = pending.item.text {
+                        UIPasteboard.general.string = text
+                        notices.postCopiedText()
+                    }
+                }
             }
         }) { item in
             if place == .trash {
@@ -289,7 +300,7 @@ struct FeedView: View {
                                 commands = nil
                                 model.reload()
                                 wake()
-                            } catch { actionError = error.localizedDescription }
+                            } catch { actionError = errorMessage(error) }
                         }
                     }
                     .navigationTitle("Item actions")
@@ -297,12 +308,12 @@ struct FeedView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
                 }.presentationDetents([.medium])
             } else {
-            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, onSelect: {
+            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, trashAfterCopy: model.trashAfterCopy, onSelect: {
                 copyTask?.cancel()
                 commands = nil
                 batch.selection.begin(item.id)
-            }, onCopy: {
-                copyAfterSheet = item
+            }, onCopy: { choice in
+                copyAfterSheet = (item, choice)
                 commands = nil
             }, onChanged: { trashed, moved in
                 model.reload()
@@ -344,7 +355,7 @@ struct FeedView: View {
             Button("Save") {
                 guard case .topic(let id) = place else { return }
                 do { try store.renameTopic(id, name: topicNameDraft, nowUs: Time.nowUs()); model.reload(); wake() }
-                catch { actionError = error.localizedDescription }
+                catch { actionError = errorMessage(error) }
             }
         }
         .fullScreenCover(isPresented: $deleteTopic) {
@@ -368,7 +379,7 @@ struct FeedView: View {
                         Button("Rename", systemImage: "pencil") { topicNameDraft = model.topicName ?? title; renameTopic = true }
                         Button(model.topicUnavailable ? "Unarchive" : "Archive", systemImage: "archivebox") {
                             do { try store.setTopicArchived(id, archived: !model.topicUnavailable, nowUs: Time.nowUs()); model.reload(); wake() }
-                            catch { actionError = error.localizedDescription }
+                            catch { actionError = errorMessage(error) }
                         }
                         Button("Delete Topic…", systemImage: "trash", role: .destructive) { deleteTopic = true }
                     } label: { Image(systemName: "ellipsis") }

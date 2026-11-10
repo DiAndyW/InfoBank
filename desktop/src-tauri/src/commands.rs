@@ -62,6 +62,15 @@ pub async fn set_items_trashed(app: AppHandle, state: State<'_, AppState>, item_
 
 #[tauri::command]
 pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: String) -> Result<(), String> {
+    write_clipboard(app, crate::clipboard::prepare(&state, &item_id, now_us()).await?).await
+}
+
+#[tauri::command]
+pub async fn copy_attachment(app: AppHandle, state: State<'_, AppState>, attachment_id: String) -> Result<(), String> {
+    write_clipboard(app, crate::clipboard::prepare_attachment(&state, &attachment_id, now_us()).await?).await
+}
+
+async fn write_clipboard(app: AppHandle, payload: crate::clipboard::Payload) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let owner = app
         .get_webview_window("main")
@@ -69,7 +78,6 @@ pub async fn copy_item(app: AppHandle, state: State<'_, AppState>, item_id: Stri
         .hwnd()
         .map_err(|_| "Couldn't access the clipboard window")?
         .0 as usize;
-    let payload = crate::clipboard::prepare(&state, &item_id, now_us()).await?;
     let (send, receive) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         #[cfg(target_os = "windows")]
@@ -136,7 +144,7 @@ pub async fn set_trash_after_copy(app: AppHandle, state: State<'_, AppState>, on
 
 #[tauri::command]
 pub async fn nav_counts(state: State<'_, AppState>) -> Result<feed::Counts, String> {
-    feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(|e| e.to_string())
+    feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -189,7 +197,7 @@ pub async fn restore_item(app: AppHandle, state: State<'_, AppState>, item_id: S
 
 #[tauri::command]
 pub async fn list_topics(state: State<'_, AppState>) -> Result<Vec<topics::Topic>, String> {
-    topics::list(&state.db.lock().unwrap()).map_err(|e| e.to_string())
+    topics::list(&state.db.lock().unwrap()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -198,7 +206,7 @@ pub async fn list_items(
     view: feed::View,
     before: Option<feed::Before>,
 ) -> Result<Vec<feed::FeedItem>, String> {
-    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(|e| e.to_string())
+    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -224,8 +232,8 @@ pub async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<fi
     });
     let picked = rx.await;
     state.picking_files.store(false, std::sync::atomic::Ordering::SeqCst);
-    let paths = picked.map_err(|e| e.to_string())?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
-    Ok(files::stage_paths(&state.dir, &paths.map_err(|e| e.to_string())?))
+    let paths = picked.map_err(crate::error_message::message)?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
+    Ok(files::stage_paths(&state.dir, &paths.map_err(crate::error_message::message)?))
 }
 
 #[tauri::command]
@@ -346,20 +354,20 @@ pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: Str
     if files::runnable(&name) {
         return Err(format!("NoteBank won't open {name} because it can run code"));
     }
-    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
 pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
-    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(path).map_err(crate::error_message::message)
 }
 
 fn register(shortcuts: &GlobalShortcut<tauri::Wry>, shortcut: &Shortcut) -> Result<(), String> {
     if shortcuts.is_registered(*shortcut) {
         return Ok(());
     }
-    shortcuts.register(*shortcut).map_err(|e| format!("Couldn't use this shortcut: {e}"))
+    shortcuts.register(*shortcut).map_err(|e| format!("Couldn't use this shortcut: {}", crate::error_message::message(e)))
 }
 
 #[tauri::command]
@@ -388,15 +396,15 @@ pub async fn set_quick_capture_on(app: AppHandle, state: State<'_, AppState>, on
 
 #[tauri::command]
 pub fn autostart_on(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
+    app.autolaunch().is_enabled().map_err(|e| format!("Couldn't read Open at login: {}", crate::error_message::message(e)))
 }
 
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, on: bool) -> Result<bool, String> {
     let launcher = app.autolaunch();
     let changed = if on { launcher.enable() } else { launcher.disable() };
-    changed.map_err(|e| format!("Couldn't change Open at login: {e}"))?;
-    launcher.is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
+    changed.map_err(|e| format!("Couldn't change Open at login: {}", crate::error_message::message(e)))?;
+    launcher.is_enabled().map_err(|e| format!("Couldn't read Open at login: {}", crate::error_message::message(e)))
 }
 
 // Not async: it runs on the main thread, where AppKit expects app activation.
@@ -414,7 +422,7 @@ pub fn startup_error(app: AppHandle) -> Option<crate::StartupError> {
 pub fn show_data_folder(app: AppHandle) -> Result<(), String> {
     let failure = app.try_state::<crate::StartupError>().ok_or("No data folder")?;
     let dir = failure.data_dir.as_deref().ok_or("No data folder")?;
-    app.opener().reveal_item_in_dir(dir).map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(dir).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -447,7 +455,7 @@ pub async fn restart_to_update<R: Runtime>(app: AppHandle<R>, window: tauri::Web
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         handle.state::<AppState>().update.install(true, &mut |status| crate::updater::emit(&handle, status))
-    }).await.map_err(|e| e.to_string())??;
+    }).await.map_err(crate::error_message::message)??;
     app.restart();
 }
 
@@ -457,6 +465,45 @@ mod tests {
     use keyring_core::api::CredentialStoreApi;
     use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder};
     use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+    #[test]
+    fn binary_attachment_staging_preserves_bytes_and_filename_in_both_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![stage_attachment_bytes])
+            .build(tauri::generate_context!(test = true))
+            .unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let bytes = vec![0, 137, 80, 78, 71, 13, 10, 255];
+        let filename = "截图 café.png";
+        for label in ["main", "quick-capture"] {
+            let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::default()).build().unwrap();
+            let send = |body| {
+                let mut headers = tauri::http::HeaderMap::new();
+                headers.insert("x-filename", percent_encoding::utf8_percent_encode(filename, percent_encoding::NON_ALPHANUMERIC).to_string().parse().unwrap());
+                get_ipc_response(&window, tauri::webview::InvokeRequest {
+                    cmd: "stage_attachment_bytes".into(),
+                    callback: tauri::ipc::CallbackFn(0),
+                    error: tauri::ipc::CallbackFn(1),
+                    url: window.url().unwrap(),
+                    body,
+                    headers,
+                    invoke_key: INVOKE_KEY.to_string(),
+                })
+            };
+            let staged = send(tauri::ipc::InvokeBody::Raw(bytes.clone())).unwrap().deserialize::<serde_json::Value>().unwrap();
+            assert_eq!(staged["filename"], filename);
+            assert_eq!(staged["size_bytes"], bytes.len());
+            assert_eq!(staged["mime_type"], "image/png");
+            let path = dir.path().join("files").join(staged["id"].as_str().unwrap()).join(filename);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+            let count = std::fs::read_dir(dir.path().join("files")).unwrap().count();
+            assert_eq!(send(serde_json::json!(bytes).into()).unwrap_err(), serde_json::json!("Expected the file's bytes"));
+            assert_eq!(std::fs::read_dir(dir.path().join("files")).unwrap().count(), count);
+        }
+    }
 
     #[test]
     fn only_the_main_window_can_clear_a_draft() {

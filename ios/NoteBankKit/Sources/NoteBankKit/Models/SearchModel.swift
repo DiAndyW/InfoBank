@@ -69,7 +69,7 @@ public final class SearchModel {
         self.debounce = debounce
         observation = store.observeChanges(
             onChange: { [weak self] in self?.databaseChanged() },
-            onError: { [weak self] in self?.error = $0.localizedDescription })
+            onError: { [weak self] in self?.error = errorMessage($0) })
     }
 
     public func loadMore() {
@@ -80,7 +80,7 @@ public final class SearchModel {
             hasMore = page.count == Self.pageSize
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = errorMessage(error)
         }
     }
 
@@ -112,7 +112,7 @@ public final class SearchModel {
             error = nil
         } catch {
             (results, hasMore) = ([], false)
-            self.error = error.localizedDescription
+            self.error = errorMessage(error)
         }
     }
 }

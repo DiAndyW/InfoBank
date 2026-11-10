@@ -78,6 +78,7 @@ export const stageBytes = (filename: string, bytes: Uint8Array) =>
 export const unstage = (id: string) => invoke<void>("unstage_attachment", { id });
 export const thumbnail = (id: string) => invoke<string>("thumbnail", { id });
 export const copyWholeItem = (itemId: string) => invoke<void>("copy_item", { itemId });
+export const copyAttachment = (attachmentId: string) => invoke<void>("copy_attachment", { attachmentId });
 export const prepareCopyItems = (itemIds: string[]) => invoke<string>("prepare_copy_items", { itemIds });
 export const finishCopyItems = (token: string) => invoke<void>("finish_copy_items", { token });
 export const discardCopyItems = (token: string) => invoke<void>("discard_copy_items", { token });

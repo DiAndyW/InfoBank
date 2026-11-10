@@ -35,7 +35,7 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
 fn archived_if_exists(conn: &Connection, id: &str) -> Result<bool, String> {
     conn.query_row("SELECT archived_at IS NOT NULL FROM topics WHERE id = ?1 AND deleted_at IS NULL", [id], |r| r.get(0))
         .optional()
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .ok_or_else(|| "That Topic no longer exists".to_string())
 }
 
@@ -77,12 +77,12 @@ fn valid_name(name: &str) -> Result<&str, String> {
 
 fn checked_name(conn: &Connection, name: &str, own_id: &str) -> Result<String, String> {
     let name = valid_name(name)?;
-    let mut stmt = conn.prepare("SELECT name FROM topics WHERE deleted_at IS NULL AND id <> ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT name FROM topics WHERE deleted_at IS NULL AND id <> ?1").map_err(crate::error_message::message)?;
     let taken = stmt
         .query_map([own_id], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     // SQLite's lower() only folds ASCII.
     if let Some(other) = taken.iter().find(|t| t.to_lowercase() == name.to_lowercase()) {
         return Err(format!("A Topic named \"{other}\" already exists"));
@@ -91,9 +91,9 @@ fn checked_name(conn: &Connection, name: &str, own_id: &str) -> Result<String, S
 }
 
 fn queue_one(conn: &Connection, op: Op, now_us: i64) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let tx = conn.unchecked_transaction().map_err(crate::error_message::message)?;
     ops::queue(&tx, op, now_us)?;
-    tx.commit().map_err(|e| e.to_string())
+    tx.commit().map_err(crate::error_message::message)
 }
 
 pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, String> {
@@ -107,7 +107,7 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
 pub fn picker_topic(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, String> {
     let lowered = valid_name(name)?.to_lowercase();
     let same: Vec<Topic> =
-        list(conn).map_err(|e| e.to_string())?.into_iter().filter(|t| t.name.to_lowercase() == lowered).collect();
+        list(conn).map_err(crate::error_message::message)?.into_iter().filter(|t| t.name.to_lowercase() == lowered).collect();
     if same.is_empty() {
         return create(conn, name, now_us);
     }
@@ -118,7 +118,7 @@ pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<()
     archived_if_exists(conn, id)?;
     let name = checked_name(conn, name, id)?;
     let current: String =
-        conn.query_row("SELECT name FROM topics WHERE id = ?1", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        conn.query_row("SELECT name FROM topics WHERE id = ?1", [id], |r| r.get(0)).map_err(crate::error_message::message)?;
     // A fresh stamp on an unchanged name would win over a newer rename from another Device.
     if name == current {
         return Ok(());
@@ -136,12 +136,12 @@ pub fn set_archived(conn: &Connection, id: &str, archived_now: bool, now_us: i64
 pub fn delete(conn: &Connection, id: &str, keep: &Keep, now_us: i64) -> Result<(), String> {
     archived_if_exists(conn, id)?;
     let mut stmt =
-        conn.prepare("SELECT id FROM items WHERE topic_id = ?1 AND deleted_at IS NULL").map_err(|e| e.to_string())?;
+        conn.prepare("SELECT id FROM items WHERE topic_id = ?1 AND deleted_at IS NULL").map_err(crate::error_message::message)?;
     let ids = stmt
         .query_map([id], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let trash = match keep {
         Keep::All => Vec::new(),
         Keep::None => ids,

@@ -5,25 +5,13 @@ export type NoticeData = { id: number; message: string; inSearch?: boolean; acti
 
 export default function Notice({ message, action, onClose }: { message: string; action?: NoticeData["action"]; onClose: () => void }) {
   const [held, setHeld] = useState(false);
-  const [focused, setFocused] = useState(document.hasFocus());
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const on = () => setFocused(true);
-    const off = () => setFocused(false);
-    window.addEventListener("focus", on);
-    window.addEventListener("blur", off);
-    return () => {
-      window.removeEventListener("focus", on);
-      window.removeEventListener("blur", off);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (held || !focused || busy) return;
+    if (held || busy) return;
     const timer = setTimeout(onClose, 4000);
     return () => clearTimeout(timer);
-  }, [held, focused, busy]);
+  }, [held, busy]);
 
   return (
     <div

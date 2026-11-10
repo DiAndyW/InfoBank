@@ -47,7 +47,7 @@ final class BatchItemActions {
             }
             selection.clear()
             wake()
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = errorMessage(error) }
     }
 
     func copy(_ ids: [String], trash: Bool) {
@@ -95,7 +95,7 @@ final class BatchItemActions {
                 selection.clear()
             } catch is CancellationError {
             } catch {
-                if generation == version { self.error = (copied ? "Items copied, but couldn't move them to Trash. " : "") + error.localizedDescription }
+                if generation == version { self.error = (copied ? "Items copied, but couldn't move them to Trash. " : "") + errorMessage(error) }
             }
         }
     }
@@ -106,11 +106,13 @@ struct BatchActionsBar: View {
     let items: [FeedItem]
     var trash = false
     var tunnel = false
+    var trashAfterCopy: Bool? = false
     @Environment(\.palette) private var palette
 
     private var ids: [String] { batch.selection.orderedIDs(in: items.map(\.id)) }
 
     var body: some View {
+        let copyTrashes = tunnel && trashAfterCopy == true
         HStack(spacing: 10) {
             Text("\(ids.count) selected")
                 .font(.plex(.sansSemibold, 12, relativeTo: .caption))
@@ -122,8 +124,8 @@ struct BatchActionsBar: View {
                         Label("Restore", systemImage: "arrow.uturn.backward").frame(minHeight: 24)
                     }.buttonStyle(.borderedProminent)
                 } else {
-                    Button { batch.copy(ids, trash: tunnel) } label: {
-                        Label(tunnel ? "Copy & Trash" : "Copy", systemImage: "doc.on.doc").frame(minHeight: 24)
+                    Button { batch.copy(ids, trash: copyTrashes) } label: {
+                        Label(copyTrashes ? "Copy & Trash" : "Copy", systemImage: "doc.on.doc").frame(minHeight: 24)
                     }.buttonStyle(.borderedProminent)
                     Button(role: .destructive) { batch.run(ids) } label: {
                         Label("Trash", systemImage: "trash").frame(minHeight: 24)
@@ -154,20 +156,19 @@ struct ItemNoticeView: View {
 
     var body: some View {
         if let notice = notices.current {
-            NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: {
+            NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: notice.action.map { action in {
                 do {
-                    switch notice.action {
+                    switch action {
                     case .undoClear(let place): onUndoClear(place); notices.dismiss(); return
                     case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
                     case .undoBatchTrash(let ids): try store.restore(itemIDs: ids, nowUs: Time.nowUs())
                     case .undoMove(let destination): try store.move(itemID: notice.itemID, to: destination, nowUs: Time.nowUs())
                     case .show: onShow(notice.itemID); return
-                    case .dismiss: notices.dismiss(); return
                     }
                     notices.dismiss()
                     wake()
-                } catch { onError(error.localizedDescription) }
-            }, onDismiss: notices.dismiss)
+                } catch { onError(errorMessage(error)) }
+            } }, onDismiss: notices.dismiss)
             .id(notice.id)
             .padding(12)
         }

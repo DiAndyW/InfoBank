@@ -18,7 +18,11 @@ public final class ComposerModel {
     }
     private var imports = 0
     public var isImporting: Bool { imports > 0 }
-    public private(set) var error: String?
+    public private(set) var error: String? {
+        didSet { draftSaveFailed = false }
+    }
+    private var draftSaveFailed = false
+    private var draftSaveFailures = 0
     public var placeholder: String
     public var destination: Destination
 
@@ -55,8 +59,18 @@ public final class ComposerModel {
         pendingSave?.cancel()
         pendingSave = nil
         guard let draft else { return }
-        do { try store.saveDraft(draft, text: text, homeTopicID: homeTopicID) }
-        catch { self.error = error.localizedDescription }
+        do {
+            try store.saveDraft(draft, text: text, homeTopicID: homeTopicID)
+            draftSaveFailures = 0
+            if draftSaveFailed { error = nil }
+        } catch {
+            _ = errorMessage(error)
+            draftSaveFailures += 1
+            if draftSaveFailures >= 3 && (self.error == nil || draftSaveFailed) {
+                self.error = "Couldn't save your draft. Your text is still here."
+                draftSaveFailed = true
+            }
+        }
     }
 
     public var canClear: Bool { !isSending && (!text.isEmpty || !attachments.isEmpty) }
@@ -88,7 +102,7 @@ public final class ComposerModel {
 
     public func removeAttachment(_ id: String) {
         do { try store.discardStaged(id); attachments.removeAll { $0.id == id } }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = errorMessage(error) }
     }
 
     public func importFile(_ url: URL, filename: String? = nil) async {
@@ -97,7 +111,7 @@ public final class ComposerModel {
         do {
             let file = try await Task.detached { [store] in try store.stageFile(at: url, filename: filename) }.value
             attachments.append(file)
-        } catch { self.error = error.localizedDescription }
+        } catch { self.error = errorMessage(error) }
     }
 
     public func reportImportError(_ message: String) { error = message }
@@ -124,7 +138,7 @@ public final class ComposerModel {
                     }
                 }
                 attachments.append(staged)
-            } catch { self.error = "Couldn't paste the attachment: " + error.localizedDescription }
+            } catch { self.error = "Couldn't paste the attachment: " + errorMessage(error) }
         }
     }
 
@@ -137,7 +151,7 @@ public final class ComposerModel {
         do {
             _ = try store.capture(text: text, attachmentIDs: attachments.map(\.id), to: destination, draft: draft, nowUs: Time.nowUs())
         } catch {
-            self.error = error.localizedDescription
+            self.error = errorMessage(error)
             flushDraft()
             return false
         }

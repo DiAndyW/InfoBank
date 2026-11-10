@@ -55,6 +55,20 @@ function refusal(reason: string) {
 }
 
 export default function Feed({ home, view, topics, covered, editor, composer, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+  const [copyPreference, setCopyPreference] = useState<boolean | null>(false);
+  useEffect(() => {
+    if (view.kind !== "tunnel") return;
+    let active = true;
+    let latest = 0;
+    const load = async () => {
+      const request = ++latest;
+      const value = await trashAfterCopy().catch(() => false);
+      if (active && request === latest) setCopyPreference(value);
+    };
+    void load();
+    const stop = listen("items-changed", load);
+    return () => { active = false; void stop.then(s => s()); };
+  }, [view.kind]);
   const [homeTunnel, setHomeTunnel] = useState(() => localStorage.getItem("tunnelSwitch") === "true");
   const [homeTopic, setHomeTopic] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
@@ -158,7 +172,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     return () => clearTimeout(timer);
   }, [copied]);
 
-  function copyItem(it: FeedItem, delay = false) {
+  function copyItem(it: FeedItem, delay = false, preference?: boolean | null) {
     if ((!it.text && !it.attachments.length) || asking || answerBusy.current) return;
     cancelCopy(it.id);
     const version = copyVersion.current;
@@ -172,7 +186,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
       copyTimers.current.delete(it.id);
       if (!(await written) || !current()) return;
       try {
-        const trash = await trashAfterCopy();
+        const trash = preference === undefined ? await trashAfterCopy() : preference;
         if (!current()) return;
         if (trash === true) {
           await trashItem(it.id);
@@ -301,6 +315,15 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     }
   }, [items]);
 
+  useLayoutEffect(() => {
+    const el = listRef.current!;
+    const observer = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   function onScroll() {
     const el = listRef.current!;
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -368,7 +391,9 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
               const prev = shown[i - 1];
               const topic = topics.find((t) => t.id === it.topic_id);
               const place = trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
-              const copy = view.kind === "tunnel" ? [{ label: "Copy Item", onSelect: () => copyItem(it) }] : it.text ? [{ label: "Copy text", onSelect: () => navigator.clipboard.writeText(it.text!).catch((e) => onError("Couldn't copy the text", e)) }] : [];
+              const copyParts = view.kind !== "trash" && !it.sync_error;
+              const copyText = () => navigator.clipboard.writeText(it.text!).then(() => onNotice("Copied text"), (e) => onError("Couldn't copy the text", e));
+              const copy = [...(view.kind === "tunnel" ? [{ label: copyPreference === true ? "Copy & Trash" : "Copy Item", onSelect: () => copyItem(it, false, copyPreference) }] : []), ...(it.text ? [{ label: "Copy text", onSelect: copyText }] : [])];
               const heading = trash
                 ? daysRemaining(it.purge_at_us)
                 : time.toDateString() === today
@@ -414,7 +439,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                         if (selection.selecting || e.metaKey || e.ctrlKey) e.stopPropagation();
                       }}
                       onClick={view.kind === "tunnel" && !it.sync_error ? (e) => {
-                        if (selection.selecting || e.metaKey || e.ctrlKey || e.detail !== 1 || covered || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
+                        if (selection.selecting || e.metaKey || e.ctrlKey || e.detail !== 1 || covered || !document.getSelection()?.isCollapsed || (e.target as HTMLElement).closest("a, button, input, .nb-attachment, .nb-grip")) return;
                         copyItem(it, true);
                       } : undefined}
                       onDoubleClick={trash || it.sync_error ? undefined : (e) => {
@@ -422,7 +447,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                         cancelCopy(it.id);
                         open(it);
                       }}
-                      className={["nb-item", selection.ids.has(it.id) && "is-batch-selected", selection.selecting && "is-selecting", view.kind === "tunnel" && it.text && !it.sync_error && !selection.selecting && "is-copyable", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
+                      className={["nb-item", selection.ids.has(it.id) && "is-batch-selected", selection.selecting && "is-selecting", view.kind === "tunnel" && (it.text || it.attachments.length > 0) && !it.sync_error && !selection.selecting && "is-copyable", menuFor === it.id && "is-open", highlight === it.id && "is-highlight"].filter(Boolean).join(" ")}
                       onContextMenu={
                         trash
                           ? undefined
@@ -466,7 +491,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                             )}
                           </p>
                         )}
-                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} closedCount={closedCount} />}
+                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} onCopied={copyParts ? (filename) => onNotice(`Copied ${filename}`) : undefined} copyButtonVisible={!selection.selecting} closedCount={closedCount} />}
                       </div>
                       <div className="nb-item-meta" inert={selection.selecting}>
                         {place && (
@@ -492,6 +517,11 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                           <span className="nb-pending" title="Not synced yet">
                             <Icon name="pending" label="Not synced yet" />
                           </span>
+                        )}
+                        {copyParts && !selection.selecting && it.text && it.attachments.length > 0 && (
+                          <button type="button" className="nb-iconbtn nb-reveal" aria-label="Copy text" title="Copy text" onClick={copyText}>
+                            <Icon name="copy" />
+                          </button>
                         )}
                         {!trash && <time className={sameMinute ? "nb-item-time nb-reveal" : "nb-item-time"}>{time.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</time>}
                         {trash ? (
@@ -601,7 +631,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
         />
       )}
       <div className="nb-notice-slot">{!covered && notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
-      {selection.selecting && <SelectionBar selection={selection} trash={trash} tunnel={view.kind === "tunnel"} />}
+      {selection.selecting && <SelectionBar selection={selection} trash={trash} tunnel={view.kind === "tunnel"} trashAfterCopy={copyPreference} />}
       {current?.archived && (
         <div className="nb-archived-bar">
           <Icon name="archive" />

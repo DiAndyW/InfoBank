@@ -38,12 +38,12 @@ fn snapshot(state: &AppState, item_id: &str) -> Result<Snapshot, String> {
         .map_err(|_| "This Item is no longer available")?;
     let mut stmt = conn
         .prepare("SELECT id, filename, mime_type, size_bytes FROM attachments WHERE item_id = ?1 ORDER BY id")
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let attachments = stmt
         .query_map([item_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-        .map_err(|e| e.to_string())?
+        .map_err(crate::error_message::message)?
         .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok((text, attachments, sync_error))
 }
 
@@ -67,6 +67,67 @@ async fn prepare_items(state: &AppState, item_ids: &[String], now_us: i64, rejec
         snapshots.push((id.clone(), value));
     }
     if snapshots.is_empty() { return Err("Select at least one Item".into()); }
+    let folder = new_folder(state)?;
+    let result = async {
+        let mut exported = Vec::new();
+        for (id, name, _, _) in snapshots.iter().flat_map(|(_, value)| &value.1) {
+            exported.push(export(state, &folder, id, name, now_us).await?);
+        }
+        let text = snapshots.iter().filter_map(|(_, value)| value.0.as_deref()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let prepared = Prepared {
+            payload: Payload { text: (!text.is_empty()).then_some(text), files: exported },
+            snapshots, folder: folder.clone(),
+        };
+        prepared.validate(state)?;
+        Ok(prepared)
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    result
+}
+
+pub async fn prepare_attachment(state: &AppState, attachment_id: &str, now_us: i64) -> Result<Payload, String> {
+    let name: String = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT a.filename FROM attachments a JOIN items i ON i.id = a.item_id WHERE a.id = ?1 AND i.deleted_at IS NULL",
+            [attachment_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| "This file is no longer available")?;
+    let folder = new_folder(state)?;
+    let result = async {
+        let path = export(state, &folder, attachment_id, &name, now_us).await?;
+        let available: bool = state.db.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM attachments a JOIN items i ON i.id = a.item_id WHERE a.id = ?1 AND i.deleted_at IS NULL)",
+            [attachment_id], |r| r.get(0),
+        ).map_err(|_| "This file is no longer available")?;
+        if !available { return Err("This file is no longer available".into()); }
+        Ok(Payload { text: None, files: vec![path] })
+    }.await;
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(folder);
+    }
+    result
+}
+
+async fn export(state: &AppState, folder: &std::path::Path, id: &str, name: &str, now_us: i64) -> Result<PathBuf, String> {
+    let source = cache::file(state, id, now_us).await?;
+    let target = folder.join(id).join(files::safe_name(name));
+    tokio::fs::create_dir_all(target.parent().unwrap())
+        .await
+        .map_err(|_| "Couldn't prepare clipboard files")?;
+    tokio::fs::copy(source, &target)
+        .await
+        .map_err(|_| "Couldn't prepare clipboard files")?;
+    Ok(target)
+}
+
+fn new_folder(state: &AppState) -> Result<PathBuf, String> {
     let root = state.dir.join("clipboard");
     let mut directory = std::fs::DirBuilder::new();
     directory.recursive(true);
@@ -88,33 +149,7 @@ async fn prepare_items(state: &AppState, item_ids: &[String], now_us: i64, rejec
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
-    let folder = root.join(uuid::Uuid::new_v4().to_string());
-    let result = async {
-        let mut exported = Vec::new();
-        for (id, name, _, _) in snapshots.iter().flat_map(|(_, value)| &value.1) {
-            let source = cache::file(state, id, now_us).await?;
-            let target = folder.join(id).join(files::safe_name(name));
-            tokio::fs::create_dir_all(target.parent().unwrap())
-                .await
-                .map_err(|_| "Couldn't prepare clipboard files")?;
-            tokio::fs::copy(source, &target)
-                .await
-                .map_err(|_| "Couldn't prepare clipboard files")?;
-            exported.push(target);
-        }
-        let text = snapshots.iter().filter_map(|(_, value)| value.0.as_deref()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n\n");
-        let prepared = Prepared {
-            payload: Payload { text: (!text.is_empty()).then_some(text), files: exported },
-            snapshots, folder: folder.clone(),
-        };
-        prepared.validate(state)?;
-        Ok(prepared)
-    }
-    .await;
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(folder);
-    }
-    result
+    Ok(root.join(uuid::Uuid::new_v4().to_string()))
 }
 
 #[cfg(target_os = "macos")]
@@ -299,6 +334,41 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path().join("clipboard")).unwrap().count(), 0);
         assert!(prepare_many(&state, &["one".into(), "missing".into()], 1).await.is_err());
     }
+    #[tokio::test]
+    async fn one_attachment_copies_only_its_file_until_its_item_is_trashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("db")).unwrap();
+        conn.execute("INSERT INTO items (id, text, capture_time, in_tunnel) VALUES ('i', 'hello', 1, 1)", []).unwrap();
+        let mut ids = Vec::new();
+        for (name, bytes) in [("shot.png", b"image".as_slice()), ("deploy.yaml", b"name: deploy".as_slice())] {
+            let id = uuid::Uuid::new_v4().to_string();
+            std::fs::write(dir.path().join(&id), bytes).unwrap();
+            conn.execute("INSERT INTO attachments VALUES (?1, 'i', ?2, 'application/octet-stream', ?3, 1, 0)", (&id, name, bytes.len() as i64)).unwrap();
+            conn.execute("INSERT INTO cached_files VALUES (?1, 'file', ?1, ?2, 1)", (&id, bytes.len() as i64)).unwrap();
+            ids.push(id);
+        }
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "secret", None).unwrap();
+        let state = crate::AppState::new(conn, secret, dir.path().to_path_buf());
+        let payload = prepare_attachment(&state, &ids[1], 1).await.unwrap();
+        assert_eq!(payload.text, None);
+        assert_eq!(payload.files.len(), 1);
+        assert_eq!(payload.files[0].file_name().unwrap(), "deploy.yaml");
+        assert_eq!(std::fs::read(&payload.files[0]).unwrap(), b"name: deploy");
+        let future = prepare_attachment(&state, &ids[1], 1);
+        futures_util::pin_mut!(future);
+        assert!(futures_util::poll!(future.as_mut()).is_pending());
+        state.db.lock().unwrap().execute("UPDATE items SET deleted_at = 1 WHERE id = 'i'", []).unwrap();
+        assert!(future.await.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("clipboard")).unwrap().count(), 1);
+        state.db.lock().unwrap().execute("UPDATE items SET deleted_at = NULL WHERE id = 'i'", []).unwrap();
+        state.db.lock().unwrap().execute("UPDATE attachments SET uploaded = 0 WHERE id = ?1", [&ids[0]]).unwrap();
+        state.db.lock().unwrap().execute("DELETE FROM cached_files WHERE attachment_id = ?1", [&ids[0]]).unwrap();
+        assert!(prepare_attachment(&state, &ids[0], 1).await.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("clipboard")).unwrap().count(), 1);
+        state.db.lock().unwrap().execute("UPDATE items SET deleted_at = 1 WHERE id = 'i'", []).unwrap();
+        assert!(prepare_attachment(&state, &ids[1], 1).await.is_err());
+    }
+
     use keyring_core::api::CredentialStoreApi;
 
     #[cfg(target_os = "macos")]
