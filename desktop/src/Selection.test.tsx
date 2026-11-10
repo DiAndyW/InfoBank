@@ -5,15 +5,15 @@ import * as api from "./api";
 
 vi.mock("./api", () => ({ prepareCopyItems: vi.fn(), finishCopyItems: vi.fn(), discardCopyItems: vi.fn(async () => {}), setItemsTrashed: vi.fn() }));
 
-function Harness({ ids = ["a", "b", "c"], place = "tunnel", enabled = true, onNotice = vi.fn(), onError = vi.fn() }: {
-  ids?: string[]; place?: string; enabled?: boolean; onNotice?: (...args: any[]) => void; onError?: (...args: any[]) => void;
+function Harness({ ids = ["a", "b", "c"], place = "tunnel", enabled = true, trashAfterCopy = true, onNotice = vi.fn(), onError = vi.fn() }: {
+  trashAfterCopy?: boolean | null; ids?: string[]; place?: string; enabled?: boolean; onNotice?: (...args: any[]) => void; onError?: (...args: any[]) => void;
 }) {
   const selection = useItemSelection({ items: ids.map(id => ({ id, sync_error: null })), scope: place, enabled, onNotice, onError });
   return <>
     <button onClick={selection.enter}>Select</button>
     <button onClick={selection.clear}>Done</button>
     {ids.map(id => <button key={id} aria-pressed={selection.ids.has(id)} onClick={e => selection.pick(id, e)}>{id}</button>)}
-    {selection.selecting && <SelectionBar selection={selection} tunnel={place === "tunnel"} trash={place === "trash"} />}
+    {selection.selecting && <SelectionBar selection={selection} tunnel={place === "tunnel"} trash={place === "trash"} trashAfterCopy={trashAfterCopy} />}
   </>;
 }
 
@@ -145,5 +145,32 @@ test("failed batch Undo remains retryable, and Search Copy never trashes Tunnel 
   fireEvent.click(screen.getByText("a"), { ctrlKey: true });
   fireEvent.click(screen.getByRole("button", { name: "Copy" }));
   await waitFor(() => expect(notice.mock.lastCall![0]).toBe("1 Item copied"));
+  expect(api.setItemsTrashed).not.toHaveBeenCalled();
+});
+
+test.each([false, null])("Tunnel batch with preference %s copies without Trash", async preference => {
+  vi.mocked(api.prepareCopyItems).mockResolvedValue("ready");
+  vi.mocked(api.finishCopyItems).mockResolvedValue();
+  vi.mocked(api.setItemsTrashed).mockClear();
+  const notice = vi.fn();
+  render(<Harness trashAfterCopy={preference} onNotice={notice} />);
+  fireEvent.click(screen.getByText("a"), { ctrlKey: true });
+  fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+  await waitFor(() => expect(notice).toHaveBeenCalledWith("1 Item copied", undefined));
+  expect(api.setItemsTrashed).not.toHaveBeenCalled();
+});
+
+test("a batch keeps the displayed copy-only decision while preparation is pending", async () => {
+  let ready!: (token: string) => void;
+  vi.mocked(api.prepareCopyItems).mockImplementationOnce(() => new Promise(resolve => { ready = resolve; }));
+  vi.mocked(api.finishCopyItems).mockResolvedValue();
+  vi.mocked(api.setItemsTrashed).mockClear();
+  const notice = vi.fn();
+  const view = render(<Harness trashAfterCopy={false} onNotice={notice} />);
+  fireEvent.click(screen.getByText("a"), { ctrlKey: true });
+  fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+  view.rerender(<Harness trashAfterCopy={true} onNotice={notice} />);
+  await act(async () => ready("prepared"));
+  await waitFor(() => expect(notice).toHaveBeenCalledWith("1 Item copied", undefined));
   expect(api.setItemsTrashed).not.toHaveBeenCalled();
 });

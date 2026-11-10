@@ -215,7 +215,7 @@ ul.nb-staged { list-style: none; margin-top: 0; }
 .nb-composer-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .nb-staged { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 0 var(--space-2); margin-bottom: var(--space-2); border-bottom: 1px solid var(--line); }
 .nb-composer-row { display: flex; align-items: flex-end; gap: var(--space-2); }
-.nb-composer textarea { flex: 1; min-width: 0; resize: none; border: 0; background: transparent; color: var(--ink); font: 400 16px/24px var(--font-serif); padding: 4px var(--space-1); min-height: 48px; border-radius: var(--radius-sm); }
+.nb-composer textarea { flex: 1; min-width: 0; resize: none; border: 0; background: transparent; color: var(--ink); font: 400 16px/24px var(--font-serif); padding: 4px var(--space-1); min-height: 56px; max-height: 30vh; overflow-y: hidden; border-radius: var(--radius-sm); }
 .nb-composer textarea::placeholder { color: var(--ink-muted); }
 .nb-composer textarea:focus { outline: none; }
 .nb-composer-actions { display: flex; align-items: center; gap: var(--space-1); }

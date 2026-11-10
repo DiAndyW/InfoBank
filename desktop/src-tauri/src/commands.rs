@@ -144,7 +144,7 @@ pub async fn set_trash_after_copy(app: AppHandle, state: State<'_, AppState>, on
 
 #[tauri::command]
 pub async fn nav_counts(state: State<'_, AppState>) -> Result<feed::Counts, String> {
-    feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(|e| e.to_string())
+    feed::nav_counts(&state.db.lock().unwrap(), now_us()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -197,7 +197,7 @@ pub async fn restore_item(app: AppHandle, state: State<'_, AppState>, item_id: S
 
 #[tauri::command]
 pub async fn list_topics(state: State<'_, AppState>) -> Result<Vec<topics::Topic>, String> {
-    topics::list(&state.db.lock().unwrap()).map_err(|e| e.to_string())
+    topics::list(&state.db.lock().unwrap()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -206,7 +206,7 @@ pub async fn list_items(
     view: feed::View,
     before: Option<feed::Before>,
 ) -> Result<Vec<feed::FeedItem>, String> {
-    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(|e| e.to_string())
+    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -232,8 +232,8 @@ pub async fn pick_files(app: AppHandle, state: State<'_, AppState>) -> Result<fi
     });
     let picked = rx.await;
     state.picking_files.store(false, std::sync::atomic::Ordering::SeqCst);
-    let paths = picked.map_err(|e| e.to_string())?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
-    Ok(files::stage_paths(&state.dir, &paths.map_err(|e| e.to_string())?))
+    let paths = picked.map_err(crate::error_message::message)?.into_iter().map(|p| p.into_path()).collect::<Result<Vec<_>, _>>();
+    Ok(files::stage_paths(&state.dir, &paths.map_err(crate::error_message::message)?))
 }
 
 #[tauri::command]
@@ -354,20 +354,20 @@ pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: Str
     if files::runnable(&name) {
         return Err(format!("NoteBank won't open {name} because it can run code"));
     }
-    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(|e| e.to_string())
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(crate::error_message::message)
 }
 
 #[tauri::command]
 pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
-    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(path).map_err(crate::error_message::message)
 }
 
 fn register(shortcuts: &GlobalShortcut<tauri::Wry>, shortcut: &Shortcut) -> Result<(), String> {
     if shortcuts.is_registered(*shortcut) {
         return Ok(());
     }
-    shortcuts.register(*shortcut).map_err(|e| format!("Couldn't use this shortcut: {e}"))
+    shortcuts.register(*shortcut).map_err(|e| format!("Couldn't use this shortcut: {}", crate::error_message::message(e)))
 }
 
 #[tauri::command]
@@ -396,15 +396,15 @@ pub async fn set_quick_capture_on(app: AppHandle, state: State<'_, AppState>, on
 
 #[tauri::command]
 pub fn autostart_on(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
+    app.autolaunch().is_enabled().map_err(|e| format!("Couldn't read Open at login: {}", crate::error_message::message(e)))
 }
 
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, on: bool) -> Result<bool, String> {
     let launcher = app.autolaunch();
     let changed = if on { launcher.enable() } else { launcher.disable() };
-    changed.map_err(|e| format!("Couldn't change Open at login: {e}"))?;
-    launcher.is_enabled().map_err(|e| format!("Couldn't read Open at login: {e}"))
+    changed.map_err(|e| format!("Couldn't change Open at login: {}", crate::error_message::message(e)))?;
+    launcher.is_enabled().map_err(|e| format!("Couldn't read Open at login: {}", crate::error_message::message(e)))
 }
 
 // Not async: it runs on the main thread, where AppKit expects app activation.
@@ -422,7 +422,7 @@ pub fn startup_error(app: AppHandle) -> Option<crate::StartupError> {
 pub fn show_data_folder(app: AppHandle) -> Result<(), String> {
     let failure = app.try_state::<crate::StartupError>().ok_or("No data folder")?;
     let dir = failure.data_dir.as_deref().ok_or("No data folder")?;
-    app.opener().reveal_item_in_dir(dir).map_err(|e| e.to_string())
+    app.opener().reveal_item_in_dir(dir).map_err(crate::error_message::message)
 }
 
 #[tauri::command]

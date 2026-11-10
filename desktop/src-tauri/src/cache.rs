@@ -21,14 +21,14 @@ fn cached(state: &AppState, id: &str, kind: &str, now_us: i64) -> Result<Option<
     let path: Option<String> = conn
         .query_row("SELECT path FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [id, kind], |r| r.get(0))
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     let Some(path) = path else { return Ok(None) };
     if !state.dir.join(&path).exists() {
-        conn.execute("DELETE FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [id, kind]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM cached_files WHERE attachment_id = ?1 AND kind = ?2", [id, kind]).map_err(crate::error_message::message)?;
         return Ok(None);
     }
     conn.execute("UPDATE cached_files SET last_used_at = ?3 WHERE attachment_id = ?1 AND kind = ?2", (id, kind, now_us))
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok(Some(state.dir.join(path)))
 }
 
@@ -75,7 +75,7 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
         let _ = tokio::fs::remove_file(&partial).await;
     }
     written?;
-    let size = tokio::fs::metadata(&target).await.map_err(|e| e.to_string())?.len() as i64;
+    let size = tokio::fs::metadata(&target).await.map_err(crate::error_message::message)?.len() as i64;
     state
         .db
         .lock()
@@ -86,7 +86,7 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
                 path = excluded.path, size_bytes = excluded.size_bytes, last_used_at = excluded.last_used_at",
             (id, kind, rel, size, now_us),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     Ok(target)
 }
 
@@ -106,7 +106,7 @@ pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBu
             |r| r.get(0),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(crate::error_message::message)?;
     if own.is_some() {
         if let Some(path) = cached(state, &id, "file", now_us)? {
             return Ok(path);
@@ -139,7 +139,7 @@ pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, St
     let size_bytes = u64::try_from(size_bytes).ok().filter(|&n| n <= files::MAX_ATTACHMENT_BYTES).ok_or(TOO_BIG)?;
     let rel = format!("files/{id}/{}", files::safe_name(&filename));
     let path = download(state, &id, "file", &format!("/attachments/{id}"), &rel, Size::Exactly(size_bytes), now_us).await?;
-    evict(&state.db.lock().unwrap(), &state.dir, now_us, FILE_CACHE_BYTES).map_err(|e| e.to_string())?;
+    evict(&state.db.lock().unwrap(), &state.dir, now_us, FILE_CACHE_BYTES).map_err(crate::error_message::message)?;
     Ok(path)
 }
 

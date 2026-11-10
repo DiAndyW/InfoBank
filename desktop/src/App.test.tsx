@@ -2683,7 +2683,7 @@ test("Show on a sync-notice move opens the Item's Topic with it highlighted; emp
   await vi.waitFor(() => expect(rowOf("squat 100")).toHaveClass("is-highlight"));
 });
 
-test("a Notice doesn't start its 4 seconds while the window is unfocused", async () => {
+test("a Notice expires after 4 seconds while the window is unfocused", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
   try {
@@ -2692,11 +2692,7 @@ test("a Notice doesn't start its 4 seconds while the window is unfocused", async
     await screen.findByRole("button", { name: /^Inbox/ });
     await act(() => emit("sync-notices", [syncNotice("empty", "a")]));
     expect(await screen.findByText(/no text or files left/)).toBeInTheDocument();
-    await act(async () => vi.advanceTimersByTime(9000));
-    expect(screen.getByText(/no text or files left/)).toBeInTheDocument();
-    focus.mockReturnValue(true);
-    await act(async () => window.dispatchEvent(new Event("focus")));
-    await act(async () => vi.advanceTimersByTime(8000));
+    await act(async () => vi.advanceTimersByTime(4000));
     expect(screen.queryByText(/no text or files left/)).not.toBeInTheDocument();
   } finally {
     focus.mockRestore();
@@ -2759,7 +2755,7 @@ for (const answer of ["Turn on", "Not now"]) {
     if (answer === "Turn on") expect(await screen.findByText("Copied · moved to Trash")).toBeInTheDocument();
     else {
       await user.click(screen.getByText("transfer this"));
-      await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(2));
+      await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(3));
       await screen.findByText("Copied");
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     }
@@ -2808,15 +2804,19 @@ test("a refused runnable Tunnel Attachment remains copyable", async () => {
   expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a3" } });
 });
 
-test("Copy text outside the Tunnel keeps its existing confirmation behavior", async () => {
+test("Inbox attachment and text copy buttons show confirmations without trashing the Item", async () => {
   const user = userEvent.setup();
-  backend(configured, { items: () => [filed("1", "in the inbox", null)] });
+  const calls = backend(configured, { items: () => [{ ...filed("1", "in the inbox", null), attachments: [report] }], trashAfterCopy: true });
   render(<App />);
   await screen.findByText("in the inbox");
-  await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
-  await user.click(screen.getByRole("menuitem", { name: "Copy text" }));
+  const item = screen.getByRole("article");
+  expect(within(item).getByRole("button", { name: "Copy report.pdf" })).toBeInTheDocument();
+  await user.click(within(item).getByRole("button", { name: "Copy report.pdf" }));
+  expect(await screen.findByText("Copied report.pdf")).toBeInTheDocument();
+  await user.click(within(item).getByRole("button", { name: "Copy text" }));
+  expect(await screen.findByText("Copied text")).toBeInTheDocument();
   expect(await navigator.clipboard.readText()).toBe("in the inbox");
-  expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
 });
 
 test("a Tunnel Attachment's copy button copies only that file and never trashes", async () => {
@@ -2830,7 +2830,7 @@ test("a Tunnel Attachment's copy button copies only that file and never trashes"
   expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a1" } });
   await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => ["copy_item", "trash_after_copy", "trash_item"].includes(c.cmd))).toBe(false);
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
 });
 
 test("a failed Attachment copy shows why on the file", async () => {
@@ -2863,7 +2863,7 @@ test("a Tunnel Item with files has a Copy text button that copies only the text"
   expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
   expect(await navigator.clipboard.readText()).toBe("transfer this");
   await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => ["copy_item", "trash_after_copy", "trash_item"].includes(c.cmd))).toBe(false);
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
 });
 
 test("an attachment-only Tunnel Item has no Copy text button", async () => {
@@ -2874,15 +2874,53 @@ test("an attachment-only Tunnel Item has no Copy text button", async () => {
   expect(screen.queryByRole("button", { name: "Copy text" })).not.toBeInTheDocument();
 });
 
-test("a text-only Tunnel Item has no Copy text button, and other places have no copy buttons", async () => {
+test("only copyable Tunnel rows show the copy cursor class", async () => {
+  const attachmentOnly = { ...tunnelItem(), text: null, attachments: [report] };
+  backend(configured, { items: (args) => args.view?.kind === "tunnel" ? [attachmentOnly] : args.view?.kind === "inbox" ? [{ ...filed("inbox", "inbox", null), attachments: [report] }] : [refused("refused", null)] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  const row = await screen.findByRole("article");
+  expect(row).toHaveClass("is-copyable");
+  await userEvent.click(screen.getByRole("button", { name: "Select" }));
+  expect(row).not.toHaveClass("is-copyable");
+  await userEvent.click(screen.getByRole("button", { name: "Done" }));
+  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
+  expect((await screen.findByRole("article"))).not.toHaveClass("is-copyable");
+  await userEvent.click(screen.getByRole("button", { name: /^Tunnel/ }));
+  await userEvent.click(screen.getByRole("button", { name: /^Trash/ }));
+  expect((await screen.findByRole("article"))).not.toHaveClass("is-copyable");
+});
+
+test("a sync-error Tunnel row has no copy cursor class", async () => {
+  backend(configured, { items: () => [refused("refused", null)] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+  expect(await screen.findByRole("article")).not.toHaveClass("is-copyable");
+});
+
+test("a text-only Tunnel Item has no Copy text button, while Trash has no copy buttons", async () => {
   const user = userEvent.setup();
-  backend(configured, { items: (args) => (args.view?.kind === "tunnel" ? [tunnelItem()] : [{ ...filed("1", "in the inbox", null), attachments: [report] }]) });
+  backend(configured, { items: (args) => (args.view?.kind === "tunnel" ? [tunnelItem()] : args.view?.kind === "trash" ? [{ ...filed("1", "in the inbox", null), attachments: [report], trashed_at: "2026-01-01T00:00:00Z" }] : [{ ...filed("1", "in the inbox", null), attachments: [report] }]) });
   render(<App />);
   await screen.findByText("in the inbox");
-  expect(screen.queryByRole("button", { name: /^Copy/ })).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: /^Tunnel/ }));
   await screen.findByText("transfer this");
   expect(screen.queryByRole("button", { name: /^Copy/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /^Trash/ }));
+  await screen.findByText("in the inbox");
+  expect(screen.queryByRole("button", { name: /^Copy/ })).not.toBeInTheDocument();
+});
+
+test("row clicks outside the Tunnel do not copy and non-Tunnel menus omit Copy Item", async () => {
+  const user = userEvent.setup();
+  const calls = backend(configured, { items: () => [{ ...filed("1", "in the inbox", null), attachments: [report] }], trashAfterCopy: true });
+  render(<App />);
+  const item = await screen.findByRole("article");
+  await user.click(within(item).getByText("in the inbox"));
+  await user.click(within(item).getByRole("button", { name: "Item actions" }));
+  const menu = screen.getByRole("menu");
+  expect(within(menu).queryByRole("menuitem", { name: "Copy Item" })).not.toBeInTheDocument();
+  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
 });
 
 test("the Tunnel menu offers Copy Item and Copy text", async () => {
@@ -2892,7 +2930,7 @@ test("the Tunnel menu offers Copy Item and Copy text", async () => {
   await openTunnel();
   await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
   const menu = screen.getByRole("menu");
-  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent).slice(0, 4)).toEqual(["Edit", "Move to", "Copy Item", "Copy text"]);
+  expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent).slice(0, 4)).toEqual(["Edit", "Move to", "Copy & Trash", "Copy text"]);
   await user.click(within(menu).getByRole("menuitem", { name: "Copy text" }));
   expect(await navigator.clipboard.readText()).toBe("transfer this");
   expect(await screen.findByText("Copied text")).toBeInTheDocument();
@@ -3083,7 +3121,7 @@ test("copying the same Tunnel note again restarts its Copied confirmation", asyn
   await screen.findByText("Copied");
   await act(() => new Promise((resolve) => setTimeout(resolve, 750)));
   await user.click(screen.getByText("transfer this"));
-  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(2));
+  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(3));
   await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
   expect(screen.getByText("Copied")).toBeInTheDocument();
 });
@@ -3095,14 +3133,14 @@ test("a Copied confirmation expiring just as the note is copied again doesn't cl
   let answer = (_: boolean) => {};
   backend(configured, {
     items: () => [tunnelItem()],
-    pulledTrashAfterCopy: () => (++asked === 1 ? false : new Promise<boolean>((resolve) => { answer = resolve; })),
+    pulledTrashAfterCopy: () => (++asked <= 2 ? false : new Promise<boolean>((resolve) => { answer = resolve; })),
   });
   render(<App />);
   await user.click(await openTunnel());
   await screen.findByText("Copied");
   const expireFirst = await vi.waitFor(() => timers.mock.calls.find(([, ms]) => ms === 1500)![0] as () => void);
   await user.click(screen.getByText("transfer this"));
-  await vi.waitFor(() => expect(asked).toBe(2));
+  await vi.waitFor(() => expect(asked).toBe(3));
   // React holds updates until act ends, so the new confirmation is set but not yet shown when the old timer fires.
   await act(async () => {
     answer(false);
@@ -4244,4 +4282,83 @@ test("viewer zoom keeps native listeners registered across navigation and remove
   }
   fireEvent(window, new Event("resize"));
   expect(images.style.transform).toBe(transform);
+});
+
+for (const pinned of [true, false]) {
+  test(`feed resize preserves ${pinned ? "newest Item pinning" : "scrolled-up position"}`, async () => {
+    const callbacks = new Map<Element, ResizeObserverCallback>();
+    const Original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(el: Element) { callbacks.set(el, this.callback); }
+      unobserve(el: Element) { callbacks.delete(el); }
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      backend(configured);
+      render(<App />);
+      const el = await screen.findByTestId("feed-items");
+      await act(async () => {});
+      let height = 400;
+      Object.defineProperty(el, "scrollHeight", { value: 1000 });
+      Object.defineProperty(el, "clientHeight", { get: () => height });
+      el.scrollTop = pinned ? 600 : 200;
+      fireEvent.scroll(el);
+      height = 300;
+      await act(async () => callbacks.get(el)?.([], {} as ResizeObserver));
+      expect(el.scrollTop).toBe(pinned ? 1000 : 200);
+    } finally { globalThis.ResizeObserver = Original; }
+  });
+}
+
+test("a pasted file read failure shows plain text", async () => {
+  backend(configured);
+  localStorage.setItem("place", "inbox");
+  render(<App />);
+  const box = await screen.findByLabelText("New Item");
+  const file = { name: "image.png", size: 1, arrayBuffer: async () => { throw new DOMException("technical read details", "NotReadableError"); } };
+  fireEvent.paste(box, { clipboardData: { files: [file], getData: () => "" } });
+  expect(await screen.findByRole("alertdialog")).toHaveTextContent("Couldn't read the pasted attachment.");
+  expect(screen.queryByText(/technical read details/)).not.toBeInTheDocument();
+});
+
+test.each([true, false, null])("Tunnel menu preference %s labels and acts consistently", async preference => {
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: preference });
+  render(<App />);
+  await openTunnel();
+  await userEvent.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name: preference === true ? "Copy & Trash" : "Copy Item" }));
+  await vi.waitFor(() => expect(calls.some(c => c.cmd === "copy_item")).toBe(true));
+  if (preference === true) await vi.waitFor(() => expect(calls.some(c => c.cmd === "trash_item")).toBe(true));
+  else if (preference === null) expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+  else expect(calls.some(c => c.cmd === "trash_item")).toBe(false);
+});
+
+test("Tunnel menu refreshes its copy label after sync", async () => {
+  let preference = false;
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], pulledTrashAfterCopy: () => preference });
+  render(<App />);
+  await openTunnel();
+  await userEvent.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  expect(screen.getByRole("menuitem", { name: "Copy Item" })).toBeInTheDocument();
+  preference = true;
+  await act(() => emit("items-changed"));
+  await userEvent.click(await screen.findByRole("menuitem", { name: "Copy & Trash" }));
+  await vi.waitFor(() => expect(calls.some(c => c.cmd === "trash_item")).toBe(true));
+});
+
+test("a copy-only menu action cannot trash after the setting changes during copying", async () => {
+  let preference = false;
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const calls = backend(configured, { items: () => [mixedTunnelItem()], pulledTrashAfterCopy: () => preference, gates: { copy_item: gate } });
+  render(<App />);
+  await openTunnel();
+  await userEvent.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Copy Item" }));
+  preference = true;
+  await act(() => emit("items-changed"));
+  await act(async () => finish());
+  expect(await screen.findByText("Copied")).toBeInTheDocument();
+  expect(calls.some(c => c.cmd === "trash_item")).toBe(false);
 });

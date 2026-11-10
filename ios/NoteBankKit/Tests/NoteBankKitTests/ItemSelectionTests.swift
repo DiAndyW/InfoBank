@@ -30,6 +30,6 @@ import Testing
         #expect(notices.current?.action == .undoBatchTrash(["a", "b"]))
         notices.postBatchCompleted(count: 2, copied: false)
         #expect(notices.current?.message == "2 Items restored")
-        #expect(notices.current?.action == .dismiss)
+        #expect(notices.current?.action == nil)
     }
 }

@@ -119,9 +119,41 @@ struct TunnelTests {
                 """)
         }
         #expect(!model.answerTrashAfterCopy(true, item: item))
-        #expect(model.loadError?.contains("Trash unavailable") == true)
+        #expect(model.loadError == "NoteBank couldn't read or save its data. Try again.")
         #expect(try types(store) == ["SetTrashAfterCopy"])
         #expect(try store.items(in: .tunnel, before: nil, limit: 10).map(\.id) == [item.id])
+    }
+
+    @Test func menuCopyUsesShownPreferenceAfterSettingChanges() throws {
+        let store = try tempStore().store
+        let item = try tunnelItem(store)
+        try setSetting(store, false)
+        let model = FeedModel(store: store, place: .tunnel)
+        let shown = model.trashAfterCopy
+        try setSetting(store, true)
+        #expect(model.copied(item, preference: shown) == .copied)
+        #expect(try store.items(in: .tunnel, before: nil, limit: 10).count == 1)
+    }
+
+    @Test func feedObservesCopyPreferenceAndPreservesUnanswered() async throws {
+        let store = try tempStore().store
+        let model = FeedModel(store: store, place: .tunnel)
+        #expect(model.trashAfterCopy == nil)
+        try store.setTrashAfterCopy(true, nowUs: t0)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.trashAfterCopy == true)
+        try store.setTrashAfterCopy(false, nowUs: t0 + 1)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.trashAfterCopy == false)
+    }
+
+    @Test func unansweredMenuCopyStillAsksAndAnswerIsRemembered() throws {
+        let store = try tempStore().store
+        let item = try tunnelItem(store)
+        let model = FeedModel(store: store, place: .tunnel)
+        #expect(model.copied(item, preference: nil) == .ask)
+        #expect(model.answerTrashAfterCopy(false, item: item))
+        #expect(model.copied(item) == .copied)
     }
 
 }

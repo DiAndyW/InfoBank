@@ -55,7 +55,7 @@ struct SelectionFixture: View {
             }
         }.padding()
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if selection.isSelecting { BatchActionsBar(batch: batch, items: items, tunnel: true) }
+                if selection.isSelecting { BatchActionsBar(batch: batch, items: items, tunnel: true, trashAfterCopy: true) }
             }
             .environment(\.palette, Theme.paper.palette)
     }

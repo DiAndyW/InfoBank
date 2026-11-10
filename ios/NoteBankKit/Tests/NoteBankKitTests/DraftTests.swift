@@ -5,6 +5,21 @@ import Testing
 
 @MainActor
 struct DraftTests {
+    @Test func successfulDraftSavePreservesSendAndImportErrors() throws {
+        let store = try tempStore().store
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, archived_at) VALUES ('closed', 'Closed', 1)") }
+        let model = ComposerModel(store: store, destination: .topic("closed"), placeholder: "", draft: .inbox, onCaptured: {})
+        model.text = "Keep this draft"
+        #expect(!model.send())
+        #expect(model.error == ItemActionError.topicUnavailable.localizedDescription)
+        model.flushDraft()
+        #expect(model.error == ItemActionError.topicUnavailable.localizedDescription)
+        #expect(try store.drafts()[.inbox]?.text == "Keep this draft")
+        model.reportImportError("Import failed")
+        model.flushDraft()
+        #expect(model.error == "Import failed")
+    }
+
     @Test func saveAndLoadEachPlace() throws {
         let (store, _) = try tempStore()
         try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name) VALUES ('t', 'Topic')") }

@@ -120,15 +120,16 @@ export function useItemSelection({ items, scope, enabled, onNotice, onError }: {
   return { ids, selecting, busy, pick, clear, enter: () => setSelecting(true), run };
 }
 
-export function SelectionBar({ selection, trash = false, tunnel = false }: {
-  selection: ReturnType<typeof useItemSelection>; trash?: boolean; tunnel?: boolean;
+export function SelectionBar({ selection, trash = false, tunnel = false, trashAfterCopy = false }: {
+  selection: ReturnType<typeof useItemSelection>; trash?: boolean; tunnel?: boolean; trashAfterCopy?: boolean | null;
 }) {
+  const copyTrashes = tunnel && trashAfterCopy === true;
   const disabled = selection.busy || !selection.ids.size;
   return <div className="nb-selection-bar" role="toolbar" aria-label="Selected Item actions">
     <span role="status">{selection.ids.size} {selection.ids.size === 1 ? "Item" : "Items"} selected</span>
     <div className="nb-selection-actions">
       {trash ? <button className="nb-btn nb-btn-primary" disabled={disabled} onClick={() => selection.run("restore")}><Icon name="restore" />Restore</button> : <>
-        <button className={`nb-btn ${tunnel ? "nb-btn-primary" : "nb-btn-secondary"}`} disabled={disabled} onClick={() => selection.run("copy", tunnel)}><Icon name="copy" />{tunnel ? "Copy & Trash" : "Copy"}</button>
+        <button className={`nb-btn ${tunnel ? "nb-btn-primary" : "nb-btn-secondary"}`} disabled={disabled} onClick={() => selection.run("copy", copyTrashes)}><Icon name="copy" />{copyTrashes ? "Copy & Trash" : "Copy"}</button>
         <button className="nb-btn nb-btn-secondary nb-selection-trash" disabled={disabled} onClick={() => selection.run("trash")}><Icon name="trash" />Trash</button>
       </>}
     </div>

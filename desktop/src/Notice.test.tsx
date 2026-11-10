@@ -33,3 +33,17 @@ test("Undo stays available while hovered and restarts its window on release", as
     expect(close).toHaveBeenCalledOnce();
   } finally { focus.mockRestore(); vi.useRealTimers(); }
 });
+
+test("notice expires after four seconds while the window is blurred", async () => {
+  vi.useFakeTimers();
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const close = vi.fn();
+  try {
+    render(<Notice message="Saved" onClose={close} />);
+    fireEvent.blur(window);
+    await act(async () => vi.advanceTimersByTime(3999));
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(close).toHaveBeenCalledOnce();
+  } finally { focus.mockRestore(); vi.useRealTimers(); }
+});

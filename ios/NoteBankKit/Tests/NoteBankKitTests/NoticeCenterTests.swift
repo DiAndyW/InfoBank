@@ -11,8 +11,13 @@ import Testing
 
         #expect(center.current?.message == "Copied text")
         #expect(center.current?.itemID == "")
-        #expect(center.current?.action == .dismiss)
-        #expect(center.current?.actionTitle == "Dismiss")
+        #expect(center.current?.action == nil)
         #expect(center.current?.id != previousID)
+    }
+
+    @Test func copiedTextHasNoAction() {
+        let center = NoticeCenter()
+        center.postCopiedText()
+        #expect(center.current?.action == nil)
     }
 }

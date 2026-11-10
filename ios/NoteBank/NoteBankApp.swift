@@ -248,8 +248,8 @@ struct RootView: View {
             case nil: ""
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { composers.flush() }
+        .onChange(of: scenePhase) { old, phase in
+            if phase != .active && old != .background { composers.flush() }
             switch phase {
             case .active:
                 backgroundEpisode += 1
