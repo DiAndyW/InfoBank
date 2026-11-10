@@ -6,7 +6,7 @@ import { Icon } from "./icons";
 import { Chips, useStaging } from "./staging";
 import type { ShowNotice } from "./Selection";
 
-export type ComposerHandle = { discard: () => void; focus: () => void };
+export type ComposerHandle = { freeze: (value: boolean) => void; waitForStaging: () => Promise<void>; discard: () => void; focus: () => void; saveDrafts: () => Promise<void>; unsentFiles: () => number };
 
 type Props = {
   drafts?: { place: string; initial: Draft[] | null; homeTopicId: string | null; restoreHomeTopic?: (id: string | null) => void };
@@ -24,6 +24,7 @@ type Props = {
 type Place = { text: string; staged: Staged[]; touched: boolean; pending: boolean; timer?: ReturnType<typeof setTimeout>; homeTopicId: string | null; sent: boolean };
 
 export default function Composer({ drafts, acceptsDrops, target, placeholder, onCaptured, onNotice, onCancel, picker, ref }: Props) {
+  const frozen = useRef(false);
   const accepts = useRef(acceptsDrops);
   accepts.current = acceptsDrops;
   const places = useRef(new Map<string, Place>());
@@ -40,6 +41,8 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   }
   const current = entry(place);
   const chain = useRef(Promise.resolve());
+  const draftSaves = useRef(new Set<Promise<void>>());
+  const draftFailure = useRef<{ reason: unknown } | null>(null);
   const draftFailures = useRef(0);
   const draftError = "Couldn't save your draft. Your text is still here.";
   function enqueue(action: () => Promise<void>) {
@@ -55,10 +58,15 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
     value.pending = false;
     const text = value.text;
     const homeTopicId = value.homeTopicId;
-    enqueue(() => saveDraft(key, text, homeTopicId)).then(() => {
+    const save = enqueue(() => saveDraft(key, text, homeTopicId));
+    draftSaves.current.add(save);
+    save.then(() => {
+      draftSaves.current.delete(save);
       draftFailures.current = 0;
       setFailure(previous => previous?.draft ? null : previous);
-    }).catch(() => {
+    }, (err) => {
+      draftSaves.current.delete(save);
+      draftFailure.current = { reason: err };
       value.pending = true;
       draftFailures.current += 1;
       if (draftFailures.current >= 3) setFailure(previous => previous ?? { message: draftError, draft: true });
@@ -72,6 +80,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
     value.timer = setTimeout(() => flush(key), 300);
   }
   function setDraft(text: string) {
+    if (frozen.current) return;
     if (text && cleared.current?.place === place) cleared.current = null;
     current.text = text;
     current.touched = true;
@@ -84,7 +93,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
     redraw(n => n + 1);
   };
   const draft = current.text;
-  const { staged, addAll, onPaste, remove, pick, discard: discardStaged, dialog } = useStaging({ staged: current.staged, setStaged });
+  const { start, wait, staged, addAll, onPaste, remove, pick, discard: discardStaged, dialog } = useStaging({ staged: current.staged, setStaged });
   const addStaged = useRef(addAll);
   addStaged.current = addAll;
 
@@ -151,18 +160,20 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   }, []);
 
   useEffect(() => {
-    const drops = new Map<string, typeof addAll | null>();
+    const drops = new Map<string, { add: typeof addAll | null; finish: () => void }>();
     const stopStaging = getCurrentWebviewWindow().listen<string>("attachments-staging", (e) => {
-      drops.set(e.payload, accepts.current ? addStaged.current : null);
+      drops.set(e.payload, { add: accepts.current && !frozen.current ? addStaged.current : null, finish: start() });
     });
     const stopStaged = getCurrentWebviewWindow().listen<StagedFiles & { drop_id?: string }>("attachments-staged", (e) => {
-      const add = e.payload.drop_id === undefined ? (accepts.current ? addStaged.current : null) : drops.get(e.payload.drop_id);
+      const drop = e.payload.drop_id === undefined ? undefined : drops.get(e.payload.drop_id);
+      const add = e.payload.drop_id === undefined ? (accepts.current && !frozen.current ? addStaged.current : null) : drop?.add;
       if (e.payload.drop_id !== undefined) drops.delete(e.payload.drop_id);
       if (add) add(e.payload);
       else for (const s of e.payload.staged) unstage(s.id).catch(() => {});
+      drop?.finish();
     });
     const stopDrag = getCurrentWebview().onDragDropEvent((e) =>
-      setDragging(accepts.current && (e.payload.type === "enter" || e.payload.type === "over")),
+      setDragging(accepts.current && !frozen.current && (e.payload.type === "enter" || e.payload.type === "over")),
     );
     return () => {
       stopStaging.then((stop) => stop());
@@ -183,6 +194,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   }
 
   function restore(snapshot = cleared.current) {
+    if (frozen.current) return;
     if (!snapshot || cleared.current !== snapshot) return;
     cleared.current = null;
     const value = entry(snapshot.place);
@@ -195,6 +207,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   }
 
   function clearBox() {
+    if (frozen.current) return;
     const snapshot = { place, text: draft, staged };
     cleared.current = snapshot;
     clear();
@@ -206,7 +219,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
 
   async function submit(e?: FormEvent) {
     e?.preventDefault();
-    if (empty || current.sent) return;
+    if (frozen.current || empty || current.sent) return;
     current.sent = true;
     redraw(n => n + 1);
     current.touched = true;
@@ -245,6 +258,8 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
   }
 
   useImperativeHandle(ref, () => ({
+    freeze(value) { frozen.current = value; setDragging(false); redraw(n => n + 1); },
+    waitForStaging: wait,
     discard() {
       // Unstaging now would delete files the Item being saved points to.
       if (saving.current) {
@@ -255,9 +270,24 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
       clear();
     },
     focus: () => textarea.current?.focus(),
+    async saveDrafts() {
+      const previousFailure = draftFailure.current;
+      let queued: Promise<void>;
+      do {
+        for (const key of places.current.keys()) flush(key);
+        queued = chain.current;
+        const results = await Promise.allSettled([...draftSaves.current, queued]);
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason;
+        }
+        if (draftFailure.current !== previousFailure) throw draftFailure.current!.reason;
+      } while (draftSaves.current.size > 0 || chain.current !== queued || [...places.current.values()].some(value => value.pending && !value.sent));
+    },
+    unsentFiles: () => [...places.current.values()].reduce((total, value) => total + value.staged.length, 0),
   }));
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (frozen.current) return;
     if (e.key === "z" && (e.metaKey || e.ctrlKey) && !e.shiftKey && cleared.current?.place === place && draft === "" && staged.length === 0) {
       e.preventDefault();
       restore();
@@ -296,28 +326,29 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
           </div>
         )}
         <div className="nb-composer-box">
-          {staged.length > 0 && <Chips label="Attachments to send" list={staged} onRemove={remove} />}
+          {staged.length > 0 && <Chips label="Attachments to send" list={staged} onRemove={(id) => { if (!frozen.current) remove(id); }} />}
           <div className="nb-composer-row">
             <textarea
               ref={textarea}
               aria-label="New Item"
               placeholder={placeholder}
               rows={2}
+              readOnly={frozen.current}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              onPaste={onPaste}
+              onPaste={(e) => { if (frozen.current) e.preventDefault(); else onPaste(e); }}
               {...(onCancel && { autoCorrect: "off", spellCheck: false, writingsuggestions: "false" })}
             />
           </div>
           <div className="nb-composer-footer">
             <div className="nb-composer-destination">{picker}</div>
             <div className="nb-composer-actions">
-              <button type="button" className="nb-iconbtn" aria-label="Attach files" title="Attach files" onClick={() => pick().then(() => textarea.current?.focus())}>
+              <button type="button" className="nb-iconbtn" aria-label="Attach files" title="Attach files" disabled={frozen.current} onClick={() => pick().then(() => textarea.current?.focus())}>
                 <Icon name="paperclip" />
               </button>
-              {drafts && (draft !== "" || staged.length > 0) && !current.sent && <button type="button" className="nb-btn nb-btn-quiet" onClick={clearBox}>Clear</button>}
-              <button type="submit" className="nb-btn nb-btn-primary" disabled={empty}>
+              {drafts && (draft !== "" || staged.length > 0) && !current.sent && <button type="button" className="nb-btn nb-btn-quiet" disabled={frozen.current} onClick={clearBox}>Clear</button>}
+              <button type="submit" className="nb-btn nb-btn-primary" disabled={frozen.current || empty}>
                 <Icon name="send" />
                 Send
               </button>

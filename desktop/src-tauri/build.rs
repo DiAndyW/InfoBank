@@ -15,7 +15,7 @@ fn main() {
         "delete_topic", "pick_files", "stage_attachment_bytes", "unstage_attachment", "thumbnail", "attachment_stored", "attachment_original",
         "open_attachment", "reveal_attachment", "list_items", "search_items", "sync_status",
         "set_quick_capture_shortcut", "set_quick_capture_on", "autostart_on", "set_autostart", "dismiss_quick_capture", "startup_error",
-        "show_data_folder", "quit", "copy_item", "copy_attachment", "prepare_copy_items", "finish_copy_items", "discard_copy_items", "set_items_trashed",
+        "show_data_folder", "quit", "update_status", "check_for_updates", "restart_to_update", "copy_item", "copy_attachment", "prepare_copy_items", "finish_copy_items", "discard_copy_items", "set_items_trashed",
     ])))
     .expect("failed to run tauri-build");
 }

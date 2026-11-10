@@ -65,4 +65,5 @@ jobs:
           python3 deploy/release-manifest.py "${RELEASE_TAG#server-v}" "$commit" notebank-server-linux-arm64 > manifest.json
           minisign -S -s "$key_file" -m manifest.json
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes "Compatible Server release; CI checks passed." notebank-server-linux-arm64 manifest.json manifest.json.minisig
+          # Desktop updates rely on Server releases keeping --latest=false.
           gh release edit "$RELEASE_TAG" --draft=false --latest=false

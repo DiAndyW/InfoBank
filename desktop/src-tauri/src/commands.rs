@@ -430,6 +430,35 @@ pub fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+#[tauri::command]
+pub fn update_status<R: Runtime>(app: AppHandle<R>, window: tauri::WebviewWindow<R>, state: State<'_, AppState>) -> Result<crate::updater::UpdateInfo, String> {
+    if window.label() != "main" {
+        return Err("Only the main window can manage updates".into());
+    }
+    Ok(crate::updater::UpdateInfo { current_version: app.package_info().version.to_string(), status: state.update.status() })
+}
+
+#[tauri::command]
+pub fn check_for_updates<R: Runtime>(window: tauri::WebviewWindow<R>, state: State<'_, AppState>) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the main window can manage updates".into());
+    }
+    state.update.request();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn restart_to_update<R: Runtime>(app: AppHandle<R>, window: tauri::WebviewWindow<R>) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Only the main window can manage updates".into());
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        handle.state::<AppState>().update.install(true, &mut |status| crate::updater::emit(&handle, status))
+    }).await.map_err(crate::error_message::message)??;
+    app.restart();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

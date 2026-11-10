@@ -14,6 +14,7 @@ mod store;
 mod sync;
 mod topics;
 mod tray;
+mod updater;
 #[cfg(target_os = "macos")]
 mod thumbnails;
 
@@ -33,6 +34,7 @@ pub struct AppState {
     wake: tokio::sync::Notify,
     settings_saved: tokio::sync::Notify,
     status: Mutex<&'static str>,
+    update: updater::UpdateState,
     skipped_uploads: Mutex<HashSet<String>>,
     #[cfg(target_os = "macos")]
     thumbnail_retries: Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
@@ -54,6 +56,7 @@ impl AppState {
             wake: tokio::sync::Notify::new(),
             settings_saved: tokio::sync::Notify::new(),
             status: Mutex::new("synced"),
+            update: updater::UpdateState::new(!cfg!(debug_assertions)),
             skipped_uploads: Mutex::new(HashSet::new()),
             #[cfg(target_os = "macos")]
             thumbnail_retries: Mutex::new(std::collections::HashMap::new()),
@@ -123,6 +126,9 @@ fn start(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     }
     tray::build(app, &hotkey).map_err(|e| format!("Couldn't create the tray icon: {e}"))?;
     tauri::async_runtime::spawn(sync::run(app.clone()));
+    if !cfg!(debug_assertions) {
+        tauri::async_runtime::spawn(updater::run(app.clone()));
+    }
     Ok(())
 }
 
@@ -136,6 +142,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().args(["--hidden"]).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _, event| {
@@ -233,13 +240,17 @@ pub fn run() {
             commands::dismiss_quick_capture,
             commands::startup_error,
             commands::show_data_folder,
-            commands::quit
+            commands::quit,
+            commands::update_status,
+            commands::check_for_updates,
+            commands::restart_to_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            #[cfg(not(target_os = "macos"))]
-            let _ = (&app, &event);
+            if matches!(event, tauri::RunEvent::Exit) && let Some(state) = app.try_state::<AppState>() {
+                updater::install_on_exit(&state.update);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 show_main(app);

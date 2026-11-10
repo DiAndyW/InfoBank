@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type Ref, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -6,7 +6,7 @@ import { listDrafts, type Draft, doubleClickIntervalMs, discardItem, itemTarget,
 import ImageViewer from "./ImageViewer";
 import { Attachments, viewable } from "./attachments";
 import { copyWholeItem } from "./api";
-import Composer from "./Composer";
+import Composer, { type ComposerHandle } from "./Composer";
 import CaptureDestination from "./CaptureDestination";
 import ConflictDialog from "./ConflictDialog";
 import { useShownAfterDelay } from "./delay";
@@ -35,6 +35,7 @@ type Props = {
   topics: Topic[];
   covered: boolean;
   editor: RefObject<EditorHandle | null>;
+  composer: Ref<ComposerHandle>;
   notice: NoticeData | null;
   onDismissNotice: () => void;
   onNotice: ShowNotice;
@@ -53,7 +54,7 @@ function refusal(reason: string) {
   return `${what} It's only on this Device.`;
 }
 
-export default function Feed({ home, view, topics, covered, editor, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+export default function Feed({ home, view, topics, covered, editor, composer, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [copyPreference, setCopyPreference] = useState<boolean | null>(false);
   useEffect(() => {
     if (view.kind !== "tunnel") return;
@@ -649,6 +650,7 @@ export default function Feed({ home, view, topics, covered, editor, notice, onDi
       )}
       <div hidden={noComposer || selection.selecting} className="nb-main-composer">
         <Composer
+          ref={composer}
           onNotice={onNotice}
           drafts={{ place: home ? "home" : view.kind === "topic" ? `topic:${view.id}` : view.kind, initial: drafts, homeTopicId: homeChosen?.id ?? null, restoreHomeTopic: (id) => { if (!homeTopicChanged.current) setHomeTopic(id); } }}
           acceptsDrops={!noComposer && !covered && !viewing}

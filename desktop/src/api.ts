@@ -96,6 +96,18 @@ export type SearchQuery = { text: string; place: Place; from_us: number | null; 
 export type SearchItem = FeedItem & { marked_text: string | null; marked_filenames: string[] };
 export const searchItems = (query: SearchQuery, before: Before | null) => invoke<SearchItem[]>("search_items", { query, before });
 export const syncStatus = () => invoke<SyncStatus>("sync_status");
+export type UpdateStatus =
+  | { state: "off" }
+  | { state: "checking" }
+  | { state: "up_to_date"; checked_at: string }
+  | { state: "downloading"; version: string }
+  | { state: "ready"; version: string }
+  | { state: "offline" }
+  | { state: "failed" };
+export type UpdateInfo = { current_version: string; status: UpdateStatus };
+export const updateStatus = () => invoke<UpdateInfo>("update_status");
+export const checkForUpdates = () => invoke<void>("check_for_updates");
+export const restartToUpdate = () => invoke<void>("restart_to_update");
 export const dismissQuickCapture = () => invoke<void>("dismiss_quick_capture");
 export const setQuickCaptureShortcut = (shortcut: string) => invoke<Hotkey>("set_quick_capture_shortcut", { shortcut });
 export const setQuickCaptureOn = (on: boolean) => invoke<Hotkey>("set_quick_capture_on", { on });

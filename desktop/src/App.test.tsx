@@ -61,6 +61,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "list_drafts") return [];
       if (cmd === "list_topics") return opts.topics ?? [];
       if (cmd === "sync_status") return opts.status ?? "synced";
+      if (cmd === "update_status") return { current_version: "0.1.0", status: { state: "off" } };
       if (cmd === "list_items") return opts.items ? opts.items(args) : [];
       if (cmd === "search_items") return opts.search ? opts.search(args) : [];
       if (cmd === "nav_counts") return opts.counts?.() ?? { inbox: 0, tunnel: 0, trash: 0 };
@@ -371,6 +372,7 @@ test("a load failure is shown and can be retried", async () => {
       }
       if (cmd === "list_topics") return [];
       if (cmd === "sync_status") return "synced";
+      if (cmd === "update_status") return { current_version: "0.1.0", status: { state: "off" } };
       if (cmd === "list_items") return [];
       if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
     },
@@ -909,6 +911,7 @@ test("the sidebar refetches Topics when items change", async () => {
       if (cmd === "get_settings") return configured;
       if (cmd === "list_topics") return topics;
       if (cmd === "sync_status") return "synced";
+      if (cmd === "update_status") return { current_version: "0.1.0", status: { state: "off" } };
       if (cmd === "startup_error") return null;
       return [];
     },
@@ -931,6 +934,7 @@ test("when the selected Topic disappears Home is shown", async () => {
       if (cmd === "get_settings") return configured;
       if (cmd === "list_topics") return topics;
       if (cmd === "sync_status") return "synced";
+      if (cmd === "update_status") return { current_version: "0.1.0", status: { state: "off" } };
       if (cmd === "startup_error") return null;
       return [];
     },
