@@ -175,6 +175,7 @@
 				A10000000000000000000005 /* Frameworks */,
 				A1000000000000000000000B /* Resources */,
 				B10000000000000000000022 /* Embed App Extensions */,
+				A10000000000000000000032 /* Record Build Commit */,
 			);
 			buildRules = (
 			);
@@ -305,6 +306,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A10000000000000000000032 /* Record Build Commit */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ("$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)");
+			name = "Record Build Commit";
+			outputPaths = ();
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\ncommit=$(/usr/bin/git -C \"$SRCROOT\" rev-parse HEAD)\n/usr/bin/plutil -replace NoteBankBuildCommit -string \"$commit\" \"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A1000000000000000000000A /* Sources */ = {

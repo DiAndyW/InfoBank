@@ -55,8 +55,8 @@ test("the_sidebar_shows_update_ready_only_when_ready", async () => {
 
 test.each([
   [{ state: "checking" }, "Checking…"],
-  [{ state: "up_to_date", checked_at: now.toISOString() }, "Up to date, checked just now"],
-  [{ state: "up_to_date", checked_at: "2026-11-07T10:00:00Z" }, "Up to date, checked 2 hours ago"],
+  [{ state: "up_to_date", checked_at: now.toISOString() }, "Up to date, just now"],
+  [{ state: "up_to_date", checked_at: "2026-11-07T10:00:00Z" }, "Up to date, 2 hours ago"],
   [{ state: "downloading", version: "0.2.0" }, "Downloading version 0.2.0…"],
   [{ state: "ready", version: "0.2.0" }, "Version 0.2.0 is ready"],
   [{ state: "offline" }, "No connection, try again later"],
@@ -105,9 +105,9 @@ test("settings_refreshes_relative_time_each_minute", async () => {
   vi.setSystemTime(now);
   try {
     await settings({ state: "up_to_date", checked_at: now.toISOString() });
-    expect(screen.getByText("Up to date, checked just now")).toBeInTheDocument();
+    expect(screen.getByText("Up to date, just now")).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(60_000));
-    expect(screen.getByText("Up to date, checked 1 minute ago")).toBeInTheDocument();
+    expect(screen.getByText("Up to date, 1 minute ago")).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
 });
 
