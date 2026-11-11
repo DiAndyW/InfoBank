@@ -70,6 +70,7 @@ struct SettingsView: View {
     @Binding var theme: Theme
     @State private var model: SettingsModel
     @State private var saved = false
+    @State private var buildStatus: BuildStatus?
     @State private var openedTheme: Theme
     private let wake: () -> Void
     @Environment(\.palette) private var palette
@@ -146,6 +147,19 @@ struct SettingsView: View {
                         }
                     }
                     .card()
+                    header("Version")
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as! String)
+                            .foregroundStyle(palette.ink)
+                        Text(buildStatus?.message ?? "Checking…")
+                            .foregroundStyle(palette.inkMuted)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.plex(.sans, 17))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card()
                 }
                 .padding(.horizontal, 16)
             }
@@ -170,6 +184,9 @@ struct SettingsView: View {
         .discardAlert(model) {
             saved = true
             dismiss()
+        }
+        .task {
+            buildStatus = await BuildCheck.run(commit: Bundle.main.object(forInfoDictionaryKey: "NoteBankBuildCommit") as! String)
         }
         .onDisappear { if !saved { theme = openedTheme } }
     }

@@ -52,7 +52,7 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
     const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
     const checked = minutes < 1 ? "just now" : minutes < 60 ? relative.format(-minutes, "minute")
       : minutes < 1440 ? relative.format(-Math.floor(minutes / 60), "hour") : relative.format(-Math.floor(minutes / 1440), "day");
-    updateLine = `Up to date, checked ${checked}`;
+    updateLine = `Up to date, ${checked}`;
   }
   const [themeOpen, setThemeOpen] = useState(false);
   const [url, setUrl] = useState(initial.server_url ?? "");
@@ -254,17 +254,17 @@ export default function Settings({ initial, theme, onThemeChange, onSaved, onCan
       {update && (
         <div className="nb-field">
           <span className="nb-field-label">Version</span>
-          <span>{update.current_version}</span>
-          {updateLine && <span role="status">{updateLine}</span>}
-          {status?.state !== "off" && (
-            <div className="nb-shortcut-row">
-              {status?.state === "ready" ? (
-                <button type="button" className="nb-btn nb-btn-quiet" onClick={onRestart}>Restart to update</button>
+          <div className="nb-update-row">
+            <span>{update.current_version}</span>
+            {updateLine && <span className="nb-update-status" role="status">{updateLine}</span>}
+            {status?.state !== "off" && (
+              status?.state === "ready" ? (
+                <button type="button" className="nb-btn nb-btn-primary" onClick={onRestart}>Restart to update</button>
               ) : (
-                <button type="button" className="nb-btn nb-btn-quiet" disabled={status?.state === "checking" || status?.state === "downloading"} onClick={onCheckForUpdates}>Check for updates</button>
-              )}
-            </div>
-          )}
+                <button type="button" className="nb-btn nb-btn-secondary" disabled={status?.state === "checking" || status?.state === "downloading"} onClick={onCheckForUpdates}>Check for updates</button>
+              )
+            )}
+          </div>
         </div>
       )}
       {error && (
