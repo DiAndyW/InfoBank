@@ -3,6 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, expect, test, vi } from "vitest";
 import App from "./App";
+import { behaviourTest, noticeMessage } from "./behaviour-test";
 import type { StagedFiles, Topic } from "./api";
 
 type Row = { place: string; text: string; home_topic_id: string | null };
@@ -465,4 +466,12 @@ test("draft failures and recovery preserve the Send error", async () => {
     await act(async () => { fireEvent.blur(window); }); await settle();
     expect(screen.getByText("Couldn't save your draft. Your text is still here.")).toBeInTheDocument();
   }
+});
+
+behaviourTest("notice.cleared", async expected => {
+  backend(); await start();
+  type("a note");
+  fireEvent.click(screen.getByRole("button", { name: "Clear" })); await settle();
+  const notice = screen.getByText(noticeMessage(expected)).closest('[role="status"]')! as HTMLElement;
+  expect(within(notice).getAllByRole("button").map(button => button.textContent || "close")).toEqual(expected.buttons);
 });

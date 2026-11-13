@@ -1,3 +1,4 @@
+import NoteBankKit
 import SwiftUI
 
 struct NoticeView: View {
@@ -20,7 +21,7 @@ struct NoticeView: View {
         .background(palette.ink, in: RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .contain)
         .task(id: message) {
-            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            do { try await Task.sleep(for: .seconds(Notice.durationSeconds)) } catch { return }
             onDismiss()
         }
     }

@@ -52,6 +52,7 @@ struct FeedView: View {
     @State private var renameTopic = false
     @State private var topicNameDraft = ""
     @State private var deleteTopic = false
+    @State private var deletingEmpty: TopicPlace?
     @State private var batch: BatchItemActions
 
     init(
@@ -140,7 +141,7 @@ struct FeedView: View {
         SelectableItemRow(selection: batch.selection, item: item, busy: batch.busy,
                           onBegin: { copyTask?.cancel() }, onCommands: { commands = item }) {
             ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
-                    copyable: place == .tunnel, copied: copiedID == item.id,
+                    copyable: CopyActions(place: place.query, hasText: item.text != nil).row, copied: copiedID == item.id,
                     onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
         }
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
@@ -296,7 +297,7 @@ struct FeedView: View {
                         Button("Restore", systemImage: "arrow.uturn.backward") {
                             do {
                                 try store.restore(itemID: item.id, nowUs: Time.nowUs())
-                                notices.postRestored(itemID: item.id)
+                                try notices.postRestored(itemID: item.id, store: store)
                                 commands = nil
                                 model.reload()
                                 wake()
@@ -308,7 +309,7 @@ struct FeedView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
                 }.presentationDetents([.medium])
             } else {
-            ItemActionsView(item: item, store: store, copiesWholeItem: place == .tunnel, trashAfterCopy: model.trashAfterCopy, onSelect: {
+            ItemActionsView(item: item, store: store, place: place.query, trashAfterCopy: model.trashAfterCopy, onSelect: {
                 copyTask?.cancel()
                 commands = nil
                 batch.selection.begin(item.id)
@@ -318,7 +319,10 @@ struct FeedView: View {
             }, onChanged: { trashed, moved in
                 model.reload()
                 if trashed { notices.postTrashed(itemID: item.id, copied: false) }
-                if moved { notices.postMoved(itemID: item.id, from: item.destination) }
+                if moved {
+                    do { try notices.postMoved(itemID: item.id, from: item.destination, store: store) }
+                    catch { actionError = errorMessage(error) }
+                }
                 wake()
             })
             }
@@ -358,9 +362,10 @@ struct FeedView: View {
                 catch { actionError = errorMessage(error) }
             }
         }
+        .emptyTopicDeletionAlert(topic: $deletingEmpty, store: store, notices: notices, wake: wake, onError: { actionError = $0 })
         .fullScreenCover(isPresented: $deleteTopic) {
             if case .topic(let id) = place {
-                TopicDeletionView(store: store, topic: TopicPlace(id: id, name: model.topicName ?? title, count: model.items.count), wake: wake)
+                TopicDeletionView(store: store, topic: TopicPlace(id: id, name: model.topicName ?? title, count: model.topicCount), notices: notices, wake: wake)
             }
         }
         .toolbar {
@@ -381,7 +386,11 @@ struct FeedView: View {
                             do { try store.setTopicArchived(id, archived: !model.topicUnavailable, nowUs: Time.nowUs()); model.reload(); wake() }
                             catch { actionError = errorMessage(error) }
                         }
-                        Button("Delete Topic…", systemImage: "trash", role: .destructive) { deleteTopic = true }
+                        Button("Delete Topic…", systemImage: "trash", role: .destructive) {
+                            if model.topicCount == 0 {
+                                deletingEmpty = TopicPlace(id: id, name: model.topicName ?? title, count: 0)
+                            } else { deleteTopic = true }
+                        }
                     } label: { Image(systemName: "ellipsis") }
                     .accessibilityLabel("Topic actions")
                 }

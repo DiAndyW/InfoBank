@@ -23,6 +23,7 @@ public final class FeedModel {
     public private(set) var items: [FeedItem] = []
     public private(set) var hasOlder = false
     public private(set) var topicUnavailable = false
+    public private(set) var topicCount = 0
     public private(set) var topicName: String?
     public private(set) var loadError: String?
 
@@ -75,6 +76,7 @@ public final class FeedModel {
             let topic = try? store.topic(id)
             topicUnavailable = topic?.archived != false
             topicName = topic?.name
+            topicCount = topic?.count ?? 0
         }
         guard let oldest = (place == .trash ? items.last : items.first)?.cursor else { return loadOlder() }
         do {

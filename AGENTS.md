@@ -12,6 +12,10 @@ Default canonical labels: needs-triage, needs-info, ready-for-agent, ready-for-h
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Shared behaviour
+
+Edit `behaviour/behaviour.json` before changing shared notices or copy actions. Make each platform's tests fail, design the changes together, then build until green. Platform differences need a reason. See `docs/agents/behaviour.md`.
+
 ## Memory
 
 Project memory holds gotchas and decisions found nowhere in the repo. Codex: your first action on every task, including read-only and planning tasks, is to read `~/.claude/projects/-Users-andywang-Repos-NoteBank/memory/MEMORY.md`, then open every memory it lists that bears on the task. Memories are point-in-time, so verify any file, flag or status against the current code. Leave the memory files unchanged; report new lessons in your result.

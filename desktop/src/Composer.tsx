@@ -332,6 +332,7 @@ export default function Composer({ drafts, acceptsDrops, target, placeholder, on
               ref={textarea}
               aria-label="New Item"
               placeholder={placeholder}
+              style={draft === "" ? { whiteSpace: "nowrap" } : undefined}
               rows={2}
               readOnly={frozen.current}
               value={draft}

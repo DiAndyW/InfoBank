@@ -1,0 +1,441 @@
+{
+  "platforms": [
+    "macos",
+    "windows",
+    "ios"
+  ],
+  "rules": {
+    "notice.duration": {
+      "summary": "Notices expire after four seconds of active display",
+      "expect": {
+        "duration_seconds": 4
+      }
+    },
+    "notice.copied_text": {
+      "summary": "Copied text",
+      "expect": {
+        "message": "Copied text",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.trashed": {
+      "summary": "Trashed",
+      "expect": {
+        "message": "Item moved to Trash",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.copied_trashed": {
+      "summary": "Copied trashed",
+      "expect": {
+        "message": "Copied, moved to Trash",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.batch_copied": {
+      "summary": "Batch copied",
+      "expect": {
+        "message": "{count} {items} copied",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.batch_restored": {
+      "summary": "Batch restored",
+      "expect": {
+        "message": "{count} {items} restored",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.batch_trashed": {
+      "summary": "Batch trashed",
+      "expect": {
+        "message": "{count} {items} moved to Trash",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.batch_copied_trashed": {
+      "summary": "Batch copied trashed",
+      "expect": {
+        "message": "{count} {items} copied, moved to Trash",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.cleared": {
+      "summary": "Cleared",
+      "expect": {
+        "message": "Cleared",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_inbox_archived": {
+      "summary": "Sync inbox archived",
+      "expect": {
+        "message": "Saved \"{label}\" to the Inbox: {topic} was archived on another Device.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_inbox_deleted": {
+      "summary": "Sync inbox deleted",
+      "expect": {
+        "message": "Saved \"{label}\" to the Inbox: {topic} was deleted on another Device.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "copy.inbox": {
+      "summary": "Copy actions in inbox; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [
+          {
+            "id": "text",
+            "label": "Copy Text"
+          }
+        ],
+        "row": false,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy"
+          }
+        ]
+      }
+    },
+    "copy.topic": {
+      "summary": "Copy actions in topic; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [
+          {
+            "id": "text",
+            "label": "Copy Text"
+          }
+        ],
+        "row": false,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy"
+          }
+        ]
+      }
+    },
+    "copy.archived_topic": {
+      "summary": "Copy actions in archived topic; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [
+          {
+            "id": "text",
+            "label": "Copy Text"
+          }
+        ],
+        "row": false,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy"
+          }
+        ]
+      }
+    },
+    "copy.tunnel": {
+      "summary": "Copy actions in tunnel; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [
+          {
+            "id": "item",
+            "label": "Copy Item"
+          },
+          {
+            "id": "text",
+            "label": "Copy Text"
+          }
+        ],
+        "row": true,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy"
+          }
+        ]
+      }
+    },
+    "copy.tunnel_trash": {
+      "summary": "Copy actions in tunnel trash; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [
+          {
+            "id": "item",
+            "label": "Copy & Trash"
+          },
+          {
+            "id": "text",
+            "label": "Copy Text"
+          }
+        ],
+        "row": true,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy & Trash"
+          }
+        ]
+      }
+    },
+    "copy.trash": {
+      "summary": "Copy actions in trash; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [],
+        "row": false,
+        "batch": []
+      }
+    },
+    "copy.search": {
+      "summary": "Copy actions in search; row includes accessibility Copy availability",
+      "expect": {
+        "menu": [],
+        "row": false,
+        "batch": [
+          {
+            "id": "items",
+            "label": "Copy"
+          }
+        ]
+      }
+    },
+    "copy.without_text": {
+      "summary": "Items without text offer no text-only copy",
+      "expect": {
+        "offered": false
+      }
+    },
+    "copy.single_attachment": {
+      "summary": "Each attachment has its own Copy button",
+      "expect": {
+        "offered": true,
+        "label": "Copy"
+      },
+      "differs": {
+        "ios": {
+          "expect": {
+            "offered": false
+          },
+          "reason": "Quick Look's Share sheet already offers Copy"
+        }
+      }
+    },
+    "notice.sync_inbox_more": {
+      "summary": "Several sync notices show the last Inbox relocation and count the rest",
+      "expect": {
+        "message": "Saved \"{label}\" to the Inbox: {topic} was archived on another Device. And {count} more.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.moved_tunnel": {
+      "summary": "Moved tunnel",
+      "expect": {
+        "message": "Moved to the Tunnel",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.moved_inbox": {
+      "summary": "Moved inbox",
+      "expect": {
+        "message": "Moved to the Inbox",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.moved_topic": {
+      "summary": "Moved topic",
+      "expect": {
+        "message": "Moved to {topic}",
+        "buttons": [
+          "Undo",
+          "close"
+        ]
+      }
+    },
+    "notice.restored": {
+      "summary": "Restored",
+      "expect": {
+        "message": "Restored to {destination}",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_move": {
+      "summary": "Sync move",
+      "expect": {
+        "message": "Couldn't move \"{label}\" to {topic}: it was {state} on another Device.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_empty": {
+      "summary": "Sync empty",
+      "expect": {
+        "message": "Couldn't restore \"{label}\": it has no text or files left.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.sync_gone": {
+      "summary": "Sync gone",
+      "expect": {
+        "message": "Couldn't save your change to \"{label}\": it was deleted for good on another Device.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.sync_inbox_unknown": {
+      "summary": "Sync inbox unknown",
+      "expect": {
+        "message": "Saved \"{label}\" to the Inbox: its Topic isn't on this Server.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_inbox_state_unknown": {
+      "summary": "Sync inbox state unknown",
+      "expect": {
+        "message": "Saved \"{label}\" to the Inbox: {topic} was archived or deleted on another Device.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_failed": {
+      "summary": "Sync failed",
+      "expect": {
+        "message": "The Server refused this change. Its version will be restored when sync completes.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_failed_without_item": {
+      "summary": "Sync failed without item",
+      "expect": {
+        "message": "The Server refused this change. Its version will be restored when sync completes.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.sync_topic": {
+      "summary": "Sync topic",
+      "expect": {
+        "message": "The Server refused a Topic change. Its current version has been kept.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.sync_topic_renamed": {
+      "summary": "Sync topic renamed",
+      "expect": {
+        "message": "A Topic name was already in use. The Server gave it a unique name.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.attachment_copied": {
+      "summary": "Attachment copied",
+      "expect": {
+        "message": "Copied {filename}",
+        "buttons": [
+          "close"
+        ],
+        "offered": true
+      },
+      "differs": {
+        "ios": {
+          "expect": {
+            "offered": false
+          },
+          "reason": "iOS copies attachments through Quick Look's Share sheet, which doesn't tell the app"
+        }
+      }
+    },
+    "notice.topic_deleted_empty": {
+      "summary": "Topic deleted empty",
+      "expect": {
+        "message": "Deleted \"{topic}\".",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.topic_deleted_all": {
+      "summary": "Topic deleted all",
+      "expect": {
+        "message": "Deleted \"{topic}\". {count} {items} moved to the Inbox.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.topic_deleted_none": {
+      "summary": "Topic deleted none",
+      "expect": {
+        "message": "Deleted \"{topic}\". {count} {items} moved to Trash.",
+        "buttons": [
+          "close"
+        ]
+      }
+    },
+    "notice.topic_deleted_selected": {
+      "summary": "Topic deleted selected",
+      "expect": {
+        "message": "Deleted \"{topic}\". {count} {items} moved to the Inbox, {trashed} to Trash.",
+        "buttons": [
+          "close"
+        ]
+      }
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { archiveTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic, type UpdateStatus } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
@@ -49,6 +49,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
   const archived = topics.filter((t) => t.archived);
   const saving = useRef(false);
   const nav = useRef<HTMLElement>(null);
+  const topicList = useRef<HTMLDivElement>(null);
   // A Topic whose row should take focus once it's on screen (a new one arrives with the next Topics refresh).
   const focusRow = useRef<string | null>(null);
 
@@ -63,6 +64,10 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
   useEffect(() => {
     if (selectedArchived !== undefined) setShowArchived(selectedArchived);
   }, [selected, selectedArchived]);
+
+  useLayoutEffect(() => {
+    if (topicList.current) topicList.current.scrollTop = 0;
+  }, [showArchived]);
 
   useEffect(() => {
     if (focusRow.current === null) return;
@@ -242,7 +247,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
           </button>
         )}
       </div>
-      <div className="nb-topic-list">
+      <div className="nb-topic-list" ref={topicList}>
         <div id="sidebar-open-topics">
           {(showArchived ? archived : open).length === 0 ? <div className="nb-section-empty">None yet</div> : (showArchived ? visibleArchived : visibleOpen).map(row)}
         </div>

@@ -105,7 +105,9 @@ extension ItemActionsTests {
         center.postTrashed(itemID: "i", copied: false)
         #expect(center.current?.message == "Item moved to Trash")
         #expect(center.current?.action == .undoTrash)
-        center.postMoved(itemID: "i", from: .tunnel)
+        let store = try tempStore().store
+        let id = try store.capture(text: "note", to: .inbox, nowUs: 1)
+        try center.postMoved(itemID: id, from: .tunnel, store: store)
         #expect(center.current?.action == .undoMove(.tunnel))
         #expect(center.current?.actionTitle == "Undo")
     }

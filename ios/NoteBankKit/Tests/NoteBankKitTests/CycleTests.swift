@@ -267,6 +267,43 @@ struct FakeServerCycleTests {
         try device.store.pool.read { try String.fetchOne($0, sql: "SELECT sync_error FROM items WHERE id = ?", arguments: [id]) }
     }
 
+    @Test(arguments: ["not_found", "empty", "topic_unavailable", "invalid"])
+    func rejectedOperationsUseDesktopClassificationAndPreserveLabels(_ reason: String) async throws {
+        let fake = try await FakeServer { request in
+            request.path == "/sync/push" ? Self.answerEveryOp(request, status: "rejected", reason: reason) : .json(Self.emptyPage)
+        }
+        let a = try Device(url: fake.url, secret: "secret")
+        let id = try a.capture("named Item", at: t0)
+        let store = a.store
+        try await store.pool.write { db in
+            try db.execute(sql: "DELETE FROM outbox")
+            for type in ["AddAttachment", "RemoveAttachment", "SetText", "MoveItem", "TrashItem", "RestoreItem"] {
+                try store.queue(db, type, nowUs: t0, ["item_id": id])
+            }
+        }
+        try await a.sync()
+        let expected: [SyncNotice.Kind] = switch reason {
+        case "not_found": [.gone, .failed, .gone, .gone, .gone, .gone]
+        case "empty": [.failed, .failed, .failed, .failed, .failed, .empty]
+        case "topic_unavailable": [.failed, .failed, .failed, .move, .failed, .failed]
+        default: Array(repeating: .failed, count: 6)
+        }
+        #expect(a.queued.map(\.kind) == expected)
+        #expect(a.queued.allSatisfy { $0.label == "named Item" })
+    }
+
+    @Test func rejectedOperationsOnRefusedCapturesAreSilent() async throws {
+        let fake = try await FakeServer { request in
+            request.path == "/sync/push" ? Self.answerEveryOp(request, status: "rejected", reason: "invalid") : .json(Self.emptyPage)
+        }
+        let a = try Device(url: fake.url, secret: "secret")
+        let id = try a.capture("refused", at: t0)
+        try a.store.editText(itemID: id, text: "changed", baseRev: 0, nowUs: t0 + second)
+        try await a.sync()
+        #expect(a.queued.isEmpty)
+        #expect(try syncError(a, id) == "invalid")
+    }
+
     @Test func aRefusedCaptureIsMarked() async throws {
         let fake = try await FakeServer { request in
             request.path == "/sync/push" ? Self.answerEveryOp(request, status: "rejected", reason: "invalid") : .json(Self.emptyPage)

@@ -97,21 +97,32 @@ extension Store {
         }
     }
 
-    public func topic(_ id: String) throws -> (name: String, archived: Bool)? {
+    public func topic(_ id: String) throws -> (name: String, archived: Bool, count: Int)? {
         try pool.read { db in
-            try Row.fetchOne(db, sql: "SELECT name, archived_at IS NOT NULL AS archived FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { ($0["name"], $0["archived"]) }
+            try Row.fetchOne(db, sql: "SELECT name, archived_at IS NOT NULL AS archived, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { ($0["name"], $0["archived"], $0["count"]) }
         }
     }
 
-    public func deleteTopic(_ id: String, keeping: TopicKeep, nowUs: Int64) throws {
+    @discardableResult
+    public func deleteTopic(_ id: String, keeping: TopicKeep, nowUs: Int64) throws -> String {
         try pool.write { db in
-            guard try Bool.fetchOne(db, sql: "SELECT deleted_at IS NULL FROM topics WHERE id = ?", arguments: [id]) == true else { throw ItemActionError.topicUnavailable }
+            guard let name = try String.fetchOne(db, sql: "SELECT name FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]) else { throw ItemActionError.topicUnavailable }
             let ids = try String.fetchAll(db, sql: "SELECT id FROM items WHERE topic_id = ? AND deleted_at IS NULL", arguments: [id])
             let trash = ids.filter { item in
                 switch keeping { case .all: false; case .none: true; case .only(let kept): !kept.contains(item) }
             }
             try applyTopicDeletion(db, id: id, trash: trash, nowUs: nowUs)
             try queue(db, "DeleteTopic", nowUs: nowUs, ["topic_id":id,"trash":trash])
+            let kept = ids.count - trash.count
+            let count = { (n: Int) in "\(n) \(n == 1 ? "Item" : "Items")" }
+            let moved: String
+            if ids.isEmpty { moved = "" }
+            else { switch keeping {
+            case .all: moved = " \(count(kept)) moved to the Inbox."
+            case .none: moved = " \(count(trash.count)) moved to Trash."
+            case .only: moved = " \(count(kept)) moved to the Inbox, \(trash.count) to Trash."
+            } }
+            return "Deleted \"\(name)\".\(moved)"
         }
     }
 

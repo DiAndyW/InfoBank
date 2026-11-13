@@ -293,6 +293,9 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
                     ("rejected", "SetText" | "AddAttachment" | "MoveItem" | "TrashItem" | "RestoreItem", "not_found") => "gone",
                     ("rejected", "RestoreItem", "empty") => "empty",
                     ("changed", "CaptureItem", "sent_to_inbox") => "inbox",
+                    ("rejected", "SetText" | "MoveItem" | "TrashItem" | "RestoreItem" | "AddAttachment" | "RemoveAttachment", _) => "failed",
+                    ("rejected", "CreateTopic" | "RenameTopic" | "ArchiveTopic" | "UnarchiveTopic" | "DeleteTopic", _) => "topic",
+                    ("changed", "CreateTopic" | "RenameTopic", "renamed") => "topicRenamed",
                     _ => {
                         if rejected {
                             eprintln!("sync: op {} rejected: {}", r.op_id, r.reason.as_deref().unwrap_or("no reason"));
@@ -300,7 +303,10 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
                         continue;
                     }
                 };
-                let Some(item_id) = item_id else { continue };
+                let item_id = if matches!(kind, "topic" | "topicRenamed") { "" } else {
+                    let Some(id) = item_id else { continue };
+                    id
+                };
                 let topic_id = op["topic_id"].as_str().filter(|_| matches!(kind, "move" | "inbox")).map(String::from);
                 let topic = topic_id.as_deref().and_then(|t| {
                     tx.query_row("SELECT name FROM topics WHERE id = ?1", [t], |r| r.get(0)).optional().ok().flatten()
@@ -1921,6 +1927,29 @@ pub(crate) mod server_tests {
             names.sort();
             assert_eq!(names, ["Books", "Books (1)"]);
         }
+    }
+
+    #[tokio::test]
+    async fn refused_changes_and_renamed_topics_emit_notices() {
+        let (url, _) = fake_server(|req| {
+            let results: Vec<_> = req["ops"].as_array().unwrap().iter().map(|op| {
+                let renamed = op["id"].as_str().unwrap().starts_with("renamed");
+                serde_json::json!({"op_id": op["id"], "status": if renamed { "changed" } else { "rejected" }, "reason": if renamed { "renamed" } else { "invalid" }, "text": null})
+            }).collect();
+            serde_json::json!({"results": results})
+        }, 200);
+        let a = device_at(&url, "secret");
+        let types = ["SetText", "MoveItem", "TrashItem", "RestoreItem", "AddAttachment", "RemoveAttachment", "CreateTopic", "RenameTopic", "ArchiveTopic", "UnarchiveTopic", "DeleteTopic", "CreateTopic", "RenameTopic"];
+        {
+            let conn = a.db.lock().unwrap();
+            conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'note', ?1)", [T0]).unwrap();
+            for (index, ty) in types.iter().enumerate() {
+                let op = serde_json::json!({"id": format!("{}{index}", if index >= 11 { "renamed" } else { "refused" }), "type": ty, "item_id": if index < 6 { Some("i") } else { None }, "topic_id": "g", "at": "2025-10-09T08:53:20Z"});
+                conn.execute("INSERT INTO outbox (op) VALUES (?1)", [op.to_string()]).unwrap();
+            }
+        }
+        sync(&a).await.unwrap();
+        assert_eq!(a.notices.lock().unwrap().iter().map(|n| n.kind).collect::<Vec<_>>(), ["failed", "failed", "failed", "failed", "failed", "failed", "topic", "topic", "topic", "topic", "topic", "topicRenamed", "topicRenamed"]);
     }
 
     fn now() -> i64 {

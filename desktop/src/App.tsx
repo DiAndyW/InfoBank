@@ -205,12 +205,17 @@ export default function App() {
       const gone = n.topic_state ?? "archived or deleted";
       const sentence = {
         move: `Couldn't move "${n.label}" to ${n.topic}: it was ${gone} on another Device.`,
-        inbox: `Saved "${n.label}" to the Inbox: ${n.topic} was ${gone} on another Device.`,
+        inbox: n.topic == null
+          ? `Saved "${n.label}" to the Inbox: its Topic isn't on this Server.`
+          : `Saved "${n.label}" to the Inbox: ${n.topic} was ${gone} on another Device.`,
         empty: `Couldn't restore "${n.label}": it has no text or files left.`,
         gone: `Couldn't save your change to "${n.label}": it was deleted for good on another Device.`,
+        failed: "The Server refused this change. Its version will be restored when sync completes.",
+        topic: "The Server refused a Topic change. Its current version has been kept.",
+        topicRenamed: "A Topic name was already in use. The Server gave it a unique name.",
       }[n.kind];
       const more = e.payload.length > 1 ? ` And ${e.payload.length - 1} more.` : "";
-      const showable = n.kind === "move" || n.kind === "inbox";
+      const showable = n.kind === "move" || n.kind === "inbox" || (n.kind === "failed" && n.item_id !== "");
       show(
         sentence + more,
         showable
@@ -400,7 +405,7 @@ export default function App() {
         onNotice={show}
         onError={showError}
         onTrashed={(id, copied = false) =>
-          show(copied ? "Copied · moved to Trash" : "Item moved to Trash", {
+          show(copied ? "Copied, moved to Trash" : "Item moved to Trash", {
             label: "Undo",
             onAction: () => restoreItem(id).then(() => setHighlight(id), (e) => showError("Couldn't restore the Item", e)),
           })

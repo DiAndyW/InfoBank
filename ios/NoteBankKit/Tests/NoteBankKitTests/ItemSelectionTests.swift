@@ -26,7 +26,7 @@ import Testing
     @Test func batchNoticeRetainsEveryIDForOneUndo() {
         let notices = NoticeCenter()
         notices.postTrashed(itemIDs: ["a", "b"], copied: true)
-        #expect(notices.current?.message == "2 Items copied · moved to Trash")
+        #expect(notices.current?.message == "2 Items copied, moved to Trash")
         #expect(notices.current?.action == .undoBatchTrash(["a", "b"]))
         notices.postBatchCompleted(count: 2, copied: false)
         #expect(notices.current?.message == "2 Items restored")

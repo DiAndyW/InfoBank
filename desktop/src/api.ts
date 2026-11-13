@@ -39,7 +39,7 @@ export const itemTarget = (item: FeedItem): Target => item.in_tunnel ? { kind: "
 export type View = { kind: "all" } | { kind: "inbox" } | { kind: "tunnel" } | { kind: "trash" } | { kind: "topic"; id: string };
 export type Counts = { inbox: number; tunnel: number; trash: number };
 export type SyncNotice = {
-  kind: "move" | "inbox" | "empty" | "gone";
+  kind: "move" | "inbox" | "empty" | "gone" | "failed" | "topic" | "topicRenamed";
   item_id: string;
   label: string;
   topic: string | null;

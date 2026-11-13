@@ -15,7 +15,8 @@ final class AttachmentTextView: UITextView, UITextPasteDelegate {
         self.textContainer.lineFragmentPadding = 0
         textContainerInset = .zero
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        placeholderLabel.numberOfLines = 0
+        placeholderLabel.numberOfLines = 1
+        placeholderLabel.lineBreakMode = .byTruncatingTail
         placeholderLabel.isAccessibilityElement = false
         addSubview(placeholderLabel)
     }
