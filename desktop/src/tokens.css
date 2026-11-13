@@ -51,6 +51,7 @@
 }
 
 :root[data-theme="blackboard"] {
+  color-scheme: dark;
   --surface: #1e2522;
   --surface-sidebar: #171d1a;
   --surface-raised: #2a322e;

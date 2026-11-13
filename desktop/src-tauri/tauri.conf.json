@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "main",
+        "scrollBarStyle": "fluentOverlay",
         "create": false,
         "visible": false,
         "title": "NoteBank",
@@ -24,6 +25,7 @@
       },
       {
         "label": "quick-capture",
+        "scrollBarStyle": "fluentOverlay",
         "create": false,
         "title": "Quick capture",
         "width": 600,
