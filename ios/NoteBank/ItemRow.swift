@@ -134,6 +134,10 @@ struct ItemRow: View {
         .accessibilityElement(children: item.attachments.isEmpty ? .combine : .contain)
         .accessibilityAddTraits(copyable ? .isButton : [])
         .accessibilityAction(named: "Item actions", onCommands)
-        .accessibilityAction(named: "Copy") { if copyable { onCopy() } }
+        .accessibilityActions {
+            if copyable {
+                Button(CopyActions.copyLabel, action: onCopy)
+            }
+        }
     }
 }

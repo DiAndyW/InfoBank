@@ -27,7 +27,7 @@ public final class ComposerModel {
     public var destination: Destination
 
     private let draft: DraftPlace?
-    private var pendingSave: Task<Void, Never>?
+    @ObservationIgnored private var pendingSave: Task<Void, Never>?
     private var cleared: (text: String, attachments: [StagedAttachment])?
     private var isSending = false
     private let store: Store

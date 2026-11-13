@@ -4,6 +4,24 @@ import Testing
 @testable import NoteBankKit
 
 struct TopicTrashTests {
+    @Test @MainActor func topicCountIncludesUnloadedItemsAndExcludesTrash() throws {
+        let store = try tempStore().store
+        let topic = try store.createTopic(name: "Library", nowUs: 1)
+        let model = FeedModel(store: store, place: .topic(topic))
+        #expect(model.topicCount == 0)
+        for n in 0..<105 {
+            _ = try store.capture(text: "Item \(n)", to: .topic(topic), nowUs: Int64(n + 2))
+        }
+        let trashed = try store.capture(text: "trashed", to: .topic(topic), nowUs: 200)
+        try store.trash(itemID: trashed, nowUs: 201)
+        model.reload()
+        #expect(model.items.count == 100)
+        #expect(model.topicCount == 105)
+        model.loadOlder()
+        #expect(model.items.count == 105)
+        #expect(model.topicCount == 105)
+    }
+
     @Test func topicLifecycleAndCaptureGate() throws {
         let store = try tempStore().store
         let id = try store.createTopic(name: " Mosaic ", nowUs: 1)

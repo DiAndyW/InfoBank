@@ -1,6 +1,7 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
 import Notice from "./Notice";
+import { behaviourTest } from "./behaviour-test";
 
 for (const [label, duration] of [[undefined, 4000], ["Show", 4000], ["Undo", 4000]] as const) {
   test(`${label ?? "informational"} notice expires after ${duration}ms of active display`, async () => {
@@ -46,4 +47,16 @@ test("notice expires after four seconds while the window is blurred", async () =
     await act(async () => vi.advanceTimersByTime(1));
     expect(close).toHaveBeenCalledOnce();
   } finally { focus.mockRestore(); vi.useRealTimers(); }
+});
+
+behaviourTest("notice.duration", async expected => {
+  vi.useFakeTimers();
+  const close = vi.fn();
+  try {
+    render(<Notice message="Saved" onClose={close} />);
+    await act(async () => vi.advanceTimersByTime(expected.duration_seconds! * 1000 - 1));
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(close).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
 });

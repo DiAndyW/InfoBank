@@ -376,3 +376,20 @@ test("quick capture has no drafts", async () => {
     vi.useRealTimers();
   }
 });
+
+test("a long placeholder truncates on one line while entered text keeps multiline wrapping", () => {
+  quickBackend();
+  const placeholder = `Capture to ${"Long topic name ".repeat(14).slice(0, 200)}`;
+  render(<Composer acceptsDrops target={{ kind: "topic", id: "g" }} placeholder={placeholder} onCaptured={() => {}} />);
+  expect(box()).toHaveAttribute("placeholder", placeholder);
+  expect(box()).toHaveStyle({ whiteSpace: "nowrap" });
+  expect(box().style.maskImage).toBe("");
+  fireEvent.change(box(), { target: { value: "First line\nSecond line" } });
+  expect(box()).toHaveValue("First line\nSecond line");
+  expect(box()).not.toHaveStyle({ whiteSpace: "nowrap" });
+  expect(box().style.maskImage).toBe("");
+  expect(box().style.textOverflow).not.toBe("ellipsis");
+  fireEvent.change(box(), { target: { value: "" } });
+  expect(box()).toHaveStyle({ whiteSpace: "nowrap" });
+  expect(box().style.maskImage).toBe("");
+});

@@ -113,6 +113,7 @@ struct BatchActionsBar: View {
 
     var body: some View {
         let copyTrashes = tunnel && trashAfterCopy == true
+        let actions = CopyActions(place: trash ? .trash : tunnel ? .tunnel : .inbox, hasText: false, trashAfterCopy: trashAfterCopy)
         HStack(spacing: 10) {
             Text("\(ids.count) selected")
                 .font(.plex(.sansSemibold, 12, relativeTo: .caption))
@@ -124,9 +125,11 @@ struct BatchActionsBar: View {
                         Label("Restore", systemImage: "arrow.uturn.backward").frame(minHeight: 24)
                     }.buttonStyle(.borderedProminent)
                 } else {
-                    Button { batch.copy(ids, trash: copyTrashes) } label: {
-                        Label(copyTrashes ? "Copy & Trash" : "Copy", systemImage: "doc.on.doc").frame(minHeight: 24)
-                    }.buttonStyle(.borderedProminent)
+                    ForEach(actions.batch, id: \.kind) { action in
+                        Button { batch.copy(ids, trash: copyTrashes) } label: {
+                            Label(action.label, systemImage: "doc.on.doc").frame(minHeight: 24)
+                        }.buttonStyle(.borderedProminent)
+                    }
                     Button(role: .destructive) { batch.run(ids) } label: {
                         Label("Trash", systemImage: "trash").frame(minHeight: 24)
                     }.buttonStyle(.bordered)

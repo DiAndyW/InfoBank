@@ -307,6 +307,21 @@ mod tests {
     }
 
     #[test]
+    fn every_window_uses_fluent_overlay_scrollbars() {
+        let context: tauri::Context<tauri::test::MockRuntime> = tauri::generate_context!(test = true);
+        let windows = &context.config().app.windows;
+        assert!(!windows.is_empty());
+        for window in windows {
+            assert_eq!(
+                window.scroll_bar_style,
+                tauri::utils::config::ScrollBarStyle::FluentOverlay,
+                "window {} must use Fluent overlay scrollbars",
+                window.label
+            );
+        }
+    }
+
+    #[test]
     fn no_window_opens_before_startup_has_set_up_its_state() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let windows = config["app"]["windows"].as_array().unwrap();

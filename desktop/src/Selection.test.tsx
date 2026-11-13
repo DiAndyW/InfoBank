@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { expect, test, vi } from "vitest";
 import { SelectionBar, useItemSelection } from "./Selection";
 import * as api from "./api";
+import { behaviourTest, noticeMessage, type BehaviourExpectation } from "./behaviour-test";
 
 vi.mock("./api", () => ({ prepareCopyItems: vi.fn(), finishCopyItems: vi.fn(), discardCopyItems: vi.fn(async () => {}), setItemsTrashed: vi.fn() }));
 
@@ -57,7 +58,7 @@ test("Tunnel copies a complete ordered batch before Trash and exposes one whole-
   expect(api.finishCopyItems).toHaveBeenLastCalledWith("prepared");
   expect(api.setItemsTrashed).toHaveBeenLastCalledWith(["a", "c"], true);
   const [message, action] = onNotice.mock.lastCall!;
-  expect(message).toBe("2 Items copied · moved to Trash");
+  expect(message).toBe("2 Items copied, moved to Trash");
   await action.onAction();
   expect(api.setItemsTrashed).toHaveBeenLastCalledWith(["a", "c"], false);
 });
@@ -174,3 +175,25 @@ test("a batch keeps the displayed copy-only decision while preparation is pendin
   await waitFor(() => expect(notice).toHaveBeenCalledWith("1 Item copied", undefined));
   expect(api.setItemsTrashed).not.toHaveBeenCalled();
 });
+
+async function checkBatchNotice(expected: BehaviourExpectation, action: string, place: string) {
+  vi.mocked(api.prepareCopyItems).mockResolvedValue("ready");
+  vi.mocked(api.finishCopyItems).mockResolvedValue();
+  vi.mocked(api.setItemsTrashed).mockResolvedValue();
+  for (const count of [1, 2]) {
+    const notice = vi.fn();
+    const view = render(<Harness onNotice={notice} place={place} />);
+    fireEvent.click(screen.getByText("a"), { ctrlKey: true });
+    if (count === 2) fireEvent.click(screen.getByText("b"));
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    await waitFor(() => expect(notice).toHaveBeenCalled());
+    const [message, button] = notice.mock.lastCall!;
+    expect(message).toBe(noticeMessage(expected, { count, items: count === 1 ? "Item" : "Items" }));
+    expect([...(button ? [button.label] : []), "close"]).toEqual(expected.buttons);
+    view.unmount();
+  }
+}
+behaviourTest("notice.batch_copied", expected => checkBatchNotice(expected, "Copy", "inbox"));
+behaviourTest("notice.batch_restored", expected => checkBatchNotice(expected, "Restore", "trash"));
+behaviourTest("notice.batch_trashed", expected => checkBatchNotice(expected, "Trash", "inbox"));
+behaviourTest("notice.batch_copied_trashed", expected => checkBatchNotice(expected, "Copy & Trash", "tunnel"));

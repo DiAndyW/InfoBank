@@ -1,4 +1,4 @@
-import { useImperativeHandle, useRef, useState, type KeyboardEvent, type Ref } from "react";
+import { useImperativeHandle, useLayoutEffect, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import { editItem, unstage, type FeedItem } from "./api";
 import { Icon } from "./icons";
 import { Chips, useStaging } from "./staging";
@@ -16,6 +16,28 @@ export default function ItemEditor({ item, initialText, onDone, onGone, ref }: P
   const saving = useRef(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const empty = draft.trim() === "" && kept.length === 0 && staged.length === 0;
+
+  const fit = () => {
+    const el = box.current!;
+    const row = el.parentElement!;
+    const scrollTop = el.scrollTop;
+    // Hold the container while measuring so the Feed's scroll position cannot be clamped.
+    row.style.height = `${row.offsetHeight}px`;
+    el.style.overflowY = "hidden";
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+    row.style.height = "";
+    el.style.overflowY = el.scrollHeight > el.clientHeight ? "auto" : "hidden";
+    el.scrollTop = scrollTop;
+  };
+
+  useLayoutEffect(fit, [draft]);
+  useLayoutEffect(() => {
+    box.current!.scrollTop = box.current!.scrollHeight;
+    const observer = new ResizeObserver(fit);
+    observer.observe(box.current!.parentElement!);
+    return () => observer.disconnect();
+  }, []);
 
   async function save() {
     if (saving.current) return false;
@@ -58,7 +80,7 @@ export default function ItemEditor({ item, initialText, onDone, onGone, ref }: P
         ref={box}
         aria-label="Edit Item"
         autoFocus
-        rows={Math.max(1, draft.split("\n").length)}
+        rows={1}
         value={draft}
         onFocus={(e) => e.currentTarget.setSelectionRange(draft.length, draft.length)}
         onChange={(e) => setDraft(e.target.value)}

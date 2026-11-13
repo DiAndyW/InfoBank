@@ -100,7 +100,7 @@ export function useItemSelection({ items, scope, enabled, onNotice, onError }: {
       if (action !== "copy" || tunnel) await setItemsTrashed(selected, action !== "restore");
       const trashed = action === "trash" || (action === "copy" && tunnel);
       let undoing = false;
-      onNotice(trashed ? `${count}${copied ? " copied · moved" : " moved"} to Trash` : `${count} ${copied ? "copied" : "restored"}`,
+      onNotice(trashed ? `${count}${copied ? " copied, moved" : " moved"} to Trash` : `${count} ${copied ? "copied" : "restored"}`,
         trashed ? { label: "Undo", onAction: async () => {
           if (undoing) return false;
           undoing = true;

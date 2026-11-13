@@ -3,8 +3,6 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { attachmentStored, copyAttachment, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
 import { Icon } from "./icons";
 
-const REVEAL_LABEL = navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in Finder";
-
 export function formatSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -16,6 +14,7 @@ export function viewable(a: FeedAttachment): boolean {
 }
 
 function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount }: { a: FeedAttachment; onView: (id: string) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
+  const revealLabel = navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in Finder";
   const [src, setSrc] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const busy = useRef(false);
@@ -68,7 +67,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
       </span>
       <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment)}>
         <Icon name="reveal" />
-        {REVEAL_LABEL}
+        {revealLabel}
       </button>
     </div>
   ) : image ? (

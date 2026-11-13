@@ -104,7 +104,7 @@ struct TunnelTests {
     @Test func noticeCenterPostsTheTrashedNoticeWithUndo() {
         let center = NoticeCenter()
         center.postTrashed(itemID: "a")
-        #expect(center.current?.message == "Copied · moved to Trash")
+        #expect(center.current?.message == "Copied, moved to Trash")
         #expect(center.current?.itemID == "a")
         #expect(center.current?.action == .undoTrash)
     }

@@ -393,7 +393,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
               const place = trash ? (it.in_tunnel ? "Tunnel" : topic?.name ?? "Inbox") : undefined;
               const copyParts = view.kind !== "trash" && !it.sync_error;
               const copyText = () => navigator.clipboard.writeText(it.text!).then(() => onNotice("Copied text"), (e) => onError("Couldn't copy the text", e));
-              const copy = [...(view.kind === "tunnel" ? [{ label: copyPreference === true ? "Copy & Trash" : "Copy Item", onSelect: () => copyItem(it, false, copyPreference) }] : []), ...(it.text ? [{ label: "Copy text", onSelect: copyText }] : [])];
+              const copy = [...(view.kind === "tunnel" ? [{ label: copyPreference === true ? "Copy & Trash" : "Copy Item", onSelect: () => copyItem(it, false, copyPreference) }] : []), ...(it.text ? [{ label: "Copy Text", onSelect: copyText }] : [])];
               const heading = trash
                 ? daysRemaining(it.purge_at_us)
                 : time.toDateString() === today
@@ -519,7 +519,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                           </span>
                         )}
                         {copyParts && !selection.selecting && it.text && it.attachments.length > 0 && (
-                          <button type="button" className="nb-iconbtn nb-reveal" aria-label="Copy text" title="Copy text" onClick={copyText}>
+                          <button type="button" className="nb-iconbtn nb-reveal" aria-label="Copy Text" title="Copy Text" onClick={copyText}>
                             <Icon name="copy" />
                           </button>
                         )}

@@ -312,10 +312,14 @@
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
-			files = ();
-			inputPaths = ("$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)");
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
 			name = "Record Build Commit";
-			outputPaths = ();
+			outputPaths = (
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -eu\ncommit=$(/usr/bin/git -C \"$SRCROOT\" rev-parse HEAD)\n/usr/bin/plutil -replace NoteBankBuildCommit -string \"$commit\" \"$TARGET_BUILD_DIR/$INFOPLIST_PATH\"\n";

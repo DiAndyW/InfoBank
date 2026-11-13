@@ -27,14 +27,14 @@ public struct SyncNotice: Equatable, Sendable {
         switch kind {
         case .topicRenamed: return "A Topic name was already in use. The Server gave it a unique name."
         case .topic: return "The Server refused a Topic change. Its current version has been kept."
-        case .gone: return "Couldn't save your change: this Item was deleted for good on another Device."
-        case .empty: return "Couldn't restore this Item: it has no text or files left."
+        case .gone: return #"Couldn't save your change to "\#(label)": it was deleted for good on another Device."#
+        case .empty: return #"Couldn't restore "\#(label)": it has no text or files left."#
         case .failed: return "The Server refused this change. Its version will be restored when sync completes."
-        case .move: return "Couldn't move this Item: its destination was archived or deleted on another Device."
+        case .move: return #"Couldn't move "\#(label)" to \#(topicName ?? ""): it was \#(topicState?.rawValue ?? "archived or deleted") on another Device."#
         case .inbox: break
         }
-        guard let topicName, let topicState else { return #"Saved "\#(label)" to the Inbox: its Topic isn't on this Server."# }
-        return #"Saved "\#(label)" to the Inbox: \#(topicName) was \#(topicState.rawValue) on another Device."#
+        guard let topicName else { return #"Saved "\#(label)" to the Inbox: its Topic isn't on this Server."# }
+        return #"Saved "\#(label)" to the Inbox: \#(topicName) was \#(topicState?.rawValue ?? "archived or deleted") on another Device."#
     }
 }
 
@@ -154,6 +154,8 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                 var notices: [SyncNotice] = []
                 for result in response.results {
                     guard let op = pushed[result.opID] else { continue }
+                    if result.status == "rejected", op.type != "CaptureItem", let id = op.itemID,
+                       try Bool.fetchOne(db, sql: "SELECT sync_error IS NOT NULL FROM items WHERE id = ?", arguments: [id]) == true { continue }
                     switch (result.status, op.type, op.itemID, result.reason) {
                     case ("rejected", "CaptureItem", let itemID?, let reason):
                         try db.execute(sql: "UPDATE items SET sync_error = ? WHERE id = ?", arguments: [reason ?? "unknown", itemID])
@@ -168,9 +170,14 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                             INSERT INTO conflicts(item_id, text, mine) SELECT ?, ?, ? WHERE EXISTS(SELECT 1 FROM items WHERE id = ?)
                             ON CONFLICT(item_id) DO UPDATE SET text = excluded.text, mine = excluded.mine
                             """, arguments: [itemID, mine ? op.text : result.text, mine, itemID])
-                    case ("rejected", let type?, let itemID?, let reason) where ["MoveItem", "SetText", "TrashItem", "RestoreItem"].contains(type):
-                        var notice = SyncNotice(itemID: itemID, label: "", topicName: nil, topicID: op.topicID)
-                        notice.kind = reason == "not_found" ? .gone : reason == "topic_unavailable" ? .move : reason == "empty" ? .empty : .failed
+                    case ("rejected", let type?, let itemID?, let reason) where ["MoveItem", "SetText", "TrashItem", "RestoreItem", "AddAttachment", "RemoveAttachment"].contains(type):
+                        let text = try String.fetchOne(db, sql: "SELECT text FROM items WHERE id = ?", arguments: [itemID])
+                        let filename = try String.fetchOne(db, sql: "SELECT filename FROM attachments WHERE item_id = ? ORDER BY rowid LIMIT 1", arguments: [itemID])
+                        let topicName = try op.topicID.flatMap { try String.fetchOne(db, sql: "SELECT name FROM topics WHERE id = ?", arguments: [$0]) }
+                        var notice = SyncNotice(itemID: itemID, label: label(text: text, firstFilename: filename), topicName: topicName, topicID: op.topicID)
+                        notice.kind = type == "MoveItem" && reason == "topic_unavailable" ? .move
+                            : type != "RemoveAttachment" && reason == "not_found" ? .gone
+                            : type == "RestoreItem" && reason == "empty" ? .empty : .failed
                         notices.append(notice)
                     case ("changed", let type?, _, "renamed") where ["CreateTopic", "RenameTopic"].contains(type):
                         var notice = SyncNotice(itemID: "", label: "", topicName: nil, topicID: op.topicID)
@@ -182,10 +189,6 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                         }
                         var notice = SyncNotice(itemID: "", label: "", topicName: nil, topicID: op.topicID)
                         notice.kind = .topic
-                        notices.append(notice)
-                    case ("rejected", let type?, let itemID?, _) where ["AddAttachment", "RemoveAttachment"].contains(type):
-                        var notice = SyncNotice(itemID: itemID, label: "", topicName: nil, topicID: nil)
-                        notice.kind = .failed
                         notices.append(notice)
                     case ("accepted", _, _, _):
                         break

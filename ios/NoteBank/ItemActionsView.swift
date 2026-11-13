@@ -4,7 +4,7 @@ import SwiftUI
 struct ItemActionsView: View {
     let item: FeedItem
     let store: Store
-    var copiesWholeItem = false
+    var place: Place = .inbox
     var trashAfterCopy: Bool? = false
     var onSelect: (() -> Void)?
     enum Copy { case item(Bool?), text }
@@ -58,8 +58,11 @@ struct ItemActionsView: View {
                 case .commands:
                     List {
                         if let onSelect, item.syncError == nil { Button("Select", systemImage: "checkmark.circle", action: onSelect) }
-                        if copiesWholeItem { Button(trashAfterCopy == true ? "Copy & Trash" : "Copy Item", systemImage: "doc.on.doc") { onCopy(.item(trashAfterCopy)) } }
-                        if item.text != nil { Button("Copy Text", systemImage: "doc.on.doc") { onCopy(.text) } }
+                        ForEach(CopyActions(place: place, hasText: item.text != nil, trashAfterCopy: trashAfterCopy).menu, id: \.kind) { action in
+                            Button(action.label, systemImage: "doc.on.doc") {
+                                onCopy(action.kind == .text ? .text : .item(trashAfterCopy))
+                            }
+                        }
                         if item.syncError != nil {
                             Button("Discard…", systemImage: "trash", role: .destructive) { discard = true }
                         } else {
