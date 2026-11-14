@@ -300,9 +300,9 @@ struct ModelTests {
         center.post([])
         #expect(center.current == nil)
 
-        let one = SyncNotice(itemID: "a", label: "first", topicName: nil, topicID: nil, topicState: nil)
-        let two = SyncNotice(itemID: "b", label: "second", topicName: "Mosaic", topicID: "t1", topicState: .archived)
-        let three = SyncNotice(itemID: "c", label: "third", topicName: "Mosaic", topicID: "t1", topicState: .deleted)
+        let one = SyncNotice(itemID: "a", label: "first", topicName: nil, topicID: nil, topicDeleted: false)
+        let two = SyncNotice(itemID: "b", label: "second", topicName: "Mosaic", topicID: "t1", topicDeleted: true)
+        let three = SyncNotice(itemID: "c", label: "third", topicName: "Mosaic", topicID: "t1", topicDeleted: true)
         center.post([one])
         #expect(center.current?.message == one.message)
         #expect(center.current?.itemID == "a")

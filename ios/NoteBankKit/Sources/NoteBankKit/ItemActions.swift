@@ -7,7 +7,7 @@ public enum ItemActionError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notFound: "This Item is no longer available."
-        case .topicUnavailable: "This Topic was archived or deleted. Choose another destination."
+        case .topicUnavailable: "This Topic was deleted. Choose another destination."
         case .conflictSettled: "This conflict was already settled."
         }
     }
@@ -26,12 +26,13 @@ extension Store {
             }
             var topicID: String?
             if case .topic(let id) = destination {
-                guard try Bool.fetchOne(db, sql: "SELECT archived_at IS NULL AND deleted_at IS NULL FROM topics WHERE id = ?", arguments: [id]) == true else {
+                guard try Bool.fetchOne(db, sql: "SELECT deleted_at IS NULL FROM topics WHERE id = ?", arguments: [id]) == true else {
                     throw ItemActionError.topicUnavailable
                 }
                 topicID = id
             }
             try db.execute(sql: "UPDATE items SET topic_id = ?, in_tunnel = ? WHERE id = ?", arguments: [topicID, destination == .tunnel, itemID])
+            try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [nowUs, topicID])
             try queue(db, "MoveItem", nowUs: nowUs, ["item_id": itemID, "topic_id": topicID as Any? ?? NSNull(), "tunnel": destination == .tunnel])
         }
     }

@@ -213,10 +213,10 @@ mod tests {
     #[test]
     fn filters_narrow_by_place_dates_and_files_and_trash_is_never_searched() {
         let (_d, conn) = fresh();
-        conn.execute("INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Taxes', NULL), ('old', 'Old', 5)", []).unwrap();
+        conn.execute("INSERT INTO topics (id, name) VALUES ('t', 'Taxes'), ('old', 'Old')", []).unwrap();
         at(&conn, "inbox", "note one", None, 10);
         at(&conn, "taxes", "note two", Some("t"), 20);
-        at(&conn, "archived", "note three", Some("old"), 30);
+        at(&conn, "old-topic", "note three", Some("old"), 30);
         at(&conn, "trashed", "note four", None, 40);
         conn.execute("UPDATE items SET deleted_at = 41 WHERE id = 'trashed'", []).unwrap();
         file(&conn, "taxes", "f", "a.pdf");
@@ -226,9 +226,9 @@ mod tests {
             f(&mut q);
             search(&conn, &q, None).unwrap().iter().map(|s| s.item.id.clone()).collect::<Vec<_>>()
         };
-        assert_eq!(with(&|_| {}), ["archived", "taxes", "inbox"]);
+        assert_eq!(with(&|_| {}), ["old-topic", "taxes", "inbox"]);
         assert_eq!(with(&|q| q.place = Place::Inbox), ["inbox"]);
-        assert_eq!(with(&|q| q.place = Place::Topic { id: "old".into() }), ["archived"]);
+        assert_eq!(with(&|q| q.place = Place::Topic { id: "old".into() }), ["old-topic"]);
         assert_eq!(with(&|q| q.has_files = true), ["taxes"]);
         // Half-open: from is included, to is not.
         assert_eq!(

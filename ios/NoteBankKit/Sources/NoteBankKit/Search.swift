@@ -26,7 +26,6 @@ public struct SearchItem: Identifiable, Hashable, Sendable {
     public static let markEnd: Character = "\u{E001}"
 
     public let item: FeedItem
-    public let topicArchived: Bool
     public let markedText: String?
     public let markedFilenames: [String]
     public var id: String { item.id }
@@ -91,7 +90,7 @@ extension Store {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT \(Self.feedColumns), \(markedText) AS marked_text, \(markedNames) AS marked_names, topics.archived_at IS NOT NULL AS topic_archived
+                    SELECT \(Self.feedColumns), \(markedText) AS marked_text, \(markedNames) AS marked_names
                     FROM search JOIN items ON items.rowid = search.rowid LEFT JOIN topics ON topics.id = items.topic_id
                     WHERE \(matched) items.deleted_at IS NULL
                       AND CASE :place WHEN 'all' THEN 1 WHEN 'inbox' THEN items.topic_id IS NULL AND items.in_tunnel = 0
@@ -107,7 +106,7 @@ extension Store {
             return try zip(rows, Self.feedItems(db, rows)).map { row, item in
                 let names = (row["marked_names"] as String).split(separator: "\n", omittingEmptySubsequences: false)
                 return SearchItem(
-                    item: item, topicArchived: row["topic_archived"],
+                    item: item,
                     markedText: item.text == nil ? nil : row["marked_text"],
                     markedFilenames: item.attachments.map { attachment in
                         names.first { searchMarks(String($0)).plain == attachment.filename }.map(String.init) ?? attachment.filename

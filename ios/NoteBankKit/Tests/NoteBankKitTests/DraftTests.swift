@@ -7,7 +7,7 @@ import Testing
 struct DraftTests {
     @Test func successfulDraftSavePreservesSendAndImportErrors() throws {
         let store = try tempStore().store
-        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, archived_at) VALUES ('closed', 'Closed', 1)") }
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, deleted_at) VALUES ('closed', 'Closed', 1)") }
         let model = ComposerModel(store: store, destination: .topic("closed"), placeholder: "", draft: .inbox, onCaptured: {})
         model.text = "Keep this draft"
         #expect(!model.send())
@@ -52,17 +52,16 @@ struct DraftTests {
         #expect(try reopened.drafts()[.tunnel]?.text == "saved")
     }
 
-    @Test func deletedOrMissingTopicDraftsAreDroppedArchivedKept() throws {
+    @Test func deletedOrMissingTopicDraftsAreDroppedLiveKept() throws {
         let (store, _) = try tempStore()
         try store.pool.write { try $0.execute(sql: """
             INSERT INTO topics (id, name) VALUES ('live', 'Live');
-            INSERT INTO topics (id, name, archived_at) VALUES ('archived', 'Archived', 1);
             INSERT INTO topics (id, name, deleted_at) VALUES ('deleted', 'Deleted', 1);
             """) }
-        for id in ["live", "archived", "deleted", "missing"] { try store.saveDraft(.topic(id), text: id) }
+        for id in ["live", "deleted", "missing"] { try store.saveDraft(.topic(id), text: id) }
         let drafts = try store.drafts()
-        #expect(Set(drafts.keys) == [.topic("live"), .topic("archived")])
-        #expect(try store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM drafts") } == 2)
+        #expect(Set(drafts.keys) == [.topic("live")])
+        #expect(try store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM drafts") } == 1)
     }
 
     @Test func captureDeletesItsDraft() throws {
@@ -77,12 +76,12 @@ struct DraftTests {
 
     @Test func failedCaptureKeepsDraft() throws {
         let (store, _) = try tempStore()
-        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Topic', 1)") }
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, deleted_at) VALUES ('t', 'Topic', 1)") }
         try store.saveDraft(.topic("t"), text: "keep")
         #expect(throws: ItemActionError.topicUnavailable) {
             try store.capture(text: "keep", to: .topic("t"), draft: .topic("t"), nowUs: 1)
         }
-        #expect(try store.drafts()[.topic("t")]?.text == "keep")
+        #expect(try store.pool.read { try String.fetchOne($0, sql: "SELECT text FROM drafts WHERE place = 'topic:t'") } == "keep")
         #expect(try store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM items") } == 0)
     }
 
@@ -182,10 +181,9 @@ struct DraftTests {
         let (store, _) = try tempStore()
         try store.pool.write { try $0.execute(sql: """
             INSERT INTO topics (id, name) VALUES ('live', 'Live');
-            INSERT INTO topics (id, name, archived_at) VALUES ('archived', 'Archived', 1);
             INSERT INTO topics (id, name, deleted_at) VALUES ('deleted', 'Deleted', 1);
             """) }
-        for id in ["live", "archived", "deleted", "missing"] {
+        for id in ["live", "deleted", "missing"] {
             try store.saveDraft(.home, text: "home", homeTopicID: id)
             #expect(try store.drafts()[.home]?.homeTopicID == (id == "live" ? "live" : nil))
         }
@@ -203,7 +201,7 @@ struct DraftTests {
         model.text = "send"
         #expect(model.send())
         #expect(model.canClear)
-        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Topic', 1)") }
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, deleted_at) VALUES ('t', 'Topic', 1)") }
         model.destination = .topic("t")
         #expect(!model.send())
         #expect(model.canClear)

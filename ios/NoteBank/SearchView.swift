@@ -9,7 +9,6 @@ private enum DayEnd: Identifiable {
 struct SearchView: View {
     let onUndoClear: (DraftPlace) -> Void
     let topics: [TopicPlace]
-    let archived: [TopicPlace]
     let onOpen: (String) -> Void
     let onOpenTopic: (String) -> Void
     let onCancel: () -> Void
@@ -23,7 +22,7 @@ struct SearchView: View {
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
 
-    init(services: Services, onUndoClear: @escaping (DraftPlace) -> Void, place: SearchPlace, topics: [TopicPlace], archived: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+    init(services: Services, onUndoClear: @escaping (DraftPlace) -> Void, place: SearchPlace, topics: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         _model = State(wrappedValue: SearchModel(store: services.store, place: place))
         self.onUndoClear = onUndoClear
         store = services.store
@@ -31,13 +30,12 @@ struct SearchView: View {
         wake = services.wake
         _batch = State(wrappedValue: BatchItemActions(services: services))
         self.topics = topics
-        self.archived = archived
         self.onOpen = onOpen
         self.onOpenTopic = onOpenTopic
         self.onCancel = onCancel
     }
 
-    private var matchingTopics: [TopicPlace] { TopicPlace.matching(topics + archived, text: model.text) }
+    private var matchingTopics: [TopicPlace] { TopicPlace.matching(topics, text: model.text) }
 
     private func resultHeading(_ text: String) -> some View {
         Text(text).textCase(.uppercase).kerning(0.96)
@@ -52,7 +50,7 @@ struct SearchView: View {
         case .all: "Anywhere"
         case .inbox: "Inbox"
         case .tunnel: "Tunnel"
-        case .topic(let id): (topics + archived).first { $0.id == id }?.name ?? "Anywhere"
+        case .topic(let id): topics.first { $0.id == id }?.name ?? "Anywhere"
         }
     }
 
@@ -145,11 +143,6 @@ struct SearchView: View {
                             Text("Inbox").tag(SearchPlace.inbox)
                             Text("Tunnel").tag(SearchPlace.tunnel)
                             ForEach(topics) { Text($0.name).tag(SearchPlace.topic($0.id)) }
-                            if !archived.isEmpty {
-                                Section("Archived") {
-                                    ForEach(archived) { Text($0.name).tag(SearchPlace.topic($0.id)) }
-                                }
-                            }
                         }
                     } label: { PlaceChipLabel(title: placeTitle, active: model.place != .all) }
                         .containerRelativeFrame(.horizontal) { width, _ in width * 0.3 }
@@ -193,9 +186,6 @@ struct SearchView: View {
                                 Button { onOpenTopic(topic.id) } label: {
                                     HStack(spacing: 8) {
                                         Text(topic.name).font(.plex(.sans, 17)).foregroundStyle(palette.ink)
-                                        if archived.contains(where: { $0.id == topic.id }) {
-                                            Text("Archived").font(.plex(.sans, 11)).foregroundStyle(palette.inkMuted)
-                                        }
                                         Spacer(minLength: 0)
                                         Text(String(topic.count)).font(.plex(.mono, 13)).foregroundStyle(palette.inkMuted)
                                         Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.lineStrong)

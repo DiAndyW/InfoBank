@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 // shortcut is the stored form, e.g. "shift+super+Space"; it is kept while quick capture is off.
 export type Hotkey = { shortcut: string; on: boolean };
 export type Settings = { server_url: string | null; has_secret: boolean; quick_capture: Hotkey };
-export type Topic = { id: string; name: string; archived: boolean; item_count: number };
+export type Topic = { id: string; name: string; item_count: number };
 export type Keep = { kind: "all" } | { kind: "none" } | { kind: "only"; ids: string[] };
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -17,8 +17,6 @@ export const listTopics = () => invoke<Topic[]>("list_topics");
 export const createTopic = (name: string) => invoke<Topic>("create_topic", { name });
 export const pickerTopic = (name: string) => invoke<Topic>("picker_topic", { name });
 export const renameTopic = (id: string, name: string) => invoke<void>("rename_topic", { id, name });
-export const archiveTopic = (id: string) => invoke<void>("archive_topic", { id });
-export const unarchiveTopic = (id: string) => invoke<void>("unarchive_topic", { id });
 export const deleteTopic = (id: string, keep: Keep) => invoke<void>("delete_topic", { id, keep });
 
 export type FeedItem = {
@@ -43,7 +41,7 @@ export type SyncNotice = {
   item_id: string;
   label: string;
   topic: string | null;
-  topic_state: "archived" | "deleted" | null;
+  topic_deleted: boolean;
   place: string | null;
 };
 export type SyncStatus = "synced" | "syncing" | "offline" | "unauthorized" | "keychain" | "not_configured";
@@ -111,8 +109,6 @@ export const restartToUpdate = () => invoke<void>("restart_to_update");
 export const dismissQuickCapture = () => invoke<void>("dismiss_quick_capture");
 export const setQuickCaptureShortcut = (shortcut: string) => invoke<Hotkey>("set_quick_capture_shortcut", { shortcut });
 export const setQuickCaptureOn = (on: boolean) => invoke<Hotkey>("set_quick_capture_on", { on });
-const byName = new Intl.Collator().compare;
-export const sortedTopics = (topics: Topic[]) => [...topics].sort((a, b) => byName(a.name, b.name));
 
 export type StartupFailure = { message: string; data_dir: string | null };
 export const startupError = () => invoke<StartupFailure | null>("startup_error");

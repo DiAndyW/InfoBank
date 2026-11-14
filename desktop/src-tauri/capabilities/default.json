@@ -28,8 +28,6 @@
     "allow-create-topic",
     "allow-picker-topic",
     "allow-rename-topic",
-    "allow-archive-topic",
-    "allow-unarchive-topic",
     "allow-delete-topic",
     "allow-pick-files",
     "allow-stage-attachment-bytes",

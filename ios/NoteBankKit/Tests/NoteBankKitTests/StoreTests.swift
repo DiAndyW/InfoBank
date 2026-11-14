@@ -7,8 +7,26 @@ struct StoreTests {
     @Test func aNewStoreMigratesOnce() throws {
         let (store, file) = try tempStore()
         let applied = { (s: Store) in try s.pool.read { try String.fetchAll($0, sql: "SELECT identifier FROM grdb_migrations") } }
-        #expect(try applied(store) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"])
-        #expect(try applied(Store(at: file, observesSuspension: false)) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8"])
+        #expect(try applied(store) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"])
+        #expect(try applied(Store(at: file, observesSuspension: false)) == ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"])
+    }
+
+    @Test func migrationRemovesArchiveColumnAndOnlyArchiveOps() throws {
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".db")
+        let pool = try DatabasePool(path: file.path)
+        try DatabaseMigrator.noteBank.migrate(pool, upTo: "v8")
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Old', 1);
+                INSERT INTO outbox (op) VALUES ('{"type":"ArchiveTopic"}'), ('{"type":"UnarchiveTopic"}'), ('{"type":"CaptureItem"}');
+                """)
+        }
+        try DatabaseMigrator.noteBank.migrate(pool)
+        try pool.read { db throws -> Void in
+            #expect(try db.columns(in: "topics").map(\.name).contains("archived_at") == false)
+            #expect(try String.fetchAll(db, sql: "SELECT json_extract(op, '$.type') FROM outbox ORDER BY seq") == ["CaptureItem"])
+            #expect(try String.fetchOne(db, sql: "SELECT name FROM topics WHERE id = 't'") == "Old")
+        }
     }
 
     @Test func theDeviceIDIsCreatedOnceAndKept() throws {

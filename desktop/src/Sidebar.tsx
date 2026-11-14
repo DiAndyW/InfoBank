@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { archiveTopic, renameTopic, unarchiveTopic, type Counts, type SyncStatus, type Topic, type UpdateStatus } from "./api";
+import { renameTopic, type Counts, type SyncStatus, type Topic, type UpdateStatus } from "./api";
 import { Icon, type IconName } from "./icons";
 import Menu from "./Menu";
 import NewTopicDialog from "./NewTopicDialog";
@@ -22,7 +22,6 @@ type Props = {
   update: UpdateStatus;
   onRestart: () => void;
   onSettings: () => void;
-  onError: (title: string, err: unknown) => void;
   onDelete: (topic: Topic) => void;
   search: string;
   onSearch: (text: string) => void;
@@ -34,40 +33,106 @@ type Props = {
   searchRef: RefObject<HTMLInputElement | null>;
 };
 
-export default function Sidebar({ collapsed, toggle, topics, counts, selected, onSelect, status, update, onRestart, onSettings, onError, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
+export default function Sidebar({ collapsed, toggle, topics, counts, selected, onSelect, status, update, onRestart, onSettings, onDelete, search, onSearch, onSearchFocus, onSearchEscape, searchRef, drag, onDragOver }: Props) {
   // The field shows what's typed even mid-composition; the query only follows once the input method is done.
   const [draft, setDraft] = useState(search);
   const composing = useRef(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const [showAllArchived, setShowAllArchived] = useState(false);
   const [focusedTopic, setFocusedTopic] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [naming, setNaming] = useState<{ id: string; draft: string; error: string | null } | null>(null);
-  const open = topics.filter((t) => !t.archived);
-  const archived = topics.filter((t) => t.archived);
   const saving = useRef(false);
   const nav = useRef<HTMLElement>(null);
-  const topicList = useRef<HTMLDivElement>(null);
   // A Topic whose row should take focus once it's on screen (a new one arrives with the next Topics refresh).
   const focusRow = useRef<string | null>(null);
 
-  const ranked = [...open].sort((a, b) => b.item_count - a.item_count);
-  const visibleOpen = showAll ? open : ranked.filter((t, i) =>
-    i < 10 || t.id === selected || t.id === naming?.id || t.id === menuFor || t.id === focusedTopic || t.id === focusRow.current);
-
-  const visibleArchived = showAllArchived ? archived : archived.filter((t, i) =>
-    i < 10 || t.id === selected || t.id === naming?.id || t.id === menuFor || t.id === focusedTopic || t.id === focusRow.current);
-
-  const selectedArchived = topics.find((t) => t.id === selected)?.archived;
-  useEffect(() => {
-    if (selectedArchived !== undefined) setShowArchived(selectedArchived);
-  }, [selected, selectedArchived]);
-
+  const heldOrder = useRef<string[]>([]);
+  const currentTopics = new Map(topics.map(t => [t.id, t]));
+  const hold = (menuFor !== null && currentTopics.has(menuFor)) ||
+    (naming !== null && currentTopics.has(naming.id)) || drag !== null;
   useLayoutEffect(() => {
-    if (topicList.current) topicList.current.scrollTop = 0;
-  }, [showArchived]);
+    if (menuFor !== null && !currentTopics.has(menuFor)) setMenuFor(null);
+    if (naming !== null && !currentTopics.has(naming.id)) setNaming(null);
+  });
+
+  const heldIds = new Set(heldOrder.current);
+  const ordered = hold ? [
+    ...heldOrder.current.filter(id => currentTopics.has(id)).map(id => currentTopics.get(id)!),
+    ...topics.filter(t => !heldIds.has(t.id)),
+  ] : topics;
+  useLayoutEffect(() => { heldOrder.current = ordered.map(t => t.id); });
+
+  const visible = showAll ? ordered : ordered.filter((t, i) =>
+    i < 10 || t.id === selected || t.id === naming?.id || t.id === menuFor || t.id === focusedTopic || t.id === focusRow.current);
+
+  const positions = useRef(new Map<string, { top: number; row: HTMLElement }>());
+  const activeAnimations = useRef<Animation[]>([]);
+  const exitingRows = useRef<HTMLElement[]>([]);
+  const previousShowAll = useRef(showAll);
+  const orderedIds = JSON.stringify(ordered.map(t => t.id));
+  const previousOrderedIds = useRef(orderedIds);
+  const displayedOrder = JSON.stringify(visible.map(t => t.id));
+  useLayoutEffect(() => {
+    const list = nav.current!.querySelector<HTMLElement>("#sidebar-topics")!;
+    const previous = positions.current;
+    const next = new Map<string, { top: number; row: HTMLElement }>();
+    const starts = new Map<string, number>();
+    const listRect = list.getBoundingClientRect();
+    const hidden = collapsed || listRect.height === 0;
+    if (!hidden) {
+      for (const row of list.querySelectorAll<HTMLElement>("[data-topic-row]")) {
+        const id = row.dataset.topicRow!;
+        const top = row.offsetTop;
+        const old = previous.get(id);
+        if (old) starts.set(id, old.top + row.getBoundingClientRect().top - listRect.top - top);
+        next.set(id, { top, row });
+      }
+    }
+    activeAnimations.current.forEach(animation => animation.cancel());
+    exitingRows.current.forEach(row => row.remove());
+    activeAnimations.current = [];
+    exitingRows.current = [];
+    positions.current = next;
+    const expansionChanged = previousShowAll.current !== showAll;
+    previousShowAll.current = showAll;
+    const reordered = previousOrderedIds.current !== orderedIds;
+    previousOrderedIds.current = orderedIds;
+    if (hidden || expansionChanged || !reordered || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const animations = activeAnimations.current;
+    for (const [id, { top, row }] of next) {
+      const start = starts.get(id);
+      if (start !== undefined && start !== top) {
+        const cover = {
+          ...(row.classList.contains("is-selected") ? {} : { backgroundColor: getComputedStyle(row).getPropertyValue("--surface-sidebar") }),
+          ...(start > top ? { zIndex: 1 } : {}),
+        };
+        animations.push(row.animate([{ transform: `translateY(${start - top}px)`, ...cover }, { transform: "none", ...cover }], { duration: 250, easing: "ease-out" }));
+      } else if (!previous.has(id) && previous.size > 0 && !showAll) {
+        animations.push(row.animate([{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: 250, easing: "ease-out" }));
+      }
+    }
+    if (!showAll) {
+      for (const [id, { top, row }] of previous) {
+        if (next.has(id) || !currentTopics.has(id)) continue;
+        const ghost = row.cloneNode(true) as HTMLElement;
+        ghost.removeAttribute("data-topic-row");
+        ghost.querySelectorAll("[data-topic]").forEach(node => node.removeAttribute("data-topic"));
+        ghost.inert = true;
+        ghost.setAttribute("aria-hidden", "true");
+        Object.assign(ghost.style, { position: "absolute", top: `${top}px`, left: "0", width: "100%", pointerEvents: "none" });
+        list.prepend(ghost);
+        exitingRows.current.push(ghost);
+        const animation = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 250, easing: "ease-out" });
+        animations.push(animation);
+        animation.finished.then(() => ghost.remove(), () => ghost.remove());
+      }
+    }
+  }, [displayedOrder, orderedIds, collapsed, showAll]);
+  useLayoutEffect(() => () => {
+    activeAnimations.current.forEach(animation => animation.cancel());
+    exitingRows.current.forEach(row => row.remove());
+  }, []);
 
   useEffect(() => {
     if (focusRow.current === null) return;
@@ -75,7 +140,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
     if (!row) return;
     row.focus();
     focusRow.current = null;
-  }, [topics, naming, showArchived, creating, showAll, showAllArchived]);
+  }, [topics, naming, creating, showAll]);
 
   async function saveName() {
     if (!naming || saving.current) return;
@@ -138,12 +203,12 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
   );
 
   const row = (t: Topic) => {
-    if (naming?.id === t.id) return nameField;
+    if (naming?.id === t.id) return <div key={t.id} data-topic-row={t.id}>{nameField}</div>;
     const rename = { label: "Rename", onSelect: () => setNaming({ id: t.id, draft: t.name, error: null }) };
     const remove = { label: "Delete…", danger: true, onSelect: () => onDelete(t) };
-    const className = ["nb-topic", selected === t.id && "is-selected", t.archived && "is-archived", menuFor === t.id && "is-open", dropClass(t.id, !t.archived)];
+    const className = ["nb-topic", selected === t.id && "is-selected", menuFor === t.id && "is-open", dropClass(t.id, true)];
     return (
-      <div key={t.id} className={className.filter(Boolean).join(" ")} {...dropHandlers(t.id, !t.archived)}
+      <div key={t.id} data-topic-row={t.id} className={className.filter(Boolean).join(" ")} {...dropHandlers(t.id, true)}
         onFocus={() => setFocusedTopic(t.id)}
         onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setFocusedTopic(null); }}>
         <button
@@ -160,11 +225,7 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
           label={`${t.name} actions`}
           open={menuFor === t.id}
           onOpenChange={(o) => setMenuFor(o ? t.id : null)}
-          entries={
-            t.archived
-              ? [rename, { label: "Unarchive", onSelect: () => unarchiveTopic(t.id).catch((e) => onError("Couldn't unarchive the Topic", e)) }, { separator: true }, remove]
-              : [rename, { label: "Archive", onSelect: () => archiveTopic(t.id).catch((e) => onError("Couldn't archive the Topic", e)) }, { separator: true }, remove]
-          }
+          entries={[rename, { separator: true }, remove]}
         />
       </div>
     );
@@ -231,25 +292,19 @@ export default function Sidebar({ collapsed, toggle, topics, counts, selected, o
       {entry("tunnel", "Tunnel", "send", counts.tunnel)}
       <div className="nb-section">
         <span>Topics</span>
-        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={(e) => { e.currentTarget.focus(); setShowArchived(false); setCreating(true); }}>
+        {topics.length > 10 && (
+          <button className="nb-topic-toggle" aria-expanded={showAll} aria-controls="sidebar-topics"
+            onClick={() => setShowAll(!showAll)}>
+            {showAll ? "Show less" : "Show all"}
+          </button>
+        )}
+        <button className="nb-iconbtn" aria-label="New Topic" title="New Topic" onClick={(e) => { e.currentTarget.focus(); setCreating(true); }}>
           <Icon name="plus" />
         </button>
       </div>
-      <div className="nb-topic-views" role="group" aria-label="Topic view">
-        <button className="nb-topic-view" aria-pressed={!showArchived} onClick={() => setShowArchived(false)}>Open</button>
-        <button className="nb-topic-view" aria-pressed={showArchived} onClick={() => setShowArchived(true)}>
-          Archived
-        </button>
-        {(showArchived ? archived : open).length > 10 && (
-          <button className="nb-topic-toggle" aria-expanded={showArchived ? showAllArchived : showAll} aria-controls="sidebar-open-topics"
-            onClick={() => showArchived ? setShowAllArchived(!showAllArchived) : setShowAll(!showAll)}>
-            {(showArchived ? showAllArchived : showAll) ? "Show less" : "Show all"}
-          </button>
-        )}
-      </div>
-      <div className="nb-topic-list" ref={topicList}>
-        <div id="sidebar-open-topics">
-          {(showArchived ? archived : open).length === 0 ? <div className="nb-section-empty">None yet</div> : (showArchived ? visibleArchived : visibleOpen).map(row)}
+      <div className="nb-topic-list">
+        <div id="sidebar-topics" style={{ position: "relative" }}>
+          {topics.length === 0 ? <div className="nb-section-empty">None yet</div> : visible.map(row)}
         </div>
       </div>
       <div className="nb-sidebar-foot">

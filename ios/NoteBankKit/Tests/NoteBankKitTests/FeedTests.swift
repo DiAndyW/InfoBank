@@ -123,24 +123,30 @@ struct FeedTests {
         #expect(a.text == "text a" && a.captureTimeUs == 1)
     }
 
-    @Test func placesCountsSortsAndHidesArchived() throws {
+    @Test func placesRankStoredActivityIncludingTrashedItems() throws {
         let (store, _) = try tempStore()
-        try seed(
-            store,
-            topics: [("t10", "Topic 10"), ("t2", "Topic 2"), ("m", "Mosaic"), ("c", "cs 111"), ("arch", "Archived"), ("gone", "Deleted")],
-            items: [("1", 1, nil), ("2", 2, "m"), ("3", 3, "m"), ("4", 4, "t2"), ("5", 5, "arch"), ("6", 6, nil), ("7", 7, "m")])
         try store.pool.write { db in
-            try db.execute(sql: "UPDATE topics SET archived_at = 1 WHERE id = 'arch'; UPDATE topics SET deleted_at = 1 WHERE id = 'gone'")
-            try db.execute(sql: "UPDATE items SET deleted_at = 9 WHERE id IN ('6', '7')")
+            for name in ["b-empty", "A-empty", "old", "new", "trashed-only", "mixed"] {
+                try db.execute(sql: "INSERT INTO topics (id, name, activity_at) VALUES (?, ?, ?)", arguments: [name, name, ["b-empty": 100, "A-empty": 100, "old": 10, "new": 30, "trashed-only": 50, "mixed": 90][name]!])
+            }
+            for (id, topic, time, deleted) in [("o", "old", 10, false), ("n", "new", 30, false), ("t", "trashed-only", 50, true), ("m", "mixed", 20, false), ("mt", "mixed", 90, true)] {
+                try db.execute(sql: "INSERT INTO items (id, topic_id, text, capture_time, deleted_at) VALUES (?, ?, 'text', ?, ?)", arguments: [id, topic, time, deleted ? 1 : nil])
+            }
         }
         let places = try store.places()
-        #expect(places.allCount == 5)
-        #expect(places.inboxCount == 1)
-        #expect(places.topics == [
-            TopicPlace(id: "c", name: "cs 111", count: 0),
-            TopicPlace(id: "m", name: "Mosaic", count: 2),
-            TopicPlace(id: "t2", name: "Topic 2", count: 1),
-            TopicPlace(id: "t10", name: "Topic 10", count: 0),
-        ])
+        #expect(places.topics.map(\.name) == ["A-empty", "b-empty", "mixed", "trashed-only", "new", "old"])
+        #expect(places.topics.map(\.count) == [0, 0, 1, 0, 1, 1])
+        #expect(places.allCount == 3)
+        #expect(places.inboxCount == 0)
+        try store.pool.write { db in
+            for (id, name) in [("tie-z", "Topic 2"), ("tie-a", "Topic 2"), ("tie-10", "Topic 10")] {
+                try db.execute(sql: "INSERT INTO topics (id, name, activity_at) VALUES (?, ?, ?)", arguments: [id, name, 100])
+                try db.execute(sql: "INSERT INTO items (id, topic_id, text, capture_time) VALUES (?, ?, 'tie', 100)", arguments: [id, id])
+            }
+            try db.execute(sql: "INSERT INTO topics (id, name, deleted_at) VALUES ('gone', 'Deleted', 1)")
+        }
+        #expect(try store.places().topics.filter { $0.id.hasPrefix("tie-") }.map(\.id) == ["tie-a", "tie-z", "tie-10"])
+        #expect(try store.places().topics.contains { $0.id == "gone" } == false)
     }
+
 }

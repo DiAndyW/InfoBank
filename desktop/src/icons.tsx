@@ -31,12 +31,6 @@ const PATHS = {
   all: <path d="M8 2 14 5 8 8 2 5zM2 8l6 3 6-3M2 11l6 3 6-3" />,
   inbox: <path d="M2 9.5h3.5l1 1.75h3l1-1.75H14M2 9.5 4 3h8l2 6.5V13H2z" />,
   topic: <path d="M6 2.5 4.5 13.5M11.5 2.5 10 13.5M2.5 6h11M2 10h11" />,
-  archive: (
-    <>
-      <rect x={2} y={2.5} width={12} height={3.5} rx={0.75} />
-      <path d="M3 6v7.5h10V6M6.5 8.75h3" />
-    </>
-  ),
   trash: <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.75 9.5h6.5L12 4" />,
   settings: (
     <>

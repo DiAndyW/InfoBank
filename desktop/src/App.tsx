@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getSettings, itemTarget, listTopics, moveItem, sortedTopics, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, updateStatus, checkForUpdates, restartToUpdate, type UpdateInfo, type UpdateStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
+import { getSettings, itemTarget, listTopics, moveItem, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, updateStatus, checkForUpdates, restartToUpdate, type UpdateInfo, type UpdateStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
 import type { ComposerHandle } from "./Composer";
 import DeleteTopic from "./DeleteTopic";
 import Dialog from "./Dialog";
@@ -202,12 +202,13 @@ export default function App() {
     const unlisten = listen<SyncNotice[]>("sync-notices", (e) => {
       const n = e.payload[e.payload.length - 1];
       if (!n) return;
-      const gone = n.topic_state ?? "archived or deleted";
       const sentence = {
-        move: `Couldn't move "${n.label}" to ${n.topic}: it was ${gone} on another Device.`,
-        inbox: n.topic == null
+        move: n.topic_deleted
+          ? `Couldn't move "${n.label}" to ${n.topic}: it was deleted on another Device.`
+          : `Couldn't move "${n.label}" to ${n.topic}: it isn't on this Server.`,
+        inbox: n.topic == null || !n.topic_deleted
           ? `Saved "${n.label}" to the Inbox: its Topic isn't on this Server.`
-          : `Saved "${n.label}" to the Inbox: ${n.topic} was ${gone} on another Device.`,
+          : `Saved "${n.label}" to the Inbox: ${n.topic} was deleted on another Device.`,
         empty: `Couldn't restore "${n.label}": it has no text or files left.`,
         gone: `Couldn't save your change to "${n.label}": it was deleted for good on another Device.`,
         failed: "The Server refused this change. Its version will be restored when sync completes.",
@@ -238,7 +239,7 @@ export default function App() {
     const unlisten = listen("items-changed", () =>
       Promise.all([listTopics(), navCounts()]).then(
         ([t, c]) => {
-          setTopics(sortedTopics(t));
+          setTopics(t);
           setCounts(c);
         },
         (e) => showError("Couldn't load Topics", e),
@@ -299,7 +300,7 @@ export default function App() {
       const seen = statusEvents.current;
       const [s, t, st, c, u] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts(), updateStatus()]);
       setSettings(s);
-      setTopics(sortedTopics(t));
+      setTopics(t);
       if (statusEvents.current === seen) setStatus(st);
       setCounts(c);
       setUpdate({ ...u, status: latestUpdate.current ?? u.status });
@@ -368,7 +369,7 @@ export default function App() {
   return (
     <div className={`nb-app${sidebarOpen ? "" : " is-sidebar-collapsed"}`}>
       <div className="nb-sidebar-slot" ref={sidebarSlot}>
-        <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} update={update?.status ?? { state: "off" }} onRestart={onRestart} onSettings={() => setEditing(true)} onError={showError} onDelete={setDeleting}
+        <Sidebar topics={topics} counts={counts} selected={feed} onSelect={select} status={status} update={update?.status ?? { state: "off" }} onRestart={onRestart} onSettings={() => setEditing(true)} onDelete={setDeleting}
           collapsed={!sidebarOpen}
           toggle={<button ref={sidebarToggle} type="button" className="nb-iconbtn" aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
             title={`${sidebarOpen ? "Hide" : "Show"} sidebar (⌘\\)`} aria-expanded={sidebarOpen} aria-controls="sidebar-content" onClick={toggleSidebar}>

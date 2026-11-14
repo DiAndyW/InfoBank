@@ -42,8 +42,7 @@ final class QuickCaptureUITests: XCTestCase {
         topic.tap()
         noteBank.buttons["Topic actions"].tap()
         noteBank.buttons["Delete Topic…"].tap()
-        noteBank.buttons["Keep all in Inbox"].tap()
-        noteBank.alerts["Delete this Topic?"].buttons["Delete Topic"].tap()
+        noteBank.alerts["Delete “Navigation check”?"].buttons["Delete"].tap()
         XCTAssertTrue(noteBank.textViews["Capture"].waitForExistence(timeout: 5), "Deleting the open Topic did not return Home")
         XCTAssertFalse(topic.exists)
     }
@@ -55,12 +54,12 @@ final class QuickCaptureUITests: XCTestCase {
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.textFields.firstMatch.typeText("Topic navigation check")
         alert.buttons["Save"].tap()
-        noteBank.buttons["Archived"].tap()
-        XCTAssertTrue(noteBank.staticTexts["No archived Topics"].waitForExistence(timeout: 5))
+        let topic = noteBank.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Topic navigation check'")).firstMatch
+        XCTAssertTrue(topic.waitForExistence(timeout: 5))
         noteBank.buttons["New Topic"].tap()
         XCTAssertTrue(alert.waitForExistence(timeout: 5))
         alert.buttons["Cancel"].tap()
-        XCTAssertTrue(noteBank.buttons["Open"].isSelected)
+        XCTAssertTrue(topic.exists)
         noteBank.buttons["Search"].tap()
         let search = noteBank.textFields["Search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))

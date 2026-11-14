@@ -72,8 +72,8 @@ struct PulledAttachment {
 struct PulledTopic {
     id: String,
     name: String,
-    archived_at: Option<DateTime<Utc>>,
     deleted_at: Option<DateTime<Utc>>,
+    activity_at: Option<DateTime<Utc>>,
 }
 
 fn micros(t: Option<DateTime<Utc>>) -> Option<i64> {
@@ -87,10 +87,11 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     tx.execute("UPDATE settings SET trash_after_copy = ?1 WHERE id = 1", [page.settings.trash_after_copy])?;
     for t in &page.topics {
         tx.execute(
-            "INSERT INTO topics (id, name, archived_at, deleted_at) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?1, ?2, ?3, coalesce(?4, 0))
              ON CONFLICT (id) DO UPDATE SET
-                name = excluded.name, archived_at = excluded.archived_at, deleted_at = excluded.deleted_at",
-            (&t.id, &t.name, micros(t.archived_at), micros(t.deleted_at)),
+                name = excluded.name, deleted_at = excluded.deleted_at,
+                activity_at = coalesce(?4, topics.activity_at)",
+            (&t.id, &t.name, micros(t.deleted_at), micros(t.activity_at)),
         )?;
     }
     for it in &page.items {
@@ -119,6 +120,12 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
                 (&a.id, &it.id, &a.filename, &a.mime_type, a.size_bytes, a.uploaded, a.has_thumbnail),
             )?;
         }
+    }
+    for it in &page.items {
+        tx.execute(
+            "UPDATE topics SET activity_at = max(activity_at, ?2) WHERE id = ?1",
+            (&it.topic_id, it.capture_time.timestamp_micros()),
+        )?;
     }
     for id in &page.tombstones {
         tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
@@ -171,14 +178,14 @@ struct PushResult {
     text: Option<String>,
 }
 
-/// A refusal or redirect the user should hear about; `topic_state` and `place` are filled in after the pull.
+/// A refusal or redirect the user should hear about; `topic_deleted` and `place` are filled in after the pull.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct SyncNotice {
     pub kind: &'static str,
     pub item_id: String,
     pub label: String,
     pub topic: Option<String>,
-    pub topic_state: Option<&'static str>,
+    pub topic_deleted: bool,
     pub place: Option<String>,
     #[serde(skip)]
     topic_id: Option<String>,
@@ -294,7 +301,7 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
                     ("rejected", "RestoreItem", "empty") => "empty",
                     ("changed", "CaptureItem", "sent_to_inbox") => "inbox",
                     ("rejected", "SetText" | "MoveItem" | "TrashItem" | "RestoreItem" | "AddAttachment" | "RemoveAttachment", _) => "failed",
-                    ("rejected", "CreateTopic" | "RenameTopic" | "ArchiveTopic" | "UnarchiveTopic" | "DeleteTopic", _) => "topic",
+                    ("rejected", "CreateTopic" | "RenameTopic" | "DeleteTopic", _) => "topic",
                     ("changed", "CreateTopic" | "RenameTopic", "renamed") => "topicRenamed",
                     _ => {
                         if rejected {
@@ -316,7 +323,7 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
                     item_id: item_id.into(),
                     label: label(&tx, item_id).unwrap_or_default(),
                     topic,
-                    topic_state: None,
+                    topic_deleted: false,
                     place: tx
                         .query_row("SELECT topic_id FROM items WHERE id = ?1", [item_id], |r| r.get(0))
                         .optional()
@@ -341,20 +348,14 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
                 .optional()
                 .map_err(failed)?
                 .flatten();
-            n.topic_state = n.topic_id.as_deref().and_then(|t| {
-                let state: Option<String> = conn
-                    .query_row(
-                        "SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted' WHEN archived_at IS NOT NULL THEN 'archived' END
-                         FROM topics WHERE id = ?1",
-                        [t],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                    .flatten();
-                state.map(|s| if s == "deleted" { "deleted" } else { "archived" })
-            });
+            n.topic_deleted = match n.topic_id.as_deref() {
+                Some(id) => conn.query_row(
+                    "SELECT deleted_at IS NOT NULL FROM topics WHERE id = ?1",
+                    [id],
+                    |r| r.get(0),
+                ).optional().map_err(failed)?.unwrap_or(false),
+                None => false,
+            };
         }
     }
     match upload_pending(state, &url, &token).await {
@@ -568,6 +569,77 @@ mod tests {
     }
 
     #[test]
+    fn pull_activity_is_optional_preserves_or_overwrites_and_raises_from_items() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO topics (id, name, activity_at) VALUES ('t', 'Topic', 90)", []).unwrap();
+        let activity = || -> i64 { conn.query_row("SELECT activity_at FROM topics WHERE id = 't'", [], |r| r.get(0)).unwrap() };
+        let rows = |topics, items| page(serde_json::json!({"topics": topics, "items": items, "tombstones": [], "cursor": 1, "has_more": false, "settings": {"trash_after_copy": null}}));
+        apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed"}, {"id":"new", "name":"New"}]), serde_json::json!([]))).unwrap();
+        assert_eq!(activity(), 90);
+        assert_eq!(conn.query_row("SELECT activity_at FROM topics WHERE id = 'new'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed", "activity_at":"1970-01-01T01:00:00.000020+01:00"}]), serde_json::json!([]))).unwrap();
+        assert_eq!(activity(), 20);
+        let mut it = item("i", "hello", vec![]);
+        it["topic_id"] = serde_json::json!("t");
+        apply_pull(&conn, &rows(serde_json::json!([]), serde_json::json!([it]))).unwrap();
+        assert_eq!(activity(), 1_760_000_000_123_456);
+        apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed", "activity_at":"1970-01-01T00:00:00.000010Z"}]), serde_json::json!([]))).unwrap();
+        assert_eq!(activity(), 10);
+    }
+
+    #[test]
+    fn old_server_pulled_items_raise_activity_without_lowering_it() {
+        let (_d, conn) = fresh();
+        conn.execute("INSERT INTO topics (id, name, activity_at) VALUES ('t', 'Topic', 10)", []).unwrap();
+        for (time, expected) in [("1970-01-01T00:00:00.000030Z", 30), ("1970-01-01T00:00:00.000020Z", 30)] {
+            let mut it = item("i", "hello", vec![]);
+            it["topic_id"] = serde_json::json!("t");
+            it["capture_time"] = serde_json::json!(time);
+            let p = page(serde_json::json!({"topics":[], "items":[it], "tombstones":[], "cursor":1, "has_more":false, "settings":{"trash_after_copy":null}}));
+            apply_pull(&conn, &p).unwrap();
+            let at: i64 = conn.query_row("SELECT activity_at FROM topics WHERE id = 't'", [], |r| r.get(0)).unwrap();
+            assert_eq!(at, expected);
+        }
+    }
+
+    #[test]
+    fn pull_replays_pending_create_activity() {
+        check_replayed_activity("CreateTopic");
+    }
+
+    #[test]
+    fn pull_replays_pending_capture_activity() {
+        check_replayed_activity("CaptureItem");
+    }
+
+    #[test]
+    fn pull_replays_pending_move_activity() {
+        check_replayed_activity("MoveItem");
+    }
+
+    fn check_replayed_activity(kind: &str) {
+        let (d, conn) = fresh();
+        let topic = crate::topics::create(&conn, "Topic", 100).unwrap();
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        match kind {
+            "CreateTopic" => crate::ops::queue(&conn, crate::ops::Op::CreateTopic { topic_id: topic.id.clone(), name: "Topic".into() }, 100).unwrap(),
+            "CaptureItem" => crate::feed::capture(&conn, d.path(), "hello", &[], &crate::feed::Target::Topic { id: topic.id.clone() }, None, 100).unwrap(),
+            _ => {
+                conn.execute("INSERT INTO items (id, capture_time) VALUES ('i', 1)", []).unwrap();
+                crate::ops::queue(&conn, crate::ops::Op::MoveItem { item_id: "i".into(), topic_id: Some(topic.id.clone()), tunnel: false }, 100).unwrap();
+            }
+        }
+        let p = page(serde_json::json!({"topics":[{"id": topic.id, "name":"Topic", "activity_at":"1970-01-01T00:00:00.000010Z"}], "items":[], "tombstones":[], "cursor":1, "has_more":false, "settings":{"trash_after_copy":null}}));
+        apply_pull(&conn, &p).unwrap();
+        let at: i64 = conn.query_row("SELECT activity_at FROM topics WHERE id = ?1", [&topic.id], |r| r.get(0)).unwrap();
+        assert_eq!(at, 100, "{kind}");
+        conn.execute("DELETE FROM outbox", []).unwrap();
+        apply_pull(&conn, &p).unwrap();
+        let at: i64 = conn.query_row("SELECT activity_at FROM topics WHERE id = ?1", [&topic.id], |r| r.get(0)).unwrap();
+        assert_eq!(at, 10, "without pending {kind}");
+    }
+
+    #[test]
     fn a_label_is_one_short_line_or_the_first_filename() {
         let (_d, conn) = fresh();
         let long = format!("first   line\n{}\nsecond", "x".repeat(60));
@@ -616,7 +688,7 @@ mod tests {
         let (_d, conn) = fresh();
         let p = page(serde_json::json!({
             "items": [item("i", "hello", vec![attachment("a")])],
-            "topics": [{"id": "t", "name": "Mosaic", "archived_at": null, "deleted_at": null}],
+            "topics": [{"id": "t", "name": "Mosaic", "deleted_at": null}],
             "tombstones": [], "cursor": 7, "settings": {"trash_after_copy":null}, "has_more": false,
         }));
         assert!(apply_pull(&conn, &p).unwrap());
@@ -685,8 +757,8 @@ mod tests {
             filed["topic_id"] = serde_json::json!("d");
             page(serde_json::json!({
                 "items": [item("i", "x", vec![]), filed],
-                "topics": [{"id": "t", "name": "Gym", "archived_at": null, "deleted_at": null},
-                           {"id": "d", "name": "Old", "archived_at": null, "deleted_at": null}],
+                "topics": [{"id": "t", "name": "Gym", "deleted_at": null},
+                           {"id": "d", "name": "Old", "deleted_at": null}],
                 "tombstones": [], "cursor": cursor, "settings": {"trash_after_copy":null}, "has_more": false,
             }))
         };
@@ -1611,8 +1683,8 @@ pub(crate) mod server_tests {
             .unwrap()
     }
 
-    fn topic_names(d: &Device) -> Vec<(String, bool)> {
-        topics::list(&d.db.lock().unwrap()).unwrap().into_iter().map(|t| (t.name, t.archived)).collect()
+    fn topic_names(d: &Device) -> Vec<String> {
+        topics::list(&d.db.lock().unwrap()).unwrap().into_iter().map(|t| t.name).collect()
     }
 
     fn only_item(d: &Device) -> String {
@@ -1620,7 +1692,7 @@ pub(crate) mod server_tests {
     }
 
     #[tokio::test]
-    async fn a_move_into_a_topic_archived_elsewhere_comes_back() {
+    async fn a_move_into_a_topic_deleted_elsewhere_comes_back() {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
@@ -1631,26 +1703,27 @@ pub(crate) mod server_tests {
         let item = only_item(&a);
 
         feed::move_item(&a.db.lock().unwrap(), &item, &feed::Target::Topic { id: gym.clone() }, T0 + 10 * SECOND).unwrap();
-        topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 20 * SECOND).unwrap();
+        topics::delete(&b.db.lock().unwrap(), &gym, &topics::Keep::All, T0 + 20 * SECOND).unwrap();
         sync(&b).await.unwrap();
         sync(&a).await.unwrap();
 
         assert_eq!(place(&a, &item), (None, false), "A still shows the move the Server rejected");
-        assert_eq!(topic_names(&a), [("Gym".to_string(), true)]);
+        assert!(topic_names(&a).is_empty());
         let notice = SyncNotice {
             kind: "move",
             item_id: item,
             label: "squat 100".into(),
             topic: Some("Gym".into()),
-            topic_state: Some("archived"),
+            topic_deleted: true,
             place: None,
             topic_id: Some(gym),
         };
+        assert_eq!(serde_json::to_value(&a.notices.lock().unwrap()[0]).unwrap()["topic_deleted"], true);
         assert_eq!(*a.notices.lock().unwrap(), [notice]);
     }
 
     #[tokio::test]
-    async fn a_capture_into_a_topic_archived_elsewhere_lands_in_the_inbox_with_a_notice() {
+    async fn a_capture_into_a_topic_deleted_elsewhere_lands_in_the_inbox_with_a_notice() {
         let mut server = TestServer::new();
         server.start();
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
@@ -1658,7 +1731,7 @@ pub(crate) mod server_tests {
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
 
-        topics::set_archived(&b.db.lock().unwrap(), &gym, true, T0 + 10 * SECOND).unwrap();
+        topics::delete(&b.db.lock().unwrap(), &gym, &topics::Keep::All, T0 + 10 * SECOND).unwrap();
         sync(&b).await.unwrap();
         feed::capture(&a.db.lock().unwrap(), &a.dir, "squat 100", &[], &feed::Target::Topic { id: gym.clone() }, None, T0 + 20 * SECOND).unwrap();
         sync(&a).await.unwrap();
@@ -1669,10 +1742,11 @@ pub(crate) mod server_tests {
             item_id: item.clone(),
             label: "squat 100".into(),
             topic: Some("Gym".into()),
-            topic_state: Some("archived"),
+            topic_deleted: true,
             place: None,
             topic_id: Some(gym),
         };
+        assert_eq!(serde_json::to_value(&a.notices.lock().unwrap()[0]).unwrap()["topic_deleted"], true);
         assert_eq!(*a.notices.lock().unwrap(), [notice]);
         assert_eq!(place(&a, &item), (None, false));
     }
@@ -1870,10 +1944,9 @@ pub(crate) mod server_tests {
         let (a, b) = (device(&server, &server.secret), device(&server, &server.secret));
         let id = topics::create(&a.db.lock().unwrap(), "Gym", T0).unwrap().id;
         topics::rename(&a.db.lock().unwrap(), &id, "Lifting", T0 + SECOND).unwrap();
-        topics::set_archived(&a.db.lock().unwrap(), &id, true, T0 + 2 * SECOND).unwrap();
         sync(&a).await.unwrap();
         sync(&b).await.unwrap();
-        assert_eq!(topic_names(&b), [("Lifting".to_string(), true)]);
+        assert_eq!(topic_names(&b), ["Lifting".to_string()]);
     }
 
     #[tokio::test]
@@ -1923,7 +1996,7 @@ pub(crate) mod server_tests {
         sync(&b).await.unwrap();
         sync(&a).await.unwrap();
         for d in [&a, &b] {
-            let mut names: Vec<String> = topic_names(d).into_iter().map(|(n, _)| n).collect();
+            let mut names: Vec<String> = topic_names(d);
             names.sort();
             assert_eq!(names, ["Books", "Books (1)"]);
         }
@@ -1939,17 +2012,50 @@ pub(crate) mod server_tests {
             serde_json::json!({"results": results})
         }, 200);
         let a = device_at(&url, "secret");
-        let types = ["SetText", "MoveItem", "TrashItem", "RestoreItem", "AddAttachment", "RemoveAttachment", "CreateTopic", "RenameTopic", "ArchiveTopic", "UnarchiveTopic", "DeleteTopic", "CreateTopic", "RenameTopic"];
+        let types = ["SetText", "MoveItem", "TrashItem", "RestoreItem", "AddAttachment", "RemoveAttachment", "CreateTopic", "RenameTopic", "DeleteTopic", "CreateTopic", "RenameTopic"];
         {
             let conn = a.db.lock().unwrap();
             conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'note', ?1)", [T0]).unwrap();
             for (index, ty) in types.iter().enumerate() {
-                let op = serde_json::json!({"id": format!("{}{index}", if index >= 11 { "renamed" } else { "refused" }), "type": ty, "item_id": if index < 6 { Some("i") } else { None }, "topic_id": "g", "at": "2025-10-09T08:53:20Z"});
+                let op = serde_json::json!({"id": format!("{}{index}", if index >= 9 { "renamed" } else { "refused" }), "type": ty, "item_id": if index < 6 { Some("i") } else { None }, "topic_id": "g", "at": "2025-10-09T08:53:20Z"});
                 conn.execute("INSERT INTO outbox (op) VALUES (?1)", [op.to_string()]).unwrap();
             }
         }
         sync(&a).await.unwrap();
-        assert_eq!(a.notices.lock().unwrap().iter().map(|n| n.kind).collect::<Vec<_>>(), ["failed", "failed", "failed", "failed", "failed", "failed", "topic", "topic", "topic", "topic", "topic", "topicRenamed", "topicRenamed"]);
+        assert_eq!(a.notices.lock().unwrap().iter().map(|n| n.kind).collect::<Vec<_>>(), ["failed", "failed", "failed", "failed", "failed", "failed", "topic", "topic", "topic", "topicRenamed", "topicRenamed"]);
+    }
+
+    #[tokio::test]
+    async fn refused_move_to_a_live_local_topic_is_not_deleted() {
+        let (url, _) = fake_server(|req| answers(req, &[("rejected", "topic_unavailable")]), 200);
+        let a = device_at(&url, "secret");
+        {
+            let conn = a.db.lock().unwrap();
+            conn.execute("INSERT INTO topics (id, name) VALUES ('t', 'Gym')", []).unwrap();
+            conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'note', 1)", []).unwrap();
+            feed::move_item(&conn, "i", &feed::Target::Topic { id: "t".into() }, T0).unwrap();
+        }
+        sync(&a).await.unwrap();
+        let notices = a.notices.lock().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "move");
+        assert_eq!(serde_json::to_value(&notices[0]).unwrap()["topic_deleted"], false);
+    }
+
+    #[tokio::test]
+    async fn sent_to_inbox_for_a_live_local_topic_is_not_deleted() {
+        let (url, _) = fake_server(|req| answers(req, &[("changed", "sent_to_inbox")]), 200);
+        let a = device_at(&url, "secret");
+        {
+            let conn = a.db.lock().unwrap();
+            conn.execute("INSERT INTO topics (id, name) VALUES ('t', 'Gym')", []).unwrap();
+            feed::capture(&conn, &a.dir, "note", &[], &feed::Target::Topic { id: "t".into() }, None, T0).unwrap();
+        }
+        sync(&a).await.unwrap();
+        let notices = a.notices.lock().unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "inbox");
+        assert_eq!(serde_json::to_value(&notices[0]).unwrap()["topic_deleted"], false);
     }
 
     fn now() -> i64 {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { dismissQuickCapture, listTopics, sortedTopics, type Topic } from "./api";
+import { dismissQuickCapture, listTopics, type Topic } from "./api";
 import Composer, { type ComposerHandle } from "./Composer";
 import CaptureDestination from "./CaptureDestination";
 import { applyTheme, storedTheme } from "./theme";
@@ -15,7 +15,7 @@ export default function QuickCapture() {
   const composer = useRef<ComposerHandle>(null);
 
   useEffect(() => {
-    const load = () => listTopics().then((all) => setTopics(sortedTopics(all.filter((t) => !t.archived))), () => {});
+    const load = () => listTopics().then((all) => setTopics(all), () => {});
     applyTheme(storedTheme());
     load();
     const stops = [

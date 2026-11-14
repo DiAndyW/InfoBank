@@ -16,7 +16,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Draft>, String> {
     )
     .map_err(crate::error_message::message)?;
     conn.prepare(
-        "SELECT place, text, (SELECT id FROM topics WHERE id = drafts.home_topic_id AND deleted_at IS NULL AND archived_at IS NULL)
+        "SELECT place, text, (SELECT id FROM topics WHERE id = drafts.home_topic_id AND deleted_at IS NULL)
          FROM drafts",
     )
         .and_then(|mut stmt| stmt.query_map([], |r| Ok(Draft { place: r.get(0)?, text: r.get(1)?, home_topic_id: r.get(2)? }))?.collect())
@@ -97,16 +97,16 @@ mod tests {
     }
 
     #[test]
-    fn list_drops_drafts_of_deleted_or_missing_topics_but_keeps_archived() {
+    fn list_drops_drafts_of_deleted_or_missing_topics_but_keeps_live() {
         let dir = tempfile::tempdir().unwrap();
         let conn = store::open(&dir.path().join("notebank.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO topics (id, name) VALUES ('live', 'Live');
-            INSERT INTO topics (id, name, archived_at) VALUES ('archived', 'Archived', 1);
+            INSERT INTO topics (id, name) VALUES ('other', 'Other');
             INSERT INTO topics (id, name, deleted_at) VALUES ('gone', 'Gone', 1);",
         )
         .unwrap();
-        for place in ["topic:live", "topic:archived", "topic:gone", "topic:nope"] {
+        for place in ["topic:live", "topic:other", "topic:gone", "topic:nope"] {
             save(&conn, place, "draft", None).unwrap();
         }
         let mut drafts = list(&conn).unwrap();
@@ -114,8 +114,8 @@ mod tests {
         assert_eq!(
             drafts,
             vec![
-                Draft { place: "topic:archived".into(), text: "draft".into(), home_topic_id: None },
                 Draft { place: "topic:live".into(), text: "draft".into(), home_topic_id: None },
+                Draft { place: "topic:other".into(), text: "draft".into(), home_topic_id: None },
             ]
         );
         let remaining: i64 = conn.query_row("SELECT count(*) FROM drafts", [], |r| r.get(0)).unwrap();
@@ -123,16 +123,16 @@ mod tests {
     }
 
     #[test]
-    fn home_topic_reads_as_inbox_unless_that_topic_is_open() {
+    fn home_topic_reads_as_inbox_unless_that_topic_is_live() {
         let dir = tempfile::tempdir().unwrap();
         let conn = store::open(&dir.path().join("notebank.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO topics (id, name) VALUES ('live', 'Live');
-            INSERT INTO topics (id, name, archived_at) VALUES ('archived', 'Archived', 1);
+            INSERT INTO topics (id, name) VALUES ('other', 'Other');
             INSERT INTO topics (id, name, deleted_at) VALUES ('gone', 'Gone', 1);",
         )
         .unwrap();
-        for (topic, expected) in [("live", Some("live")), ("archived", None), ("gone", None), ("nope", None)] {
+        for (topic, expected) in [("live", Some("live")), ("other", Some("other")), ("gone", None), ("nope", None)] {
             save(&conn, "home", "draft", Some(topic)).unwrap();
             assert_eq!(list(&conn).unwrap()[0].home_topic_id.as_deref(), expected, "{topic}");
         }

@@ -56,7 +56,7 @@ struct ItemActionsTests {
         try store.move(itemID: id, to: .topic("g"), nowUs: actionTime + 2)
         #expect(try store.places().tunnelCount == 0)
         #expect(try store.items(in: .topic("g"), before: nil, limit: 10).first?.topicID == "g")
-        try store.pool.write { try $0.execute(sql: "UPDATE topics SET archived_at = 1") }
+        try store.pool.write { try $0.execute(sql: "UPDATE topics SET deleted_at = 1") }
         let before = try ops(store).count
         #expect(throws: ItemActionError.topicUnavailable) { try store.move(itemID: id, to: .topic("g"), nowUs: actionTime + 3) }
         #expect(throws: ItemActionError.topicUnavailable) { try store.move(itemID: id, to: .topic("missing"), nowUs: actionTime + 3) }

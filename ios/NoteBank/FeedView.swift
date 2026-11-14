@@ -382,10 +382,6 @@ struct FeedView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Rename", systemImage: "pencil") { topicNameDraft = model.topicName ?? title; renameTopic = true }
-                        Button(model.topicUnavailable ? "Unarchive" : "Archive", systemImage: "archivebox") {
-                            do { try store.setTopicArchived(id, archived: !model.topicUnavailable, nowUs: Time.nowUs()); model.reload(); wake() }
-                            catch { actionError = errorMessage(error) }
-                        }
                         Button("Delete Topic…", systemImage: "trash", role: .destructive) {
                             if model.topicCount == 0 {
                                 deletingEmpty = TopicPlace(id: id, name: model.topicName ?? title, count: 0)

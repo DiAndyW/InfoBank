@@ -48,19 +48,14 @@ public struct TopicPlace: Identifiable, Hashable, Sendable {
 }
 
 extension TopicPlace {
-    public static func browsing(_ topics: [TopicPlace], archived: Bool, expanded: Bool, retaining id: String? = nil) -> [TopicPlace] {
-        let sorted = topics.sorted {
-            if !archived && !expanded && $0.count != $1.count { return $0.count > $1.count }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-        return expanded ? sorted : sorted.enumerated().filter { $0.offset < 10 || $0.element.id == id }.map(\.element)
+    public static func browsing(_ topics: [TopicPlace], expanded: Bool, retaining id: String? = nil) -> [TopicPlace] {
+        expanded ? topics : topics.enumerated().filter { $0.offset < 10 || $0.element.id == id }.map(\.element)
     }
 
     public static func matching(_ topics: [TopicPlace], text: String) -> [TopicPlace] {
         let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
         return topics.filter { $0.name.range(of: query, options: .caseInsensitive) != nil }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -166,20 +161,29 @@ extension Store {
         }
     }
 
+    static func rankedTopics(_ db: Database) throws -> [(place: TopicPlace, lastUsedUs: Int64)] {
+        try Row.fetchAll(db, sql: """
+            SELECT id, name,
+                (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count,
+                activity_at AS last_used
+            FROM topics WHERE deleted_at IS NULL
+            """)
+            .map { (place: TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"]), lastUsedUs: $0["last_used"] as Int64) }
+            .sorted {
+                if $0.lastUsedUs != $1.lastUsedUs { return $0.lastUsedUs > $1.lastUsedUs }
+                let order = $0.place.name.localizedStandardCompare($1.place.name)
+                return order == .orderedSame ? $0.place.id < $1.place.id : order == .orderedAscending
+            }
+    }
+
     public func places() throws -> Places {
         try pool.read { db in
-            let topics = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT id, name, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count
-                    FROM topics WHERE deleted_at IS NULL AND archived_at IS NULL
-                    """
-            ).map { TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"]) }
+            let topics = try Self.rankedTopics(db)
             return Places(
                 allCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL")!,
                 inboxCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL AND topic_id IS NULL AND in_tunnel = 0")!,
                 tunnelCount: try Int.fetchOne(db, sql: "SELECT count(*) FROM items WHERE deleted_at IS NULL AND in_tunnel = 1")!,
-                topics: topics.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+                topics: topics.map(\.place))
         }
     }
 }

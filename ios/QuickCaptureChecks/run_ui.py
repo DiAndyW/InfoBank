@@ -13,9 +13,10 @@ repo = Path(__file__).resolve().parents[2]
 app_id = "app.notebank.ios"
 host_id = "app.notebank.quick-capture-check"
 
-if len(sys.argv) not in (2, 3):
-    sys.exit("usage: run_ui.py <simulator UDID> [test method]")
-device = sys.argv[1]
+build_only = sys.argv[1:] == ["--build-only"]
+if not build_only and len(sys.argv) not in (2, 3):
+    sys.exit("usage: run_ui.py <simulator UDID> [test method] | --build-only")
+device = None if build_only else sys.argv[1]
 selected = sys.argv[2] if len(sys.argv) == 3 else None
 
 def encode(value):
@@ -81,6 +82,13 @@ def generate_project(project, server_url):
     (schemes / "Capture.xcscheme").write_text('''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AppTarget" BuildableName="CaptureHost.app" BlueprintName="CaptureHost" ReferencedContainer="container:Capture.xcodeproj"/></BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Debug" shouldUseLaunchSchemeArgsEnv="NO"><Testables><TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TestTarget" BuildableName="CaptureUITests.xctest" BlueprintName="CaptureUITests" ReferencedContainer="container:Capture.xcodeproj"/></TestableReference></Testables><EnvironmentVariables><EnvironmentVariable key="NOTEBANK_TEST_SERVER" value="SERVER_URL" isEnabled="YES"/></EnvironmentVariables></TestAction></Scheme>'''.replace("SERVER_URL", server_url))
 
+if build_only:
+    with tempfile.TemporaryDirectory(prefix="notebank-quick-capture-build-") as temporary:
+        project = Path(temporary) / "Capture.xcodeproj"
+        generate_project(project, "")
+        subprocess.run(["xcodebuild", "build-for-testing", "-project", str(project), "-scheme", "Capture", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", "/tmp/notebank-quick-capture-ui-build", "CODE_SIGNING_ALLOWED=NO"], check=True)
+    sys.exit(0)
+
 with ThreadingHTTPServer(("127.0.0.1", 0), CheckHandler) as check_server, tempfile.TemporaryDirectory(prefix="notebank-quick-capture-ui-") as temporary:
     threading.Thread(target=check_server.serve_forever, daemon=True).start()
     root = Path(temporary)
@@ -101,7 +109,7 @@ with ThreadingHTTPServer(("127.0.0.1", 0), CheckHandler) as check_server, tempfi
         tests = subprocess.run(["xcodebuild", "test", "-project", str(root / "Capture.xcodeproj"), "-scheme", "Capture", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", str(root / "ui"), "-resultBundlePath", str(result), "-parallel-testing-enabled", "NO", "-test-timeouts-enabled", "YES", "-maximum-test-execution-time-allowance", "120"] + ([f"-only-testing:CaptureUITests/QuickCaptureUITests/{selected}"] if selected else []))
         summary = json.loads(subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", str(result)], text=True))
         assert tests.returncode == 0, (summary["failedTests"], [failure["testIdentifierString"] + ": " + failure["failureText"] for failure in summary["testFailures"]])
-        expected = 1 if selected else 4
+        expected = 1 if selected else 5
         assert summary["totalTestCount"] == expected and summary["passedTests"] == expected, summary
 
         print(f"{expected} navigation and quick capture UI tests passed")

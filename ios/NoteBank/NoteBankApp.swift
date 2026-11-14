@@ -166,14 +166,14 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(store: services.store, wake: services.wake, archived: places.archived, places: places.places, composer: composers.home, status: status, notices: services.notices, onUndoClear: undoClear, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
+                    PlacesView(store: services.store, wake: services.wake, places: places.places, composer: composers.home, status: status, notices: services.notices, onUndoClear: undoClear, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Route.self) { route in
                             switch route {
                             case .place(let place):
                                 FeedView(
                                     place: place,
-                                    topicName: (places.places.topics + places.archived).first { .topic($0.id) == place }?.name,
+                                    topicName: places.places.topics.first { .topic($0.id) == place }?.name,
                                     services: services,
                                     composers: composers,
                                     onUndoClear: undoClear,
@@ -184,7 +184,7 @@ struct RootView: View {
                                     foregrounds: foregrounds,
                                     target: $target)
                             case .search(let place):
-                                SearchView(services: services, onUndoClear: undoClear, place: place, topics: places.places.topics, archived: places.archived, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
+                                SearchView(services: services, onUndoClear: undoClear, place: place, topics: places.places.topics, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
                             }
                         }
                 }
@@ -216,7 +216,7 @@ struct RootView: View {
             case let saved where saved.hasPrefix("topic:"): [.topic(String(saved.dropFirst("topic:".count)))]
             default: []
             }
-            restored.removeAll { if case .topic(let id) = $0 { !(places.places.topics + places.archived).contains { $0.id == id } } else { false } }
+            restored.removeAll { if case .topic(let id) = $0 { !places.places.topics.contains { $0.id == id } } else { false } }
             path = restored.map(Route.place)
         }
         .onChange(of: composeRequests.latest, initial: true) { _, request in
@@ -230,7 +230,7 @@ struct RootView: View {
                 composers.home.dropMissingTopic(open: topics)
             }
         }
-        .onChange(of: places.places.topics + places.archived) { _, topics in
+        .onChange(of: places.places.topics) { _, topics in
             if path.contains(where: { route in
                 if case .place(.topic(let id)) = route { return !topics.contains { $0.id == id } }
                 return false

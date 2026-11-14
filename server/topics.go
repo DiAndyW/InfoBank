@@ -12,12 +12,10 @@ import (
 )
 
 type topic struct {
-	id           uuid.UUID
-	name         string
-	archivedAt   *time.Time
-	deletedAt    *time.Time
-	nameStamp    stamp
-	archiveStamp stamp
+	id        uuid.UUID
+	name      string
+	deletedAt *time.Time
+	nameStamp stamp
 }
 
 // The apps show these as built-in places and actions; Topics with the same names would be confusing.
@@ -51,8 +49,8 @@ func (b *batch) createTopic(o pushOp, s stamp) (opResult, error) {
 		return opResult{}, err
 	}
 	_, err = b.tx.Exec(b.ctx, `
-		INSERT INTO topics (id, name, name_updated_at, name_updated_by, archive_updated_at, archive_updated_by, seq)
-		VALUES ($1, $2, $3, $4, $3, $4, nextval('sync_seq'))`,
+		INSERT INTO topics (id, name, name_updated_at, name_updated_by, activity_at, seq)
+		VALUES ($1, $2, $3, $4, $3, nextval('sync_seq'))`,
 		*o.TopicID, free, s.at, s.by)
 	if free != name {
 		return changed("renamed"), err
@@ -90,14 +88,6 @@ func (b *batch) changeTopic(o pushOp, s stamp) (opResult, error) {
 			res = changed("renamed")
 		}
 		tp.name, tp.nameStamp = free, s
-	case "ArchiveTopic", "UnarchiveTopic":
-		if !s.beats(tp.archiveStamp) {
-			return rejected("superseded"), nil
-		}
-		tp.archivedAt, tp.archiveStamp = nil, s
-		if o.Type == "ArchiveTopic" {
-			tp.archivedAt = &s.at
-		}
 	case "DeleteTopic":
 		tp.deletedAt = &s.at
 		if err := b.emptyDeletedTopic(tp.id, o.Trash, s); err != nil {
@@ -153,11 +143,10 @@ func (b *batch) freeName(name string, self uuid.UUID) (string, error) {
 	}
 }
 
-// topicOpen reports whether the Topic with id exists and can take Items: not archived or deleted.
 func (b *batch) topicOpen(id uuid.UUID) (bool, error) {
 	var open bool
 	err := b.tx.QueryRow(b.ctx, `
-		SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1 AND archived_at IS NULL AND deleted_at IS NULL)`, id).Scan(&open)
+		SELECT EXISTS (SELECT 1 FROM topics WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&open)
 	return open, err
 }
 
@@ -165,9 +154,9 @@ func (b *batch) topicOpen(id uuid.UUID) (bool, error) {
 func (b *batch) loadTopic(id uuid.UUID) (*topic, error) {
 	tp := topic{id: id}
 	err := b.tx.QueryRow(b.ctx, `
-		SELECT name, archived_at, deleted_at, name_updated_at, name_updated_by, archive_updated_at, archive_updated_by
+		SELECT name, deleted_at, name_updated_at, name_updated_by
 		FROM topics WHERE id = $1`, id).Scan(
-		&tp.name, &tp.archivedAt, &tp.deletedAt, &tp.nameStamp.at, &tp.nameStamp.by, &tp.archiveStamp.at, &tp.archiveStamp.by)
+		&tp.name, &tp.deletedAt, &tp.nameStamp.at, &tp.nameStamp.by)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -176,9 +165,8 @@ func (b *batch) loadTopic(id uuid.UUID) (*topic, error) {
 
 func (b *batch) saveTopic(tp *topic) error {
 	_, err := b.tx.Exec(b.ctx, `
-		UPDATE topics SET name = $2, archived_at = $3, deleted_at = $4, name_updated_at = $5, name_updated_by = $6,
-			archive_updated_at = $7, archive_updated_by = $8, seq = nextval('sync_seq')
+		UPDATE topics SET name = $2, deleted_at = $3, name_updated_at = $4, name_updated_by = $5, seq = nextval('sync_seq')
 		WHERE id = $1`,
-		tp.id, tp.name, tp.archivedAt, tp.deletedAt, tp.nameStamp.at, tp.nameStamp.by, tp.archiveStamp.at, tp.archiveStamp.by)
+		tp.id, tp.name, tp.deletedAt, tp.nameStamp.at, tp.nameStamp.by)
 	return err
 }

@@ -35,8 +35,8 @@ type attachmentOut struct {
 type topicOut struct {
 	ID         uuid.UUID  `json:"id"`
 	Name       string     `json:"name"`
-	ArchivedAt *time.Time `json:"archived_at" db:"archived_at"`
 	DeletedAt  *time.Time `json:"deleted_at" db:"deleted_at"`
+	ActivityAt time.Time  `json:"activity_at" db:"activity_at"`
 	Seq        int64      `json:"-"`
 }
 
@@ -72,7 +72,7 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 		return nil, err
 	}
 	rows, _ = tx.Query(ctx, `
-		SELECT id, name, archived_at, deleted_at, seq
+		SELECT id, name, deleted_at, activity_at, seq
 		FROM topics WHERE seq > $1 ORDER BY seq LIMIT $2`, cursor, pullPageSize+1)
 	topics, err := pgx.CollectRows(rows, pgx.RowToStructByName[topicOut])
 	if err != nil {
@@ -131,7 +131,8 @@ func (a *syncAPI) pullPage(ctx context.Context, cursor int64) (map[string]any, e
 		ids = append(ids, it.ID)
 	}
 	for i := range topics {
-		topics[i].ArchivedAt, topics[i].DeletedAt = utc(topics[i].ArchivedAt), utc(topics[i].DeletedAt)
+		topics[i].DeletedAt = utc(topics[i].DeletedAt)
+		topics[i].ActivityAt = topics[i].ActivityAt.UTC()
 	}
 
 	type itemAttachment struct {

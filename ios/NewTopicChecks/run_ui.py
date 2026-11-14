@@ -8,6 +8,9 @@ import tempfile
 import time
 
 repo = Path(__file__).resolve().parents[2]
+build_only = "--build-only" in sys.argv
+if build_only:
+    sys.argv.remove("--build-only")
 device = sys.argv[1] if len(sys.argv) > 1 else "0456EFE1-17C1-4C9D-BE64-33FFBF4E7386"
 
 def encode(value):
@@ -30,6 +33,9 @@ with tempfile.TemporaryDirectory(prefix="notebank-new-topic-ui-") as temporary:
         add(key, isa="PBXFileReference", lastKnownFileType="sourcecode.swift", path=str(repo / path), sourceTree="<absolute>")
         files.append(key)
         add(key + "Build", isa="PBXBuildFile", fileRef=key)
+    add("KitPackage", isa="XCLocalSwiftPackageReference", relativePath=str(repo / "ios/NoteBankKit"))
+    add("KitProduct", isa="XCSwiftPackageProductDependency", package="KitPackage", productName="NoteBankKit")
+    add("KitBuild", isa="PBXBuildFile", productRef="KitProduct")
     add("AppProduct", isa="PBXFileReference", explicitFileType="wrapper.application", path="NewTopicHost.app", sourceTree="BUILT_PRODUCTS_DIR")
     add("TestProduct", isa="PBXFileReference", explicitFileType="wrapper.cfbundle", path="NewTopicUITests.xctest", sourceTree="BUILT_PRODUCTS_DIR")
     add("Group", isa="PBXGroup", children=files + ["Products"], sourceTree="<group>")
@@ -47,16 +53,19 @@ with tempfile.TemporaryDirectory(prefix="notebank-new-topic-ui-") as temporary:
         add(name + "Config", isa="XCBuildConfiguration", name="Debug", buildSettings=target_settings)
         add(name + "Configs", isa="XCConfigurationList", buildConfigurations=[name + "Config"], defaultConfigurationName="Debug")
         add(name + "Sources", isa="PBXSourcesBuildPhase", buildActionMask="2147483647", files=["DialogBuild", "AppBuild"] if name == "App" else ["TestBuild"], runOnlyForDeploymentPostprocessing="0")
-        add(name + "Frameworks", isa="PBXFrameworksBuildPhase", buildActionMask="2147483647", files=[], runOnlyForDeploymentPostprocessing="0")
-        add(name + "Target", isa="PBXNativeTarget", name="NewTopicHost" if name == "App" else "NewTopicUITests", productName="NewTopicHost" if name == "App" else "NewTopicUITests", productType="com.apple.product-type.application" if name == "App" else "com.apple.product-type.bundle.ui-testing", productReference=name + "Product", buildConfigurationList=name + "Configs", buildPhases=[name + "Sources", name + "Frameworks"], buildRules=[], dependencies=[] if name == "App" else ["Dependency"])
+        add(name + "Frameworks", isa="PBXFrameworksBuildPhase", buildActionMask="2147483647", files=["KitBuild"] if name == "App" else [], runOnlyForDeploymentPostprocessing="0")
+        add(name + "Target", isa="PBXNativeTarget", name="NewTopicHost" if name == "App" else "NewTopicUITests", productName="NewTopicHost" if name == "App" else "NewTopicUITests", productType="com.apple.product-type.application" if name == "App" else "com.apple.product-type.bundle.ui-testing", productReference=name + "Product", buildConfigurationList=name + "Configs", buildPhases=[name + "Sources", name + "Frameworks"], buildRules=[], packageProductDependencies=["KitProduct"] if name == "App" else [], dependencies=[] if name == "App" else ["Dependency"])
     add("Proxy", isa="PBXContainerItemProxy", containerPortal="Project", proxyType="1", remoteGlobalIDString="AppTarget", remoteInfo="NewTopicHost")
     add("Dependency", isa="PBXTargetDependency", target="AppTarget", targetProxy="Proxy")
-    add("Project", isa="PBXProject", buildConfigurationList="ProjectConfigs", compatibilityVersion="Xcode 14.0", developmentRegion="en", knownRegions=["en"], mainGroup="Group", productRefGroup="Products", projectDirPath="", targets=["AppTarget", "TestTarget"], attributes=dict(LastUpgradeCheck="2600", TargetAttributes=dict(TestTarget=dict(TestTargetID="AppTarget"))))
+    add("Project", isa="PBXProject", buildConfigurationList="ProjectConfigs", compatibilityVersion="Xcode 14.0", developmentRegion="en", knownRegions=["en"], mainGroup="Group", productRefGroup="Products", projectDirPath="", targets=["AppTarget", "TestTarget"], packageReferences=["KitPackage"], attributes=dict(LastUpgradeCheck="2600", TargetAttributes=dict(TestTarget=dict(TestTargetID="AppTarget"))))
     (project / "project.pbxproj").write_text("// !$*UTF8*$!\n" + encode(dict(archiveVersion="1", objectVersion="56", classes={}, objects=objects, rootObject="Project")))
     schemes = project / "xcshareddata/xcschemes"
     schemes.mkdir(parents=True)
     (schemes / "NewTopic.xcscheme").write_text('''<?xml version="1.0" encoding="UTF-8"?>
 <Scheme version="1.3"><BuildAction><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="AppTarget" BuildableName="NewTopicHost.app" BlueprintName="NewTopicHost" ReferencedContainer="container:NewTopic.xcodeproj"/></BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration="Debug" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="TestTarget" BuildableName="NewTopicUITests.xctest" BlueprintName="NewTopicUITests" ReferencedContainer="container:NewTopic.xcodeproj"/></TestableReference></Testables></TestAction></Scheme>''')
+    if build_only:
+        subprocess.run(["xcodebuild", "build-for-testing", "-project", str(project), "-scheme", "NewTopic", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", "/tmp/notebank-new-topic-ui-build", "CODE_SIGNING_ALLOWED=NO"], check=True)
+        sys.exit(0)
     try:
         result = f"/tmp/notebank-new-topic-ui-{time.time_ns()}.xcresult"
         subprocess.run(["xcodebuild", "test", "-project", str(project), "-scheme", "NewTopic", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", "/tmp/notebank-new-topic-ui-build", "-resultBundlePath", result, "-parallel-testing-enabled", "NO", "-quiet"], check=True)

@@ -455,12 +455,10 @@ mod tests {
     #[test]
     fn failed_capture_keeps_the_draft() {
         let (d, conn) = fresh();
-        conn.execute("INSERT INTO topics (id, name, archived_at) VALUES ('x', 'Archived', 1)", []).unwrap();
+        conn.execute("INSERT INTO topics (id, name, deleted_at) VALUES ('x', 'Gone', 1)", []).unwrap();
         crate::drafts::save(&conn, "topic:x", "draft", None).unwrap();
         assert!(capture(&conn, d.path(), "draft", &[], &Target::Topic { id: "x".into() }, Some("topic:x"), 1).is_err());
-        assert_eq!(crate::drafts::list(&conn).unwrap(), vec![crate::drafts::Draft {
-            place: "topic:x".into(), text: "draft".into(), home_topic_id: None,
-        }]);
+        assert_eq!(conn.query_row("SELECT text FROM drafts WHERE place = 'topic:x'", [], |r| r.get::<_, String>(0)).unwrap(), "draft");
         assert_eq!(count(&conn, "items"), 0);
         assert_eq!(count(&conn, "outbox"), 0);
     }
@@ -940,7 +938,7 @@ mod tests {
     fn with_topics(conn: &Connection) {
         conn.execute_batch(
             "INSERT INTO topics (id, name) VALUES ('t', 'Gym');
-             INSERT INTO topics (id, name, archived_at) VALUES ('a', 'Old', 1);
+             INSERT INTO topics (id, name) VALUES ('a', 'Old');
              INSERT INTO topics (id, name, deleted_at) VALUES ('d', 'Gone', 1);",
         )
         .unwrap();
@@ -966,7 +964,7 @@ mod tests {
         let (d, conn) = fresh();
         with_topics(&conn);
         conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'x', 1)", []).unwrap();
-        for id in ["a", "d", "nope"] {
+        for id in ["d", "nope"] {
             assert!(capture(&conn, d.path(), "hi", &[], &Target::Topic { id: id.into() }, None, 1).is_err(), "captured into {id}");
             assert!(move_item(&conn, "i", &Target::Topic { id: id.into() }, 1).is_err(), "moved into {id}");
         }

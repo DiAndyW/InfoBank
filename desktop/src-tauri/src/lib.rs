@@ -213,8 +213,6 @@ pub fn run() {
             commands::create_topic,
             commands::picker_topic,
             commands::rename_topic,
-            commands::archive_topic,
-            commands::unarchive_topic,
             commands::delete_topic,
             commands::pick_files,
             commands::stage_attachment_bytes,

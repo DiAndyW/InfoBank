@@ -10,7 +10,6 @@ const MAX_TOPIC_NAME_BYTES: usize = 200;
 pub struct Topic {
     pub id: String,
     pub name: String,
-    pub archived: bool,
     pub item_count: i64,
 }
 
@@ -24,26 +23,20 @@ pub enum Keep {
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.name, t.archived_at IS NOT NULL,
+        "SELECT t.id, t.name,
                 (SELECT count(*) FROM items i WHERE i.topic_id = t.id AND i.deleted_at IS NULL)
-         FROM topics t WHERE t.deleted_at IS NULL ORDER BY lower(t.name), t.id",
+         FROM topics t WHERE t.deleted_at IS NULL
+         ORDER BY t.activity_at DESC, lower(t.name), t.id",
     )?;
-    stmt.query_map([], |r| Ok(Topic { id: r.get(0)?, name: r.get(1)?, archived: r.get(2)?, item_count: r.get(3)? }))?
+    stmt.query_map([], |r| Ok(Topic { id: r.get(0)?, name: r.get(1)?, item_count: r.get(2)? }))?
         .collect()
 }
 
-fn archived_if_exists(conn: &Connection, id: &str) -> Result<bool, String> {
-    conn.query_row("SELECT archived_at IS NOT NULL FROM topics WHERE id = ?1 AND deleted_at IS NULL", [id], |r| r.get(0))
+pub fn require_open(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.query_row("SELECT 1 FROM topics WHERE id = ?1 AND deleted_at IS NULL", [id], |_| Ok(()))
         .optional()
         .map_err(crate::error_message::message)?
         .ok_or_else(|| "That Topic no longer exists".to_string())
-}
-
-pub fn require_open(conn: &Connection, id: &str) -> Result<(), String> {
-    if archived_if_exists(conn, id)? {
-        return Err("That Topic is archived".into());
-    }
-    Ok(())
 }
 
 // The apps show these as built-in places and actions; the Server refuses them too.
@@ -100,22 +93,19 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
     let id = uuid::Uuid::new_v4().to_string();
     let name = checked_name(conn, name, &id)?;
     queue_one(conn, Op::CreateTopic { topic_id: id.clone(), name: name.clone() }, now_us)?;
-    Ok(Topic { id, name, archived: false, item_count: 0 })
+    Ok(Topic { id, name, item_count: 0 })
 }
 
-/// For Topic pickers: an open Topic with this name is reused; an archived one is refused.
 pub fn picker_topic(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, String> {
     let lowered = valid_name(name)?.to_lowercase();
-    let same: Vec<Topic> =
-        list(conn).map_err(crate::error_message::message)?.into_iter().filter(|t| t.name.to_lowercase() == lowered).collect();
-    if same.is_empty() {
-        return create(conn, name, now_us);
+    if let Some(topic) = list(conn).map_err(crate::error_message::message)?.into_iter().find(|t| t.name.to_lowercase() == lowered) {
+        return Ok(topic);
     }
-    same.into_iter().find(|t| !t.archived).ok_or_else(|| "An archived Topic has that name".into())
+    create(conn, name, now_us)
 }
 
 pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<(), String> {
-    archived_if_exists(conn, id)?;
+    require_open(conn, id)?;
     let name = checked_name(conn, name, id)?;
     let current: String =
         conn.query_row("SELECT name FROM topics WHERE id = ?1", [id], |r| r.get(0)).map_err(crate::error_message::message)?;
@@ -126,15 +116,8 @@ pub fn rename(conn: &Connection, id: &str, name: &str, now_us: i64) -> Result<()
     queue_one(conn, Op::RenameTopic { topic_id: id.into(), name }, now_us)
 }
 
-pub fn set_archived(conn: &Connection, id: &str, archived_now: bool, now_us: i64) -> Result<(), String> {
-    archived_if_exists(conn, id)?;
-    let topic_id = id.to_string();
-    let op = if archived_now { Op::ArchiveTopic { topic_id } } else { Op::UnarchiveTopic { topic_id } };
-    queue_one(conn, op, now_us)
-}
-
 pub fn delete(conn: &Connection, id: &str, keep: &Keep, now_us: i64) -> Result<(), String> {
-    archived_if_exists(conn, id)?;
+    require_open(conn, id)?;
     let mut stmt =
         conn.prepare("SELECT id FROM items WHERE topic_id = ?1 AND deleted_at IS NULL").map_err(crate::error_message::message)?;
     let ids = stmt
@@ -159,7 +142,7 @@ mod tests {
         let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO topics (id, name) VALUES ('t', 'Gym'), ('b', 'books'), ('e', 'École');
-             INSERT INTO topics (id, name, archived_at) VALUES ('a', 'Old', 1);
+             INSERT INTO topics (id, name) VALUES ('a', 'Old');
              INSERT INTO topics (id, name, deleted_at) VALUES ('d', 'Gone', 1);",
         )
         .unwrap();
@@ -175,27 +158,70 @@ mod tests {
     }
 
     #[test]
-    fn list_shows_archived_topics_and_counts_items_outside_trash() {
+    fn list_breaks_activity_ties_by_name_then_id() {
         let (_d, conn) = fresh();
-        conn.execute_batch(
-            "INSERT INTO items (id, topic_id, text, capture_time) VALUES ('1', 't', 'x', 1), ('2', 't', 'y', 1);
-             INSERT INTO items (id, topic_id, text, capture_time, deleted_at) VALUES ('3', 't', 'z', 1, 2);",
-        )
-        .unwrap();
-        let summary: Vec<(String, bool, i64)> =
-            list(&conn).unwrap().into_iter().map(|t| (t.name, t.archived, t.item_count)).collect();
-        // SQLite's lower() leaves É alone, so non-ASCII initials sort after Z; fine for v1.
-        assert_eq!(
-            summary,
-            [("books".into(), false, 0), ("Gym".into(), false, 2), ("Old".into(), true, 0), ("École".into(), false, 0)]
-        );
+        conn.execute_batch("DELETE FROM topics;
+            INSERT INTO topics (id, name) VALUES ('z', 'Alpha'), ('b', 'beta'), ('a', 'BETA');
+            INSERT INTO items (id, topic_id, text, capture_time) VALUES ('1', 'z', 'x', 10), ('2', 'b', 'x', 30), ('3', 'a', 'x', 20);").unwrap();
+        assert_eq!(list(&conn).unwrap().iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["z", "a", "b"]);
+    }
+
+    #[test]
+    fn list_ranks_stored_activity_including_empty_and_trashed_topics() {
+        let (_d, conn) = fresh();
+        conn.execute_batch("DELETE FROM topics;
+            INSERT INTO topics (id, name, activity_at) VALUES ('empty', 'z new empty', 40), ('old', 'old', 10), ('trash', 'a trashed-only', 30);
+            INSERT INTO items (id, topic_id, text, capture_time, deleted_at) VALUES
+            ('1', 'old', 'x', 10, NULL), ('2', 'trash', 'x', 30, 1);").unwrap();
+        let topics = list(&conn).unwrap();
+        assert_eq!(topics.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["empty", "trash", "old"]);
+        assert_eq!(topics.iter().map(|t| t.item_count).collect::<Vec<_>>(), [0, 0, 1]);
+    }
+
+    #[test]
+    fn activity_changes_only_on_create_capture_and_move_into() {
+        let (d, conn) = fresh();
+        conn.execute_batch("DELETE FROM topics").unwrap();
+        let old = create(&conn, "Old", 10).unwrap();
+        let new = picker_topic(&conn, "New", 20).unwrap();
+        let activity = |id: &str| -> i64 {
+            conn.query_row("SELECT activity_at FROM topics WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!((activity(&old.id), activity(&new.id)), (10, 20));
+        assert_eq!(list(&conn).unwrap()[0].id, new.id);
+        crate::feed::capture(&conn, d.path(), "hello", &[], &crate::feed::Target::Topic { id: old.id.clone() }, None, 30).unwrap();
+        assert_eq!(activity(&old.id), 30);
+        assert_eq!(list(&conn).unwrap()[0].id, old.id);
+        crate::feed::capture(&conn, d.path(), "late", &[], &crate::feed::Target::Topic { id: old.id.clone() }, None, 25).unwrap();
+        assert_eq!(activity(&old.id), 30);
+        let item: String = conn.query_row("SELECT id FROM items WHERE text = 'hello'", [], |r| r.get(0)).unwrap();
+        for op in [
+            Op::TrashItem { item_id: item.clone() },
+            Op::RestoreItem { item_id: item.clone() },
+            Op::SetText { item_id: item.clone(), text: Some("edited".into()), base_rev: 0 },
+            Op::AddAttachment { item_id: item.clone(), attachment: crate::ops::NewAttachment { id: "a".into(), filename: "a.txt".into(), mime_type: "text/plain".into(), size_bytes: 1 } },
+            Op::RemoveAttachment { item_id: item.clone(), attachment_id: "a".into() },
+            Op::MoveItem { item_id: item.clone(), topic_id: None, tunnel: false },
+            Op::RenameTopic { topic_id: old.id.clone(), name: "Renamed".into() },
+        ] {
+            ops::queue(&conn, op, 40).unwrap();
+            assert_eq!(activity(&old.id), 30);
+            assert_eq!(list(&conn).unwrap()[0].id, old.id);
+        }
+        ops::queue(&conn, Op::MoveItem { item_id: item.clone(), topic_id: Some(new.id.clone()), tunnel: false }, 50).unwrap();
+        assert_eq!((activity(&old.id), activity(&new.id)), (30, 50));
+        assert_eq!(list(&conn).unwrap()[0].id, new.id);
+        ops::queue(&conn, Op::MoveItem { item_id: item, topic_id: Some(new.id.clone()), tunnel: false }, 45).unwrap();
+        assert_eq!(activity(&new.id), 50);
+        picker_topic(&conn, "New", 99).unwrap();
+        assert_eq!(activity(&new.id), 50);
     }
 
     #[test]
     fn create_queues_the_topic_with_a_trimmed_name() {
         let (_d, conn) = fresh();
         let t = create(&conn, "  Mosaic \n", 5).unwrap();
-        assert_eq!((t.name.as_str(), t.archived, t.item_count), ("Mosaic", false, 0));
+        assert_eq!((t.name.as_str(), t.item_count), ("Mosaic", 0));
         assert!(uuid::Uuid::parse_str(&t.id).is_ok());
         assert!(list(&conn).unwrap().contains(&t));
         let op = &outbox(&conn)[0];
@@ -224,7 +250,7 @@ mod tests {
     fn picker_topic_creates_a_topic_when_nothing_matches() {
         let (_d, conn) = fresh();
         let t = picker_topic(&conn, "  Mosaic \n", 5).unwrap();
-        assert_eq!((t.name.as_str(), t.archived, t.item_count), ("Mosaic", false, 0));
+        assert_eq!((t.name.as_str(), t.item_count), ("Mosaic", 0));
         assert!(list(&conn).unwrap().contains(&t));
         let ops = outbox(&conn);
         assert_eq!(ops.len(), 1);
@@ -237,16 +263,16 @@ mod tests {
         conn.execute("INSERT INTO items (id, topic_id, text, capture_time) VALUES ('1', 't', 'x', 1)", []).unwrap();
         for name in ["gym", " GYM ", "Gym"] {
             let t = picker_topic(&conn, name, 5).unwrap();
-            assert_eq!((t.id.as_str(), t.name.as_str(), t.archived, t.item_count), ("t", "Gym", false, 1));
+            assert_eq!((t.id.as_str(), t.name.as_str(), t.item_count), ("t", "Gym", 1));
         }
         assert_eq!(picker_topic(&conn, "ÉCOLE", 5).unwrap().id, "e");
         assert!(outbox(&conn).is_empty());
     }
 
     #[test]
-    fn picker_topic_refuses_an_archived_topics_name_and_bad_names_and_writes_nothing() {
+    fn picker_topic_refuses_bad_names_and_reuses_existing_topics() {
         let (_d, conn) = fresh();
-        assert_eq!(picker_topic(&conn, "old", 5).unwrap_err(), "An archived Topic has that name");
+        assert_eq!(picker_topic(&conn, "old", 5).unwrap().id, "a");
         for name in ["", "   ", "a\0b", "x".repeat(MAX_TOPIC_NAME_BYTES + 1).as_str()] {
             assert!(picker_topic(&conn, name, 5).is_err(), "accepted {name:.20?}");
         }
@@ -283,18 +309,7 @@ mod tests {
         rename(&conn, "b", "Books", 6).unwrap();
         assert_eq!(list(&conn).unwrap()[0].name, "Books");
         assert_eq!(outbox(&conn).len(), 1);
-        rename(&conn, "a", "Older", 7).unwrap(); // archived Topics can be renamed
-    }
-
-    #[test]
-    fn archive_and_unarchive() {
-        let (_d, conn) = fresh();
-        set_archived(&conn, "t", true, 5).unwrap();
-        assert!(list(&conn).unwrap().iter().find(|t| t.id == "t").unwrap().archived);
-        set_archived(&conn, "t", false, 6).unwrap();
-        assert!(!list(&conn).unwrap().iter().find(|t| t.id == "t").unwrap().archived);
-        let types: Vec<_> = outbox(&conn).iter().map(|o| o["type"].as_str().unwrap().to_string()).collect();
-        assert_eq!(types, ["ArchiveTopic", "UnarchiveTopic"]);
+        rename(&conn, "a", "Older", 7).unwrap();
     }
 
     #[test]
@@ -302,17 +317,16 @@ mod tests {
         let (_d, conn) = fresh();
         for id in ["d", "nope"] {
             assert_eq!(rename(&conn, id, "New", 5).unwrap_err(), "That Topic no longer exists");
-            assert!(set_archived(&conn, id, true, 5).is_err());
             assert!(delete(&conn, id, &Keep::All, 5).is_err());
         }
         assert!(outbox(&conn).is_empty());
     }
 
     #[test]
-    fn require_open_refuses_archived_deleted_and_unknown_topics() {
+    fn require_open_accepts_live_and_refuses_deleted_and_unknown_topics() {
         let (_d, conn) = fresh();
         require_open(&conn, "t").unwrap();
-        assert_eq!(require_open(&conn, "a").unwrap_err(), "That Topic is archived");
+        require_open(&conn, "a").unwrap();
         assert_eq!(require_open(&conn, "d").unwrap_err(), "That Topic no longer exists");
         assert_eq!(require_open(&conn, "nope").unwrap_err(), "That Topic no longer exists");
     }

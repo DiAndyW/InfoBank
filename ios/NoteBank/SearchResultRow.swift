@@ -6,7 +6,7 @@ struct SearchResultRow: View {
     let onOpen: () -> Void
     @Environment(\.palette) private var palette
 
-    private var place: String { (result.item.placeName ?? "") + (result.topicArchived ? " · archived" : "") }
+    private var place: String { result.item.placeName ?? "" }
 
     private var time: String {
         let date = result.item.date
