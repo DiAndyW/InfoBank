@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_drafts.sql"),
     include_str!("../migrations/0010_remove_archive.sql"),
     include_str!("../migrations/0011_topic_activity.sql"),
+    include_str!("../migrations/0012_repull_topic_activity.sql"),
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -60,6 +61,21 @@ mod tests {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
         assert_eq!(rows, [("empty".into(), 0), ("mixed".into(), 30), ("trash".into(), 20)]);
         assert!(conn.execute("UPDATE topics SET activity_at = NULL", []).is_err());
+    }
+
+    #[test]
+    fn repull_activity_migration_resets_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebank.db");
+        let conn = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(11) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 11).unwrap();
+        conn.execute("INSERT INTO device (id, device_id, pull_cursor) VALUES (1, 'device', 42)", []).unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        assert_eq!(conn.query_row("SELECT pull_cursor FROM device", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
 
     #[test]

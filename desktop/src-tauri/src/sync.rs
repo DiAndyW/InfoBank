@@ -73,7 +73,7 @@ struct PulledTopic {
     id: String,
     name: String,
     deleted_at: Option<DateTime<Utc>>,
-    activity_at: Option<DateTime<Utc>>,
+    activity_at: DateTime<Utc>,
 }
 
 fn micros(t: Option<DateTime<Utc>>) -> Option<i64> {
@@ -87,11 +87,11 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
     tx.execute("UPDATE settings SET trash_after_copy = ?1 WHERE id = 1", [page.settings.trash_after_copy])?;
     for t in &page.topics {
         tx.execute(
-            "INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?1, ?2, ?3, coalesce(?4, 0))
+            "INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name, deleted_at = excluded.deleted_at,
-                activity_at = coalesce(?4, topics.activity_at)",
-            (&t.id, &t.name, micros(t.deleted_at), micros(t.activity_at)),
+                activity_at = excluded.activity_at",
+            (&t.id, &t.name, micros(t.deleted_at), t.activity_at.timestamp_micros()),
         )?;
     }
     for it in &page.items {
@@ -120,12 +120,6 @@ pub fn apply_pull(conn: &Connection, page: &Page) -> rusqlite::Result<bool> {
                 (&a.id, &it.id, &a.filename, &a.mime_type, a.size_bytes, a.uploaded, a.has_thumbnail),
             )?;
         }
-    }
-    for it in &page.items {
-        tx.execute(
-            "UPDATE topics SET activity_at = max(activity_at, ?2) WHERE id = ?1",
-            (&it.topic_id, it.capture_time.timestamp_micros()),
-        )?;
     }
     for id in &page.tombstones {
         tx.execute("DELETE FROM items WHERE id = ?1", [id])?;
@@ -569,37 +563,36 @@ mod tests {
     }
 
     #[test]
-    fn pull_activity_is_optional_preserves_or_overwrites_and_raises_from_items() {
+    fn pull_activity_uses_authoritative_server_values() {
         let (_d, conn) = fresh();
         conn.execute("INSERT INTO topics (id, name, activity_at) VALUES ('t', 'Topic', 90)", []).unwrap();
         let activity = || -> i64 { conn.query_row("SELECT activity_at FROM topics WHERE id = 't'", [], |r| r.get(0)).unwrap() };
         let rows = |topics, items| page(serde_json::json!({"topics": topics, "items": items, "tombstones": [], "cursor": 1, "has_more": false, "settings": {"trash_after_copy": null}}));
-        apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed"}, {"id":"new", "name":"New"}]), serde_json::json!([]))).unwrap();
-        assert_eq!(activity(), 90);
-        assert_eq!(conn.query_row("SELECT activity_at FROM topics WHERE id = 'new'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        apply_pull(&conn, &rows(serde_json::json!([{"id":"new", "name":"New", "activity_at":"1970-01-01T00:00:00.000040Z"}]), serde_json::json!([]))).unwrap();
+        assert_eq!(conn.query_row("SELECT activity_at FROM topics WHERE id = 'new'", [], |r| r.get::<_, i64>(0)).unwrap(), 40);
         apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed", "activity_at":"1970-01-01T01:00:00.000020+01:00"}]), serde_json::json!([]))).unwrap();
         assert_eq!(activity(), 20);
-        let mut it = item("i", "hello", vec![]);
-        it["topic_id"] = serde_json::json!("t");
-        apply_pull(&conn, &rows(serde_json::json!([]), serde_json::json!([it]))).unwrap();
-        assert_eq!(activity(), 1_760_000_000_123_456);
         apply_pull(&conn, &rows(serde_json::json!([{"id":"t", "name":"Renamed", "activity_at":"1970-01-01T00:00:00.000010Z"}]), serde_json::json!([]))).unwrap();
         assert_eq!(activity(), 10);
     }
 
     #[test]
-    fn old_server_pulled_items_raise_activity_without_lowering_it() {
+    fn pulled_items_leave_topic_activity_unchanged() {
         let (_d, conn) = fresh();
         conn.execute("INSERT INTO topics (id, name, activity_at) VALUES ('t', 'Topic', 10)", []).unwrap();
-        for (time, expected) in [("1970-01-01T00:00:00.000030Z", 30), ("1970-01-01T00:00:00.000020Z", 30)] {
-            let mut it = item("i", "hello", vec![]);
-            it["topic_id"] = serde_json::json!("t");
-            it["capture_time"] = serde_json::json!(time);
-            let p = page(serde_json::json!({"topics":[], "items":[it], "tombstones":[], "cursor":1, "has_more":false, "settings":{"trash_after_copy":null}}));
-            apply_pull(&conn, &p).unwrap();
-            let at: i64 = conn.query_row("SELECT activity_at FROM topics WHERE id = 't'", [], |r| r.get(0)).unwrap();
-            assert_eq!(at, expected);
-        }
+        let mut it = item("i", "hello", vec![]);
+        it["topic_id"] = serde_json::json!("t");
+        it["capture_time"] = serde_json::json!("1970-01-01T00:00:00.000030Z");
+        let p = page(serde_json::json!({"topics":[], "items":[it], "tombstones":[], "cursor":1, "has_more":false, "settings":{"trash_after_copy":null}}));
+        apply_pull(&conn, &p).unwrap();
+        let at: i64 = conn.query_row("SELECT activity_at FROM topics WHERE id = 't'", [], |r| r.get(0)).unwrap();
+        assert_eq!(at, 10);
+    }
+
+    #[test]
+    fn pull_topic_requires_activity_at() {
+        let json = serde_json::json!({"topics":[{"id":"t", "name":"Topic"}], "items":[], "tombstones":[], "cursor":1, "has_more":false, "settings":{"trash_after_copy":null}});
+        assert!(serde_json::from_value::<Page>(json).is_err());
     }
 
     #[test]
@@ -688,7 +681,7 @@ mod tests {
         let (_d, conn) = fresh();
         let p = page(serde_json::json!({
             "items": [item("i", "hello", vec![attachment("a")])],
-            "topics": [{"id": "t", "name": "Mosaic", "deleted_at": null}],
+            "topics": [{"id": "t", "name": "Mosaic", "activity_at": "1970-01-01T00:00:00Z", "deleted_at": null}],
             "tombstones": [], "cursor": 7, "settings": {"trash_after_copy":null}, "has_more": false,
         }));
         assert!(apply_pull(&conn, &p).unwrap());
@@ -757,8 +750,8 @@ mod tests {
             filed["topic_id"] = serde_json::json!("d");
             page(serde_json::json!({
                 "items": [item("i", "x", vec![]), filed],
-                "topics": [{"id": "t", "name": "Gym", "deleted_at": null},
-                           {"id": "d", "name": "Old", "deleted_at": null}],
+                "topics": [{"id": "t", "name": "Gym", "activity_at": "1970-01-01T00:00:00Z", "deleted_at": null},
+                           {"id": "d", "name": "Old", "activity_at": "1970-01-01T00:00:00Z", "deleted_at": null}],
                 "tombstones": [], "cursor": cursor, "settings": {"trash_after_copy":null}, "has_more": false,
             }))
         };

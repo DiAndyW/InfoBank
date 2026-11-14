@@ -82,17 +82,36 @@ struct TopicActivityTests {
         _ = try store.applyPull(page, serverURL: "http://127.0.0.1:9")
     }
 
-    @Test func pullCompatibilityAndAuthoritativeOverwrite() throws {
+    @Test func pullAuthoritativeOverwriteAndItemsLeaveActivityUnchanged() throws {
         let store = try tempStore().store
-        let id = try store.createTopic(name: "Local", nowUs: 300)
+        let id = try store.createTopic(name: "Local", nowUs: 90)
         try store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
-        try pull(store, topics: [["id": id, "name": "Old Server"], ["id": "empty", "name": "Empty"]])
-        #expect(try activity(store, id) == 300)
-        #expect(try activity(store, "empty") == 0)
-        try pull(store, topics: [["id": id, "name": "New Server", "activity_at": Time.rfc3339(100)]])
-        #expect(try activity(store, id) == 100)
+        try pull(store, topics: [
+            ["id": id, "name": "Server", "activity_at": "1970-01-01T01:00:00.000020+01:00"],
+            ["id": "new", "name": "New", "activity_at": Time.rfc3339(40)]
+        ])
+        #expect(try activity(store, id) == 20)
+        #expect(try activity(store, "new") == 40)
+        try pull(store, topics: [["id": id, "name": "Server", "activity_at": Time.rfc3339(10)]])
+        #expect(try activity(store, id) == 10)
         try pull(store, topics: [], items: [["id": "remote", "topic_id": id, "text": "remote", "capture_time": Time.rfc3339(200), "text_rev": 0, "tunnel": false, "attachments": [], "deleted_at": Time.rfc3339(250)]])
-        #expect(try activity(store, id) == 200)
+        #expect(try activity(store, id) == 10)
+    }
+
+    @Test func pullTopicRequiresActivityAt() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "topics": [["id": "t", "name": "Topic"]], "items": [], "settings": [:],
+            "tombstones": [], "cursor": 1, "has_more": false
+        ])
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(PullPage.self, from: data) }
+    }
+
+    @Test func repullActivityMigrationResetsCursor() throws {
+        let pool = try DatabaseQueue()
+        try DatabaseMigrator.noteBank.migrate(pool, upTo: "v10")
+        try pool.write { try $0.execute(sql: "INSERT INTO device (id, device_id, pull_cursor) VALUES (1, 'device', 42)") }
+        try DatabaseMigrator.noteBank.migrate(pool)
+        #expect(try pool.read { try Int64.fetchOne($0, sql: "SELECT pull_cursor FROM device") } == 0)
     }
 
     @Test func pendingCreateCaptureAndMoveReRaiseAfterPull() throws {

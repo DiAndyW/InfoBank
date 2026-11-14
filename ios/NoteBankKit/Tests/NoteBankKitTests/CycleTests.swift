@@ -395,7 +395,7 @@ struct FakeServerCycleTests {
         let a = try Device(url: "http://127.0.0.1:9", secret: "secret")
         let gym = newID()
         let pullFails = PullSwitch()
-        let deleted = #"{"id":"\#(gym)","name":"Gym","deleted_at":"2025-10-09T08:53:20Z"}"#
+        let deleted = #"{"id":"\#(gym)","name":"Gym","activity_at":"1970-01-01T00:00:00Z","deleted_at":"2025-10-09T08:53:20Z"}"#
         let fake = try await FakeServer { request in
             if request.path == "/sync/push" { return Self.answerEveryOp(request, status: "changed", reason: "sent_to_inbox") }
             return pullFails.on.withLock { $0 }

@@ -48,7 +48,7 @@ struct PullPage: Decodable {
     struct Topic: Decodable {
         let id: String
         let name: String
-        let activityAt: Instant?
+        let activityAt: Instant
         let deletedAt: Instant?
 
         enum CodingKeys: String, CodingKey {
@@ -88,12 +88,12 @@ extension Store {
             for topic in page.topics {
                 try db.execute(
                     sql: """
-                        INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?, ?, ?, coalesce(?, 0))
+                        INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?, ?, ?, ?)
                         ON CONFLICT (id) DO UPDATE SET
                             name = excluded.name, deleted_at = excluded.deleted_at,
-                            activity_at = coalesce(?, topics.activity_at)
+                            activity_at = excluded.activity_at
                         """,
-                    arguments: [topic.id, topic.name, topic.deletedAt?.us, topic.activityAt?.us, topic.activityAt?.us])
+                    arguments: [topic.id, topic.name, topic.deletedAt?.us, topic.activityAt.us])
             }
             for item in page.items {
                 try db.execute(
@@ -126,9 +126,6 @@ extension Store {
                             """,
                         arguments: [a.id, item.id, a.filename, a.mimeType, a.sizeBytes, a.uploaded, a.hasThumbnail])
                 }
-            }
-            for item in page.items {
-                try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [item.captureTime.us, item.topicID])
             }
             for row in try Row.fetchAll(db, sql: "SELECT op FROM outbox ORDER BY seq") {
                 let op = try JSONSerialization.jsonObject(with: Data((row["op"] as String).utf8)) as! [String: Any]
