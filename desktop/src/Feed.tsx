@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, type PointerEve
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { listDrafts, type Draft, doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, unarchiveTopic, type FeedAttachment, type FeedItem, type Topic, type View, type Target } from "./api";
+import { listDrafts, type Draft, doubleClickIntervalMs, discardItem, itemTarget, listItems, setTrashAfterCopy, trashAfterCopy, resolveConflict, restoreItem, trashItem, type FeedAttachment, type FeedItem, type Topic, type View, type Target } from "./api";
 import ImageViewer from "./ImageViewer";
 import { Attachments, viewable } from "./attachments";
 import { copyWholeItem } from "./api";
@@ -89,7 +89,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, []);
-  const listedHomeTopic = topics.find((t) => t.id === homeTopic && !t.archived);
+  const listedHomeTopic = topics.find((t) => t.id === homeTopic);
   const homeChosen = listedHomeTopic ?? (homeCreated?.id === homeTopic ? homeCreated : undefined);
   useEffect(() => {
     setHomeCreated(null);
@@ -130,11 +130,11 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
   const showLoadingOlder = useShownAfterDelay(loadingOlder);
   const current = view.kind === "topic" ? topics.find((t) => t.id === view.id) : undefined;
   const trash = view.kind === "trash";
-  const noComposer = !home && (trash || current?.archived === true);
+  const noComposer = !home && trash;
   const targets: { id: string; name: string; target: Target }[] = [
     { id: "inbox", name: "Inbox", target: { kind: "inbox" } },
     { id: "tunnel", name: "Tunnel", target: { kind: "tunnel" } },
-    ...topics.filter((t) => !t.archived).map((t) => ({ id: t.id, name: t.name, target: { kind: "topic" as const, id: t.id } })),
+    ...topics.map((t) => ({ id: t.id, name: t.name, target: { kind: "topic" as const, id: t.id } })),
   ];
   const [copied, setCopied] = useState<{ id: string } | null>(null);
   const [asking, setAsking] = useState<FeedItem | null>(null);
@@ -632,18 +632,8 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
       )}
       <div className="nb-notice-slot">{!covered && notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
       {selection.selecting && <SelectionBar selection={selection} trash={trash} tunnel={view.kind === "tunnel"} trashAfterCopy={copyPreference} />}
-      {current?.archived && (
-        <div className="nb-archived-bar">
-          <Icon name="archive" />
-          <span>"{current.name}" is archived.</span>
-          <button className="nb-btn nb-btn-secondary" onClick={() => unarchiveTopic(current.id).catch((e) => onError("Couldn't unarchive the Topic", e))}>
-            Unarchive
-          </button>
-        </div>
-      )}
-      {/* Keep the per-place drafts alive across navigation. */}
       {trash && (
-        <div className="nb-archived-bar">
+        <div className="nb-trash-bar">
           <Icon name="trash" />
           <span>Items in Trash are deleted for good after 30 days.</span>
         </div>
@@ -654,7 +644,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
           onNotice={onNotice}
           drafts={{ place: home ? "home" : view.kind === "topic" ? `topic:${view.id}` : view.kind, initial: drafts, homeTopicId: homeChosen?.id ?? null, restoreHomeTopic: (id) => { if (!homeTopicChanged.current) setHomeTopic(id); } }}
           acceptsDrops={!noComposer && !covered && !viewing}
-          picker={home ? <CaptureDestination topics={[...topics.filter((t) => !t.archived), ...(homeCreated && !topics.some((t) => t.id === homeCreated.id) ? [homeCreated] : [])]} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={(id, created) => { homeTopicChanged.current = true; if (created) setHomeCreated(created); setHomeTopic(id); }} /> : undefined}
+          picker={home ? <CaptureDestination topics={[...topics, ...(homeCreated && !topics.some((t) => t.id === homeCreated.id) ? [homeCreated] : [])]} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={(id, created) => { homeTopicChanged.current = true; if (created) setHomeCreated(created); setHomeTopic(id); }} /> : undefined}
           target={home ? homeTunnel ? { kind: "tunnel" } : homeChosen ? { kind: "topic", id: homeChosen.id } : { kind: "inbox" } : view.kind === "topic" ? { kind: "topic", id: view.id } : view.kind === "tunnel" ? { kind: "tunnel" } : { kind: "inbox" }}
           placeholder={home ? homeTunnel ? "Send to your other devices…" : "Capture something…" : view.kind === "tunnel" ? "Send to your other devices…" : `Write to ${current ? current.name : "Inbox"}…`}
           onCaptured={() => {

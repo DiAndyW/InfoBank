@@ -48,12 +48,12 @@ struct PullPage: Decodable {
     struct Topic: Decodable {
         let id: String
         let name: String
-        let archivedAt: Instant?
+        let activityAt: Instant?
         let deletedAt: Instant?
 
         enum CodingKeys: String, CodingKey {
             case id, name
-            case archivedAt = "archived_at", deletedAt = "deleted_at"
+            case activityAt = "activity_at", deletedAt = "deleted_at"
         }
     }
 
@@ -88,11 +88,12 @@ extension Store {
             for topic in page.topics {
                 try db.execute(
                     sql: """
-                        INSERT INTO topics (id, name, archived_at, deleted_at) VALUES (?, ?, ?, ?)
+                        INSERT INTO topics (id, name, deleted_at, activity_at) VALUES (?, ?, ?, coalesce(?, 0))
                         ON CONFLICT (id) DO UPDATE SET
-                            name = excluded.name, archived_at = excluded.archived_at, deleted_at = excluded.deleted_at
+                            name = excluded.name, deleted_at = excluded.deleted_at,
+                            activity_at = coalesce(?, topics.activity_at)
                         """,
-                    arguments: [topic.id, topic.name, topic.archivedAt?.us, topic.deletedAt?.us])
+                    arguments: [topic.id, topic.name, topic.deletedAt?.us, topic.activityAt?.us, topic.activityAt?.us])
             }
             for item in page.items {
                 try db.execute(
@@ -126,20 +127,24 @@ extension Store {
                         arguments: [a.id, item.id, a.filename, a.mimeType, a.sizeBytes, a.uploaded, a.hasThumbnail])
                 }
             }
+            for item in page.items {
+                try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [item.captureTime.us, item.topicID])
+            }
             for row in try Row.fetchAll(db, sql: "SELECT op FROM outbox ORDER BY seq") {
                 let op = try JSONSerialization.jsonObject(with: Data((row["op"] as String).utf8)) as! [String: Any]
                 let topicID = op["topic_id"] as? String
                 let stamp = (op["at"] as? String).flatMap { Time.micros(rfc3339: $0) } ?? 0
                 switch op["type"] as? String {
                 case "CreateTopic":
-                    try db.execute(sql: "INSERT OR IGNORE INTO topics(id,name) VALUES (?,?)", arguments: [topicID,op["name"] as? String])
+                    try db.execute(sql: "INSERT INTO topics(id,name,activity_at) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET activity_at = max(topics.activity_at, excluded.activity_at)", arguments: [topicID,op["name"] as? String,stamp])
                 case "RenameTopic":
                     try db.execute(sql: "UPDATE topics SET name = ? WHERE id = ?", arguments: [op["name"] as? String,topicID])
-                case "ArchiveTopic", "UnarchiveTopic":
-                    try db.execute(sql: "UPDATE topics SET archived_at = ? WHERE id = ?", arguments: [op["type"] as? String == "ArchiveTopic" ? stamp : nil,topicID])
                 case "DeleteTopic":
                     if let topicID { try applyTopicDeletion(db, id: topicID, trash: op["trash"] as? [String] ?? [], nowUs: stamp) }
                 default: break
+                }
+                if ["CaptureItem", "MoveItem"].contains(op["type"] as? String ?? "") {
+                    try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [stamp, topicID])
                 }
                 guard let id = op["item_id"] as? String else { continue }
                 switch op["type"] as? String {

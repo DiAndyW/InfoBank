@@ -42,7 +42,7 @@ extension Store {
         if destination == .tunnel { fields["tunnel"] = true }
         try pool.write { db in
             if let topicID {
-                if try Bool.fetchOne(db, sql: "SELECT archived_at IS NOT NULL OR deleted_at IS NOT NULL FROM topics WHERE id = ?", arguments: [topicID]) == true { throw ItemActionError.topicUnavailable }
+                if try Bool.fetchOne(db, sql: "SELECT deleted_at IS NOT NULL FROM topics WHERE id = ?", arguments: [topicID]) == true { throw ItemActionError.topicUnavailable }
             }
             guard Set(attachmentIDs).count == attachmentIDs.count else { throw AttachmentError("Choose each attachment once") }
             let attachments = try attachmentIDs.map { id -> [String: Any] in
@@ -55,6 +55,7 @@ extension Store {
             try db.execute(
                 sql: "INSERT INTO items (id, topic_id, text, capture_time, in_tunnel) VALUES (?, ?, ?, ?, ?)",
                 arguments: [itemID, topicID, text.isEmpty ? nil : text, nowUs, destination == .tunnel])
+            try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [nowUs, topicID])
             for attachment in attachments {
                 try db.execute(sql: "INSERT INTO attachments(id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES (?, ?, ?, ?, ?, 0, 0)", arguments: [attachment["id"] as! String, itemID, attachment["filename"] as! String, attachment["mime_type"] as! String, attachment["size_bytes"] as! Int64])
                 try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [attachment["id"] as! String])

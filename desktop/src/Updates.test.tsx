@@ -17,7 +17,7 @@ function backend(status: Status, configured = true, opts: { save?: Promise<void>
     if (cmd === "update_status") return { current_version: "0.1.0", status };
     if (cmd === "sync_status") return "synced";
     if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
-    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", archived: false, item_count: 0 }];
+    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", item_count: 0 }];
     if (["list_items", "list_drafts"].includes(cmd)) return [];
     if (cmd === "save_draft") { await (typeof opts.save === "function" ? opts.save((args as { text: string }).text) : opts.save); localStorage.setItem("saved-draft", JSON.stringify(args)); }
     if (cmd === "restart_to_update") { await opts.install; if (opts.restartError) throw opts.restartError; }

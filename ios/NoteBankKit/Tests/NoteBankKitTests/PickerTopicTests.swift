@@ -40,27 +40,17 @@ struct PickerTopicTests {
         }
     }
 
-    @Test func refusesAnArchivedTopicsNameAndWritesNothing() throws {
-        let store = try tempStore().store
-        let archived = try store.createTopic(name: "Old", nowUs: 1)
-        try store.setTopicArchived(archived, archived: true, nowUs: 2)
-        let error = #expect(throws: AttachmentError.self) { try store.pickerTopic(named: "old", nowUs: 3) }
-        #expect(error?.message == "An archived Topic has that name. Unarchive it in Places or pick another name.")
-        #expect(try outboxTypes(store) == ["CreateTopic", "ArchiveTopic"])
-        #expect(try store.places().topics.isEmpty)
-    }
-
     @Test func problemMatchesWhatPickerTopicWouldDoAndWritesNothing() throws {
         let store = try tempStore().store
-        let archived = try store.createTopic(name: "Old", nowUs: 1)
-        try store.setTopicArchived(archived, archived: true, nowUs: 2)
+        let deleted = try store.createTopic(name: "Old", nowUs: 1)
+        try store.deleteTopic(deleted, keeping: .all, nowUs: 2)
         _ = try store.createTopic(name: "Mosaic", nowUs: 3)
-        #expect(try store.pickerTopicProblem(named: " oLD ") == "An archived Topic has that name. Unarchive it in Places or pick another name.")
+        #expect(try store.pickerTopicProblem(named: " oLD ") == nil)
         #expect(try store.pickerTopicProblem(named: "mosaic") == nil)
         #expect(try store.pickerTopicProblem(named: "Fresh") == nil)
         #expect(try store.pickerTopicProblem(named: "   ") != nil)
         #expect(try store.pickerTopicProblem(named: String(repeating: "x", count: 201)) != nil)
-        #expect(try outboxTypes(store) == ["CreateTopic", "ArchiveTopic", "CreateTopic"])
+        #expect(try outboxTypes(store) == ["CreateTopic", "DeleteTopic", "CreateTopic"])
     }
 
     @Test func invalidNamesAreRefused() throws {

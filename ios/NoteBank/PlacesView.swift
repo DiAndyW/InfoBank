@@ -4,15 +4,12 @@ import SwiftUI
 struct PlacesView: View {
     let store: Store
     let wake: () -> Void
-    let archived: [TopicPlace]
     @State private var scrollPosition = ScrollPosition(edge: .top)
     @State private var scrollY: CGFloat = 0
     @State private var topicsY: CGFloat = 0
     @State private var scrollHeight: CGFloat = 0
     @State private var topicHeaderHeight: CGFloat = 0
-    @State private var showingArchived = false
-    @State private var showAllOpen = false
-    @State private var showAllArchived = false
+    @State private var showAllTopics = false
     @State private var retainedTopicID: String?
     @State private var naming = false
     @State private var renameID: String?
@@ -21,21 +18,13 @@ struct PlacesView: View {
     @State private var deleting: TopicPlace?
     @State private var deletingEmpty: TopicPlace?
 
-    private func keepingTabsPinned(_ change: () -> Void) {
-        if scrollY > topicsY { scrollPosition.scrollTo(y: topicsY) }
-        withTransaction(\.disablesAnimations, true, change)
-    }
-
     private func run(_ action: () throws -> Void) {
         do { try action(); wake() }
         catch { self.error = errorMessage(error) }
     }
 
-    @ViewBuilder private func topicMenu(_ topic: TopicPlace, archived: Bool) -> some View {
+    @ViewBuilder private func topicMenu(_ topic: TopicPlace) -> some View {
         Button("Rename", systemImage: "pencil") { renameID = topic.id; name = topic.name; naming = true }
-        Button(archived ? "Unarchive" : "Archive", systemImage: "archivebox") {
-            run { try store.setTopicArchived(topic.id, archived: !archived, nowUs: Time.nowUs()) }
-        }
         Button("Delete Topic…", systemImage: "trash", role: .destructive) {
             if topic.count == 0 { deletingEmpty = topic } else { deleting = topic }
         }
@@ -49,6 +38,7 @@ struct PlacesView: View {
     let onSearch: () -> Void
     let openSettings: () -> Void
     @Environment(\.palette) private var palette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func row(_ place: FeedPlace, _ name: String, _ count: Int?) -> some View {
         NavigationLink(value: Route.place(place)) {
@@ -58,6 +48,7 @@ struct PlacesView: View {
                 }
                 Text(name).font(.plex(.sans, 17)).foregroundStyle(palette.ink).frame(maxWidth: .infinity, alignment: .leading)
                 Text(count.map { String($0) } ?? "").font(.plex(.mono, 13, relativeTo: .footnote)).foregroundStyle(palette.inkMuted)
+                    .contentTransition(.identity)
                 Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.lineStrong)
             }
             .padding(.leading, 16)
@@ -79,50 +70,26 @@ struct PlacesView: View {
     }
 
     private var visibleTopics: [TopicPlace] {
-        TopicPlace.browsing(showingArchived ? archived : places.topics, archived: showingArchived,
-                            expanded: showingArchived ? showAllArchived : showAllOpen, retaining: renameID ?? retainedTopicID)
+        TopicPlace.browsing(places.topics, expanded: showAllTopics, retaining: renameID ?? retainedTopicID)
     }
 
     private var topicHeader: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Topics").textCase(.uppercase).kerning(0.96).accessibilityAddTraits(.isHeader)
-                    .font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
-                Spacer()
-                Button { keepingTabsPinned { showingArchived = false }; renameID = nil; name = ""; naming = true } label: {
-                    Image(systemName: "plus").frame(width: 44, height: 44)
-                }.accessibilityLabel("New Topic")
-            }
-            HStack(spacing: 24) {
-                ForEach([false, true], id: \.self) { archivedView in
-                    Button { keepingTabsPinned { showingArchived = archivedView } } label: {
-                        Text(archivedView ? "Archived" : "Open")
-                            .font(.plex(.sansSemibold, 15))
-                            .hidden()
-                            .overlay {
-                                Text(archivedView ? "Archived" : "Open")
-                                    .font(.plex(showingArchived == archivedView ? .sansSemibold : .sans, 15))
-                                    .foregroundStyle(showingArchived == archivedView ? palette.accent : palette.inkMuted)
-                            }
-                            .frame(minHeight: 44)
-                            .overlay(alignment: .bottom) {
-                                if showingArchived == archivedView { Rectangle().fill(palette.accent).frame(height: 2) }
-                            }
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(TabButtonStyle())
-                    .accessibilityAddTraits(showingArchived == archivedView ? .isSelected : [])
-                }
-                Spacer(minLength: 0)
-                if (showingArchived ? archived : places.topics).count > 10 {
-                    Button {
-                        keepingTabsPinned { if showingArchived { showAllArchived.toggle() } else { showAllOpen.toggle() } }
-                    } label: {
-                        Text((showingArchived ? showAllArchived : showAllOpen) ? "Show less" : "Show all")
-                            .underline().font(.plex(.sans, 13)).frame(minHeight: 44)
-                    }
+        HStack {
+            Text("Topics").textCase(.uppercase).kerning(0.96).accessibilityAddTraits(.isHeader)
+                .font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
+            Spacer()
+            if places.topics.count > 10 {
+                Button {
+                    if scrollY > topicsY { scrollPosition.scrollTo(y: topicsY) }
+                    withTransaction(\.disablesAnimations, true) { showAllTopics.toggle() }
+                } label: {
+                    Text(showAllTopics ? "Show less" : "Show all")
+                        .underline().font(.plex(.sans, 13)).frame(minHeight: 44)
                 }
             }
+            Button { renameID = nil; name = ""; naming = true } label: {
+                Image(systemName: "plus").frame(width: 44, height: 44)
+            }.accessibilityLabel("New Topic")
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -176,20 +143,25 @@ struct PlacesView: View {
                     Section {
                         VStack(spacing: 0) {
                             VStack(spacing: 0) {
-                                ForEach(visibleTopics) { topic in
-                                    if topic.id != visibleTopics.first?.id { Divider().overlay(palette.line) }
-                                    row(.topic(topic.id), topic.name, topic.count)
-                                        .contextMenu { topicMenu(topic, archived: showingArchived) }
+                                ForEach(Array(visibleTopics.enumerated()), id: \.element.id) { index, topic in
+                                    VStack(spacing: 0) {
+                                        if index > 0 { Divider().overlay(palette.line) }
+                                        row(.topic(topic.id), topic.name, topic.count)
+                                            .contextMenu { topicMenu(topic) }
+                                    }
+                                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                                    .zIndex(Double(-index))
                                 }
                                 if visibleTopics.isEmpty {
-                                    Text(showingArchived ? "No archived Topics" : "No Topics yet")
+                                    Text("No Topics yet")
                                         .font(.plex(.sans, 14)).foregroundStyle(palette.inkMuted).padding(16)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                            }.card().clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: visibleTopics.map(\.id))
+                            .card().clipShape(RoundedRectangle(cornerRadius: 10))
                             row(.trash, "Trash", nil).card().clipShape(RoundedRectangle(cornerRadius: 10)).padding(.top, 20)
                         }
-                        // Room for the tabs to stay pinned when the other list is too short to fill the screen.
                         .frame(minHeight: max(0, scrollHeight - topicHeaderHeight), alignment: .top)
                     } header: {
                         topicHeader.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { topicHeaderHeight = $0 }
@@ -225,10 +197,6 @@ struct PlacesView: View {
         .emptyTopicDeletionAlert(topic: $deletingEmpty, store: store, notices: notices, wake: wake, onError: { error = $0 })
         .fullScreenCover(item: $deleting) { topic in TopicDeletionView(store: store, topic: topic, notices: notices, wake: wake) }
     }
-}
-
-private struct TabButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
 private struct PlaceRowButtonStyle: ButtonStyle {

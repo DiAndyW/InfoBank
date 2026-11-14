@@ -146,14 +146,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
               { label: "Anywhere", checked: place === "all", onSelect: () => setPlace("all") },
               { label: "Inbox", checked: place === "inbox", onSelect: () => setPlace("inbox") },
               { label: "Tunnel", checked: place === "tunnel", onSelect: () => setPlace("tunnel") },
-              ...topics.filter((t) => !t.archived).map((t) => ({ label: t.name, checked: place === t.id, onSelect: () => setPlace(t.id) })),
-              ...(topics.some((t) => t.archived)
-                ? [
-                    { separator: true as const },
-                    { heading: "Archived" },
-                    ...topics.filter((t) => t.archived).map((t) => ({ label: t.name, checked: place === t.id, onSelect: () => setPlace(t.id) })),
-                  ]
-                : []),
+              ...topics.map((t) => ({ label: t.name, checked: place === t.id, onSelect: () => setPlace(t.id) })),
             ]}
           />
           <Menu
@@ -205,7 +198,6 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
                       <span className="nb-item-text">{topic.name}</span>
                     </span>{" "}
                     <span className="nb-item-meta">
-                      {topic.archived && <><span className="nb-topic-chip">Archived</span>{" "}</>}
                       <span className="nb-count">{topic.item_count}</span>
                     </span>
                   </button>

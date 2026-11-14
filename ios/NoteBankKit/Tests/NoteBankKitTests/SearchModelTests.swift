@@ -115,12 +115,11 @@ struct SearchModelTests {
         #expect(model(store, place: .topic(topic)).place == .all)
     }
 
-    @Test func archivedPresetTopicStays() async throws {
+    @Test func livePresetTopicStays() async throws {
         let (store, _) = try tempStore()
         let topic = try store.createTopic(name: "Taxes", nowUs: 1)
         let search = model(store, place: .topic(topic))
         search.text = "invoice"
-        try store.setTopicArchived(topic, archived: true, nowUs: 2)
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, topic_id, text, capture_time) VALUES ('a', ?, 'invoice', 3)", arguments: [topic]) }
         #expect(await waitUntil { search.results.map(\.id) == ["a"] })
         #expect(search.place == .topic(topic))

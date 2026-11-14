@@ -34,19 +34,17 @@ extension Store {
         try pool.write { db in
             let id = UUID().uuidString.lowercased()
             let name = try checkedTopicName(db, name, excluding: id)
-            try db.execute(sql: "INSERT INTO topics(id,name) VALUES (?,?)", arguments: [id,name])
+            try db.execute(sql: "INSERT INTO topics(id,name,activity_at) VALUES (?,?,?)", arguments: [id,name,nowUs])
             try queue(db, "CreateTopic", nowUs: nowUs, ["topic_id":id,"name":name])
             return id
         }
     }
 
-    /// For Topic pickers: an open Topic with this name is reused; an archived one is refused.
     private func pickerMatch(_ db: Database, _ name: String) throws -> (name: String, openID: String?) {
         let name = try validTopicName(name)
-        let same = try Row.fetchAll(db, sql: "SELECT id, name, archived_at IS NOT NULL AS archived FROM topics WHERE deleted_at IS NULL")
+        let same = try Row.fetchAll(db, sql: "SELECT id, name FROM topics WHERE deleted_at IS NULL")
             .filter { ($0["name"] as String).lowercased() == name.lowercased() }
-        if let open = same.first(where: { !($0["archived"] as Bool) }) { return (name, open["id"]) }
-        guard same.isEmpty else { throw AttachmentError("An archived Topic has that name. Unarchive it in Places or pick another name.") }
+        if let open = same.first { return (name, open["id"]) }
         return (name, nil)
     }
 
@@ -66,7 +64,7 @@ extension Store {
             let (name, openID) = try pickerMatch(db, name)
             if let openID { return openID }
             let id = UUID().uuidString.lowercased()
-            try db.execute(sql: "INSERT INTO topics(id,name) VALUES (?,?)", arguments: [id,name])
+            try db.execute(sql: "INSERT INTO topics(id,name,activity_at) VALUES (?,?,?)", arguments: [id,name,nowUs])
             try queue(db, "CreateTopic", nowUs: nowUs, ["topic_id":id,"name":name])
             return id
         }
@@ -82,24 +80,9 @@ extension Store {
         }
     }
 
-    public func setTopicArchived(_ id: String, archived: Bool, nowUs: Int64) throws {
-        try pool.write { db in
-            guard try Bool.fetchOne(db, sql: "SELECT deleted_at IS NULL FROM topics WHERE id = ?", arguments: [id]) == true else { throw ItemActionError.topicUnavailable }
-            try db.execute(sql: "UPDATE topics SET archived_at = ? WHERE id = ?", arguments: [archived ? nowUs : nil,id])
-            try queue(db, archived ? "ArchiveTopic" : "UnarchiveTopic", nowUs: nowUs, ["topic_id":id])
-        }
-    }
-
-    public func archivedTopics() throws -> [TopicPlace] {
+    public func topic(_ id: String) throws -> (name: String, count: Int)? {
         try pool.read { db in
-            try Row.fetchAll(db, sql: "SELECT id,name,(SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE deleted_at IS NULL AND archived_at IS NOT NULL ORDER BY name COLLATE NOCASE,id")
-                .map { TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"]) }
-        }
-    }
-
-    public func topic(_ id: String) throws -> (name: String, archived: Bool, count: Int)? {
-        try pool.read { db in
-            try Row.fetchOne(db, sql: "SELECT name, archived_at IS NOT NULL AS archived, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { ($0["name"], $0["archived"], $0["count"]) }
+            try Row.fetchOne(db, sql: "SELECT name, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { ($0["name"], $0["count"]) }
         }
     }
 

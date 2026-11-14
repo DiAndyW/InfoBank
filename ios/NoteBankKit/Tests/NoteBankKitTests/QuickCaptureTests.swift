@@ -3,30 +3,20 @@ import Testing
 @testable import NoteBankKit
 
 struct QuickCaptureTests {
-    @Test func quickPlacesListEveryOpenTopicByLastUse() throws {
-        let store = try tempStore().store
-        let alpha = try store.createTopic(name: "Alpha", nowUs: 1)
-        let beta = try store.createTopic(name: "Beta", nowUs: 1)
-        _ = try store.createTopic(name: "Aardvark", nowUs: 1)
-        let gamma = try store.createTopic(name: "Gamma", nowUs: 1)
-        let omega = try store.createTopic(name: "Omega", nowUs: 1)
-        let tie1 = try store.createTopic(name: "N10", nowUs: 1)
-        let tie2 = try store.createTopic(name: "N2", nowUs: 1)
-        _ = try store.capture(text: "a", to: .topic(alpha), nowUs: 100)
-        _ = try store.capture(text: "b", to: .topic(beta), nowUs: 300)
-        _ = try store.capture(text: "g", to: .topic(gamma), nowUs: 500)
-        _ = try store.capture(text: "o", to: .topic(omega), nowUs: 600)
-        _ = try store.capture(text: "t", to: .tunnel, nowUs: 200)
-        let trashed = try store.capture(text: "a2", to: .topic(alpha), nowUs: 900)
-        try store.trash(itemID: trashed, nowUs: 901)
-        _ = try store.capture(text: "t1", to: .topic(tie1), nowUs: 400)
-        _ = try store.capture(text: "t2", to: .topic(tie2), nowUs: 400)
-        try store.setTopicArchived(gamma, archived: true, nowUs: 1000)
-        try store.deleteTopic(omega, keeping: .none, nowUs: 1001)
-
+    @Test func quickPlacesUseThePlacesRanking() throws {
+        let (store, _) = try tempStore()
+        try store.pool.write { db in
+            for name in ["b-empty", "A-empty", "old", "new", "trashed-only", "mixed"] {
+                try db.execute(sql: "INSERT INTO topics (id, name, activity_at) VALUES (?, ?, ?)", arguments: [name, name, ["b-empty": 100, "A-empty": 100, "old": 10, "new": 30, "trashed-only": 50, "mixed": 90][name]!])
+            }
+            for (id, topic, time, deleted) in [("o", "old", 10, false), ("n", "new", 30, false), ("t", "trashed-only", 50, true), ("m", "mixed", 20, false), ("mt", "mixed", 90, true)] {
+                try db.execute(sql: "INSERT INTO items (id, topic_id, text, capture_time, deleted_at) VALUES (?, ?, 'text', ?, ?)", arguments: [id, topic, time, deleted ? 1 : nil])
+            }
+        }
         let places = try store.quickPlaces()
-        #expect(places.map(\.name) == ["Inbox", "Tunnel", "N2", "N10", "Beta", "Alpha", "Aardvark"])
-        #expect(places.map(\.lastUsedUs) == [nil, 200, 400, 400, 300, 100, nil])
+        #expect(places.map(\.name) == ["Inbox", "Tunnel", "A-empty", "b-empty", "mixed", "trashed-only", "new", "old"])
+        #expect(places.map(\.lastUsedUs) == [nil, nil, 100, 100, 90, 50, 30, 10])
+        #expect(Array(places.dropFirst(2)).map(\.name) == (try store.places()).topics.map(\.name))
     }
 
     @Test func placeIDsRoundTrip() {
@@ -40,15 +30,13 @@ struct QuickCaptureTests {
         #expect(Destination(placeID: "x") == nil)
     }
 
-    @Test func quickPlaceRejectsArchivedAndDeletedTopics() throws {
+    @Test func quickPlaceRejectsDeletedAndMissingTopics() throws {
         let store = try tempStore().store
         let active = try store.createTopic(name: "Active", nowUs: 1)
-        let archived = try store.createTopic(name: "Archived", nowUs: 1)
         let deleted = try store.createTopic(name: "Deleted", nowUs: 1)
-        try store.setTopicArchived(archived, archived: true, nowUs: 2)
         try store.deleteTopic(deleted, keeping: .all, nowUs: 3)
 
-        for closed in [Destination.topic(archived), .topic(deleted), .topic("missing")] {
+        for closed in [Destination.topic(deleted), .topic("missing")] {
             #expect(try store.quickPlace(closed) == nil)
         }
         #expect(try store.quickPlace(.inbox)?.name == "Inbox")
@@ -59,15 +47,12 @@ struct QuickCaptureTests {
     @Test func placeNameCoversClosedAndMissingTopics() throws {
         let store = try tempStore().store
         let active = try store.createTopic(name: "Active", nowUs: 1)
-        let archived = try store.createTopic(name: "Archived", nowUs: 1)
         let deleted = try store.createTopic(name: "Deleted", nowUs: 1)
-        try store.setTopicArchived(archived, archived: true, nowUs: 2)
         try store.deleteTopic(deleted, keeping: .all, nowUs: 3)
 
         #expect(try store.placeName(.inbox) == "Inbox")
         #expect(try store.placeName(.tunnel) == "Tunnel")
         #expect(try store.placeName(.topic(active)) == "Active")
-        #expect(try store.placeName(.topic(archived)) == "Archived")
         #expect(try store.placeName(.topic(deleted)) == "Deleted")
         #expect(try store.placeName(.topic("missing")) == "Removed Topic")
     }

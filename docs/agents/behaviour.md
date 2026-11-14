@@ -19,7 +19,7 @@ Expectation shapes:
 
 - `notice.duration`: `duration_seconds`, a positive number. This is the single duration rule for all notices.
 - Other notices: `message` and `buttons`, with optional boolean `offered` (default true). An absent platform notice uses an `offered: false` override with a reason; inherited wording/buttons describe only the platforms that offer it. Buttons are ordered action labels (`Show` or `Undo`) followed by `close`, the dismiss icon. Message placeholders use `{name}`; batch notices use `{count}` and `{items}` so singular and plural are tested.
-- Copy places: `menu`, `row` and `batch`. Menus and batch controls are ordered arrays of `{ "id": "text", "label": "Copy Text" }`. IDs are `text`, `item` or `items`. `row` says whether activating the row copies the whole Item. `tunnel` covers a false or unanswered preference; `tunnel_trash` covers a true preference. `search` has batch actions only. Archived Topics have their own rule.
+- Copy places: `menu`, `row` and `batch`. Menus and batch controls are ordered arrays of `{ "id": "text", "label": "Copy Text" }`. IDs are `text`, `item` or `items`. `row` says whether activating the row copies the whole Item. `tunnel` covers a false or unanswered preference; `tunnel_trash` covers a true preference. `search` has batch actions only.
 - Other copy rules: `offered` and optional `label` (for example attachment Copy). `copy.without_text` checks that attachment-only Items offer no text copy.
 
 `differs.<platform>` has exactly `expect` (a partial expectation) and a non-empty `reason`. Helpers merge its fields over the base expectation; arrays replace the base array. Unknown keys and platforms fail validation.

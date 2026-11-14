@@ -14,7 +14,7 @@ struct CapturePlace: AppEntity {
 }
 
 struct CapturePlaceQuery: EntityQuery {
-    // iOS refuses a saved shortcut whose Place doesn't resolve, so a closed Topic must still come back.
+    // iOS refuses a saved shortcut whose Place doesn't resolve, so a deleted Topic must still come back.
     func entities(for identifiers: [String]) async throws -> [CapturePlace] {
         let store = try Store(at: Store.appGroupFile(), observesSuspension: false)
         var places: [CapturePlace] = []

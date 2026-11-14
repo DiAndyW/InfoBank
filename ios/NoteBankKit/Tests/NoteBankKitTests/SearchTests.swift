@@ -57,11 +57,11 @@ struct SearchTests {
 
     @Test func filtersNarrowResults() throws {
         let (store, _) = try tempStore()
-        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Taxes', NULL), ('old', 'Old', 5)") }
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name) VALUES ('t', 'Taxes'), ('old', 'Old')") }
         try put(store, "inbox", "note one", at: 10)
         try put(store, "taxes", "note two", topic: "t", at: 20, files: ["a.pdf"])
         try put(store, "edge", "note edge", at: 29)
-        try put(store, "archived", "note three", topic: "old", at: 30)
+        try put(store, "older", "note three", topic: "old", at: 30)
         try put(store, "trashed", "note four", at: 40)
         try put(store, "tunnel", "note five", at: 50)
         try store.pool.write { try $0.execute(sql: "UPDATE items SET deleted_at = 41 WHERE id = 'trashed'; UPDATE items SET in_tunnel = 1 WHERE id = 'tunnel'") }
@@ -71,16 +71,13 @@ struct SearchTests {
             change(&query)
             return try ids(store, query)
         }
-        #expect(try with { _ in } == ["tunnel", "archived", "edge", "taxes", "inbox"])
+        #expect(try with { _ in } == ["tunnel", "older", "edge", "taxes", "inbox"])
         #expect(try with { $0.place = .inbox } == ["edge", "inbox"])
         #expect(try with { $0.place = .tunnel } == ["tunnel"])
-        #expect(try with { $0.place = .topic("old") } == ["archived"])
+        #expect(try with { $0.place = .topic("old") } == ["older"])
         #expect(try with { $0.hasFiles = true } == ["taxes"])
         #expect(try with { $0.fromUs = 20; $0.toUs = 30 } == ["edge", "taxes"])
 
-        let archived = try store.search(SearchQuery(text: "three"), before: nil, limit: 10)
-        #expect(archived.map(\.topicArchived) == [true])
-        #expect(try store.search(SearchQuery(text: "two"), before: nil, limit: 10).map(\.topicArchived) == [false])
     }
 
     @Test func pagesWithTheCursor() throws {

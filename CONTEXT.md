@@ -23,6 +23,7 @@ _Avoid_: URL item, bookmark
 
 **Topic**:
 A named bucket an Item can be filed under (e.g. "Mosaic", "CS 111"). An Item has at most one Topic; the same content in two Topics is two Items.
+Topic lists show the most recently active first: a Topic's activity is when it was created, or the latest Capture or move into it. Removing Items, edits and renames never change it.
 _Avoid_: Channel, tag, folder, category
 
 **Inbox**:
@@ -32,10 +33,6 @@ _Avoid_: Uncategorised, default topic
 **Tunnel**:
 One built-in place for quick transfer between Devices. Tapping or clicking an Item copies its text and all Attachments, downloading originals first. Only a complete clipboard write can trigger the synced Trash-after-copy setting, with Undo. Destination apps choose which clipboard representations they accept. It is separate from the Inbox and Topics.
 _Avoid_: Channel, temporary Topic
-
-**Archived Topic**:
-A Topic that is hidden and closed to new Items until unarchived; its existing Items are kept and remain searchable.
-_Avoid_: Closed topic, hidden topic
 
 **Feed**:
 The chronological, Discord-style view of Items, either all of them, one Topic's, the Inbox, or the Tunnel, ordered by Capture Time.

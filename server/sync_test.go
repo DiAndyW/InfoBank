@@ -85,9 +85,9 @@ type pulledItem struct {
 }
 
 type pulledTopic struct {
+	ActivityAt time.Time  `json:"activity_at"`
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
-	ArchivedAt *time.Time `json:"archived_at"`
 	DeletedAt  *time.Time `json:"deleted_at"`
 }
 
@@ -202,7 +202,7 @@ func TestPulledTimesAreUTC(t *testing.T) {
 	itemID, topicID := uuid.NewString(), uuid.NewString()
 	e.push(phoneID,
 		op{"type": "CreateTopic", "at": e.at(0), "topic_id": topicID, "name": "Gym"},
-		op{"type": "ArchiveTopic", "at": e.at(1), "topic_id": topicID},
+		op{"type": "DeleteTopic", "at": e.at(1), "topic_id": topicID},
 		op{"type": "CaptureItem", "at": "2026-10-04T05:00:00-07:00", "item_id": itemID, "text": "x"},
 		op{"type": "TrashItem", "at": e.at(2), "item_id": itemID})
 
@@ -213,7 +213,7 @@ func TestPulledTimesAreUTC(t *testing.T) {
 	if err := json.Unmarshal(e.do("GET", "/sync/pull?cursor=0", nil).Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}
-	got := []any{page.Items[0]["capture_time"], page.Items[0]["deleted_at"], page.Items[0]["purge_at"], page.Topics[0]["archived_at"]}
+	got := []any{page.Items[0]["capture_time"], page.Items[0]["deleted_at"], page.Items[0]["purge_at"], page.Topics[0]["deleted_at"], page.Topics[0]["activity_at"]}
 	if got[0] != "2026-10-04T12:00:00Z" {
 		t.Errorf("capture_time = %v, want 2026-10-04T12:00:00Z", got[0])
 	}
@@ -415,13 +415,12 @@ func topicOf(it pulledItem) string {
 	return *it.TopicID
 }
 
-func TestCaptureIntoATopicArchivedMeanwhileLandsInInbox(t *testing.T) {
+func TestCaptureIntoATopicDeletedMeanwhileLandsInInbox(t *testing.T) {
 	e := newSyncEnv(t)
 	gym, itemID := uuid.NewString(), uuid.NewString()
 	e.push(desktopID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"})
 
-	// The phone captures into Gym offline; the desktop archives Gym before the phone syncs.
-	e.push(desktopID, op{"type": "ArchiveTopic", "at": e.at(10), "topic_id": gym})
+	e.push(desktopID, op{"type": "DeleteTopic", "at": e.at(10), "topic_id": gym})
 	res := e.push(phoneID, op{"type": "CaptureItem", "at": e.at(5), "item_id": itemID, "topic_id": gym, "text": "squat 100"})
 
 	if res[0].Status != "changed" || res[0].Reason != "sent_to_inbox" {
@@ -430,8 +429,8 @@ func TestCaptureIntoATopicArchivedMeanwhileLandsInInbox(t *testing.T) {
 	if got := topicOf(e.item(itemID)); got != "Inbox" {
 		t.Fatalf("Item is in %s, want Inbox", got)
 	}
-	if e.topic(gym).ArchivedAt == nil {
-		t.Fatalf("Gym not archived")
+	if e.topic(gym).DeletedAt == nil {
+		t.Fatalf("Gym not deleted")
 	}
 }
 
@@ -444,23 +443,17 @@ func TestCaptureIntoAnUnknownTopicLandsInInbox(t *testing.T) {
 	}
 }
 
-func TestMoveIntoAnArchivedTopicIsRejectedUntilUnarchived(t *testing.T) {
+func TestMoveIntoADeletedTopicIsRejected(t *testing.T) {
 	e := newSyncEnv(t)
 	gym, itemID := uuid.NewString(), uuid.NewString()
 	e.push(desktopID,
 		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"},
-		op{"type": "ArchiveTopic", "at": e.at(1), "topic_id": gym},
+		op{"type": "DeleteTopic", "at": e.at(1), "topic_id": gym},
 		op{"type": "CaptureItem", "at": e.at(2), "item_id": itemID, "text": "squat 100"})
 
 	res := e.push(phoneID, op{"type": "MoveItem", "at": e.at(3), "item_id": itemID, "topic_id": gym})
 	if res[0].Status != "rejected" || res[0].Reason != "topic_unavailable" || topicOf(e.item(itemID)) != "Inbox" {
-		t.Fatalf("move into archived Topic: result %+v; want rejected topic_unavailable, Item stays in Inbox", res[0])
-	}
-
-	e.push(desktopID, op{"type": "UnarchiveTopic", "at": e.at(4), "topic_id": gym})
-	res = e.push(phoneID, op{"type": "MoveItem", "at": e.at(5), "item_id": itemID, "topic_id": gym})
-	if res[0].Status != "accepted" || topicOf(e.item(itemID)) != gym {
-		t.Fatalf("move after unarchive: result %+v, Item in %s; want accepted, in Gym", res[0], topicOf(e.item(itemID)))
+		t.Fatalf("move into deleted Topic: result %+v; want rejected topic_unavailable, Item stays in Inbox", res[0])
 	}
 }
 
@@ -482,19 +475,6 @@ func TestLaterMoveWins(t *testing.T) {
 	e.push(phoneID, op{"type": "MoveItem", "at": e.at(20), "item_id": itemID, "topic_id": nil})
 	if got := topicOf(e.item(itemID)); got != "Inbox" {
 		t.Fatalf("move to Inbox: Item in %s", got)
-	}
-}
-
-func TestLaterArchiveStateWins(t *testing.T) {
-	e := newSyncEnv(t)
-	gym := uuid.NewString()
-	e.push(desktopID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": gym, "name": "Gym"})
-
-	e.push(desktopID, op{"type": "ArchiveTopic", "at": e.at(10), "topic_id": gym})
-	late := e.push(phoneID, op{"type": "UnarchiveTopic", "at": e.at(5), "topic_id": gym})
-
-	if late[0].Reason != "superseded" || e.topic(gym).ArchivedAt == nil {
-		t.Fatalf("older unarchive: result %+v; want superseded, Gym still archived", late[0])
 	}
 }
 
@@ -650,14 +630,13 @@ func TestDeletingATopicIsFinal(t *testing.T) {
 
 	for _, o := range []op{
 		{"type": "RenameTopic", "at": e.at(20), "topic_id": gym, "name": "Lifting"},
-		{"type": "ArchiveTopic", "at": e.at(20), "topic_id": gym},
 		{"type": "DeleteTopic", "at": e.at(20), "topic_id": gym, "trash": []string{}},
 	} {
 		if res := e.push(phoneID, o); res[0].Reason != "topic_deleted" {
 			t.Errorf("%s after delete = %+v, want rejected topic_deleted", o["type"], res[0])
 		}
 	}
-	if tp := e.topic(gym); tp.Name != "Gym" || tp.ArchivedAt != nil {
+	if tp := e.topic(gym); tp.Name != "Gym" || tp.DeletedAt == nil {
 		t.Errorf("deleted Topic changed: %+v", tp)
 	}
 
@@ -1054,7 +1033,6 @@ func TestARejectedOpMakesThePushingDevicePullTheRowsItNames(t *testing.T) {
 		op{"type": "CreateTopic", "at": e.at(0), "topic_id": gone, "name": "Gone"},
 		op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "x"},
 		op{"type": "CaptureItem", "at": e.at(1), "item_id": filed, "topic_id": gone, "text": "y"},
-		op{"type": "ArchiveTopic", "at": e.at(2), "topic_id": gym},
 		op{"type": "DeleteTopic", "at": e.at(3), "topic_id": gone, "trash": []string{}},
 		op{"type": "RenameTopic", "at": e.at(10), "topic_id": gym, "name": "Lifting"})
 
@@ -1063,7 +1041,7 @@ func TestARejectedOpMakesThePushingDevicePullTheRowsItNames(t *testing.T) {
 		o    op
 		want []string
 	}{
-		{"move into an archived Topic", op{"type": "MoveItem", "at": e.at(4), "item_id": itemID, "topic_id": gym}, []string{itemID, gym}},
+		{"move into a deleted Topic", op{"type": "MoveItem", "at": e.at(4), "item_id": itemID, "topic_id": gone}, []string{itemID, gone}},
 		{"superseded rename", op{"type": "RenameTopic", "at": e.at(5), "topic_id": gym, "name": "Gym day"}, []string{gym}},
 		{"delete of a deleted Topic", op{"type": "DeleteTopic", "at": e.at(6), "topic_id": gone, "trash": []string{filed}}, []string{filed, gone}},
 	} {
@@ -1085,7 +1063,7 @@ func TestARejectedOpMakesThePushingDevicePullTheRowsItNames(t *testing.T) {
 	}
 }
 
-func TestAnAcceptedMoveSendsOnlyTheItem(t *testing.T) {
+func TestAnAcceptedMoveSendsItemAndActiveTopic(t *testing.T) {
 	e := newSyncEnv(t)
 	gym, itemID := uuid.NewString(), uuid.NewString()
 	e.push(desktopID,
@@ -1096,8 +1074,9 @@ func TestAnAcceptedMoveSendsOnlyTheItem(t *testing.T) {
 	if res := e.push(phoneID, op{"type": "MoveItem", "at": e.at(5), "item_id": itemID, "topic_id": gym}); res[0].Status != "accepted" {
 		t.Fatalf("move = %+v, want accepted", res[0])
 	}
-	if got := changedIDs(e.pull(cursor)); !slices.Equal(got, []string{itemID}) {
-		t.Fatalf("pulled %v, want only the Item", got)
+	want := slices.Sorted(slices.Values([]string{itemID, gym}))
+	if got := changedIDs(e.pull(cursor)); !slices.Equal(got, want) {
+		t.Fatalf("pulled %v, want Item and active Topic %v", got, want)
 	}
 }
 
@@ -1382,5 +1361,145 @@ func TestTunnelCheckConstraint(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
 		t.Fatalf("UPDATE putting an Item in the Tunnel and a Topic = %v, want a CHECK violation", err)
+	}
+}
+
+func TestArchiveOpsAreRejected(t *testing.T) {
+	e := newSyncEnv(t)
+	topicID, itemID := uuid.NewString(), uuid.NewString()
+	e.push(desktopID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": topicID, "name": "Gym"})
+	res := e.push(phoneID,
+		op{"type": "ArchiveTopic", "at": e.at(1), "topic_id": topicID},
+		op{"type": "UnarchiveTopic", "at": e.at(2), "topic_id": topicID},
+		op{"type": "CaptureItem", "at": e.at(3), "item_id": itemID, "topic_id": topicID, "text": "squat 100"})
+	for i := 0; i < 2; i++ {
+		if res[i].Status != "rejected" || res[i].Reason != "invalid" {
+			t.Errorf("archive op %d = %+v, want rejected invalid", i, res[i])
+		}
+	}
+	if res[2].Status != "accepted" || topicOf(e.item(itemID)) != topicID || textOf(e.item(itemID)) != "squat 100" {
+		t.Fatalf("mixed-batch capture = %+v, want accepted and saved in Gym", res[2])
+	}
+}
+
+func TestPullTopicsHaveNoArchivedAt(t *testing.T) {
+	e := newSyncEnv(t)
+	topicID := uuid.NewString()
+	e.push(phoneID, op{"type": "CreateTopic", "at": e.at(0), "topic_id": topicID, "name": "Gym"})
+	rec := e.do("GET", "/sync/pull?cursor=0", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull = %d %s", rec.Code, rec.Body)
+	}
+	var page struct{ Topics []map[string]any }
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Topics) != 1 || page.Topics[0]["id"] != topicID || page.Topics[0]["name"] != "Gym" {
+		t.Fatalf("pulled Topics = %+v, want Gym", page.Topics)
+	}
+	if _, exists := page.Topics[0]["archived_at"]; exists {
+		t.Error("pulled Topic contains archived_at")
+	}
+	if deleted, exists := page.Topics[0]["deleted_at"]; !exists || deleted != nil {
+		t.Errorf("deleted_at = %v (exists %v), want null", deleted, exists)
+	}
+}
+
+func TestTopicActivityCreate(t *testing.T) {
+	e := newSyncEnv(t)
+	id := uuid.NewString()
+	e.push(phoneID, op{"type": "CreateTopic", "at": "2026-10-04T05:00:00.123456-07:00", "topic_id": id, "name": "Work"})
+	want := syncBase.Add(123456 * time.Microsecond)
+	if got := e.topic(id).ActivityAt; !got.Equal(want) {
+		t.Errorf("activity_at = %v, want %v", got, want)
+	}
+}
+
+func TestTopicActivityOperations(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind     string
+		at, want       int
+		status, reason string
+	}{
+		{"capture raises", "CaptureItem", 20, 20, "accepted", ""},
+		{"older capture", "CaptureItem", 5, 10, "accepted", ""},
+		{"equal capture", "CaptureItem", 10, 10, "accepted", ""},
+		{"move in", "MoveItem", 20, 20, "accepted", ""},
+		{"older accepted move", "MoveItem", 5, 10, "accepted", ""},
+		{"superseded move", "MoveItem", 0, 10, "rejected", "superseded"},
+		{"move out", "MoveOut", 20, 10, "accepted", ""},
+		{"edit", "SetText", 20, 10, "accepted", ""},
+		{"trash", "TrashItem", 20, 10, "accepted", ""},
+		{"restore", "RestoreItem", 20, 10, "accepted", ""},
+		{"rename", "RenameTopic", 20, 10, "accepted", ""},
+		{"redirected capture", "RedirectCapture", 20, 10, "changed", "sent_to_inbox"},
+		{"rejected move", "RejectedMove", 20, 10, "rejected", "topic_unavailable"},
+		{"duplicate capture", "DuplicateCapture", 20, 10, "rejected", "exists"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newSyncEnv(t)
+			topicID, itemID := uuid.NewString(), uuid.NewString()
+			e.push(phoneID,
+				op{"type": "CreateTopic", "at": e.at(0), "topic_id": topicID, "name": "Work"},
+				op{"type": "CaptureItem", "at": e.at(10), "topic_id": topicID, "item_id": itemID, "text": "original"})
+			if tc.kind == "MoveItem" {
+				itemID = uuid.NewString()
+				e.push(phoneID, op{"type": "CaptureItem", "at": e.at(1), "item_id": itemID, "text": "incoming"})
+			}
+			if tc.kind == "RestoreItem" {
+				e.push(phoneID, op{"type": "TrashItem", "at": e.at(15), "item_id": itemID})
+			}
+			if tc.kind == "RedirectCapture" || tc.kind == "RejectedMove" {
+				e.push(phoneID, op{"type": "DeleteTopic", "at": e.at(15), "topic_id": topicID})
+			}
+			cursor := e.pull(0).Cursor
+			o := op{"type": tc.kind, "at": e.at(tc.at), "topic_id": topicID, "item_id": itemID, "text": "new", "base_rev": 0, "name": "Renamed"}
+			switch tc.kind {
+			case "CaptureItem", "RedirectCapture":
+				o["type"] = "CaptureItem"
+				o["item_id"] = uuid.NewString()
+			case "DuplicateCapture":
+				o["type"] = "CaptureItem"
+			case "RejectedMove":
+				o["type"] = "MoveItem"
+			case "MoveOut":
+				o["type"] = "MoveItem"
+				delete(o, "topic_id")
+			}
+			res := e.push(phoneID, o)[0]
+			if res.Status != tc.status || res.Reason != tc.reason {
+				t.Fatalf("result = %+v, want %s/%s", res, tc.status, tc.reason)
+			}
+			want := syncBase.Add(time.Duration(tc.want) * time.Minute)
+			if got := e.topic(topicID).ActivityAt; !got.Equal(want) {
+				t.Errorf("activity_at = %v, want %v", got, want)
+			}
+			page := e.pull(cursor)
+			changed := tc.want > 10 || tc.kind == "RenameTopic" || tc.status == "rejected"
+			if got := len(page.Topics); (got == 1) != changed {
+				t.Errorf("incremental pull has %d Topics, want changed=%v", got, changed)
+			}
+			if tc.kind == "RedirectCapture" && e.item(o["item_id"].(string)).TopicID != nil {
+				t.Error("redirected capture did not reach Inbox")
+			}
+		})
+	}
+}
+
+func TestTopicActivityFutureTimeClamped(t *testing.T) {
+	e := newSyncEnv(t)
+	id := uuid.NewString()
+	for _, kind := range []string{"CreateTopic", "CaptureItem", "MoveItem"} {
+		o := op{"type": kind, "at": e.at(3 * 24 * 60), "topic_id": id, "name": "Work", "item_id": uuid.NewString(), "text": "incoming"}
+		if kind == "MoveItem" {
+			e.push(phoneID, op{"type": "CaptureItem", "at": e.at(0), "item_id": o["item_id"], "text": "inbox"})
+		}
+		if res := e.push(phoneID, o)[0]; res.Status != "accepted" {
+			t.Fatalf("%s: %+v", kind, res)
+		}
+		if got := e.topic(id).ActivityAt; !got.Equal(e.clock.Now()) {
+			t.Errorf("%s activity = %v, want Server now %v", kind, got, e.clock.Now())
+		}
+		e.clock.Advance(time.Minute)
 	}
 }

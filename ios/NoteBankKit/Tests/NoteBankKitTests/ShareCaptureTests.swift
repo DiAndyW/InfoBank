@@ -51,11 +51,11 @@ struct ShareCaptureTests {
         #expect(try store.items(in: .inbox, before: nil, limit: 10).count == 1)
     }
 
-    @Test @MainActor func shareDraftExcludesArchivedTopicsAndCancelDiscardsOnlyItsFiles() throws {
+    @Test @MainActor func shareDraftExcludesDeletedTopicsAndCancelDiscardsOnlyItsFiles() throws {
         let (store, _) = try tempStore()
         let active = try store.createTopic(name: "Active", nowUs: 1)
-        let archived = try store.createTopic(name: "Archived", nowUs: 1)
-        try store.setTopicArchived(archived, archived: true, nowUs: 2)
+        let deleted = try store.createTopic(name: "Deleted", nowUs: 1)
+        try store.deleteTopic(deleted, keeping: .all, nowUs: 2)
         let own = try store.stageFile(at: AttachmentTests().source())
         let other = try store.stageFile(at: AttachmentTests().source())
         let model = ShareCaptureModel(store: store)
@@ -156,7 +156,7 @@ extension ShareCaptureTests {
         #expect(try await store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM outbox") } == 1)
     }
 
-    @Test func sharedCaptureToRemotelyArchivedTopicReportsInbox() async throws {
+    @Test func sharedCaptureToRemotelyDeletedTopicReportsInbox() async throws {
         let server = try TestServer(); try await server.start()
         let (store, _) = try tempStore(); let secrets = SecretStore.memory()
         try store.saveSettings(url: server.url, newSecret: server.secret, secrets: secrets)
@@ -166,7 +166,7 @@ extension ShareCaptureTests {
         let (other, _) = try tempStore()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: secrets)
         _ = try await cycle(store: other, secrets: secrets, http: .live, queued: &notices)
-        try other.setTopicArchived(topic, archived: true, nowUs: Time.nowUs())
+        try other.deleteTopic(topic, keeping: .all, nowUs: Time.nowUs())
         _ = try await cycle(store: other, secrets: secrets, http: .live, queued: &notices)
         let item = try store.capture(text: "keep this", to: .topic(topic), nowUs: Time.nowUs())
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false, sessionIdentifier: AttachmentTransfers.shareSessionIdentifier)

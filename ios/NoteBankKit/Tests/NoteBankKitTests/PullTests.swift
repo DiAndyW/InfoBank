@@ -93,7 +93,7 @@ struct PullTests {
     @Test func aPageIsStoredWithItsCursorAndTextRev() throws {
         let store = try configuredStore()
         let trashed = #"{"id":"j","topic_id":"t","text":null,"capture_time":"2025-10-09T08:53:21+00:00","deleted_at":"2025-10-10T00:00:00Z","purge_at":"2025-11-09T00:00:00.5Z","text_rev":2,"tunnel":false,"attachments":[]}"#
-        let topic = #"{"id":"t","name":"Mosaic","archived_at":"2025-10-09T08:53:20.000001Z","deleted_at":null}"#
+        let topic = #"{"id":"t","name":"Mosaic","deleted_at":null}"#
         let p = try page(pageJSON(items: [item("i", "hello", textRev: 7, attachments: ["a"]), trashed], topics: [topic], cursor: 7))
 
         #expect(try store.applyPull(p, serverURL: Self.serverURL))
@@ -113,7 +113,6 @@ struct PullTests {
         #expect(trashedRow["deleted_at"] as Int64 == 1_760_054_400_000_000)
         #expect(trashedRow["purge_at"] as Int64 == 1_762_646_400_500_000)
         #expect(topicRow["name"] as String == "Mosaic")
-        #expect(topicRow["archived_at"] as Int64 == 1_760_000_000_000_001)
         #expect(topicRow["deleted_at"] as Int64? == nil)
         #expect(try attachmentIDs(store) == ["a"])
         #expect(try cursor(store) == 7)
@@ -153,7 +152,7 @@ struct PullTests {
         let store = try configuredStore()
         let p = try page(pageJSON(
             items: [item("i", "v", textRev: 3, attachments: ["a", "b"])],
-            topics: [#"{"id":"t","name":"Gym","archived_at":null,"deleted_at":null}"#],
+            topics: [#"{"id":"t","name":"Gym","deleted_at":null}"#],
             cursor: 4))
         _ = try store.applyPull(p, serverURL: Self.serverURL)
         let once = try snapshot(store)
@@ -186,7 +185,7 @@ struct PullTests {
 
         let other = try page(pageJSON(
             items: [item("i", "changed"), item("k", "new")],
-            topics: [#"{"id":"t","name":"Gym","archived_at":null,"deleted_at":null}"#],
+            topics: [#"{"id":"t","name":"Gym","deleted_at":null}"#],
             tombstones: ["i"], cursor: 9))
         #expect(try !store.applyPull(other, serverURL: "http://127.0.0.1:10"))
 
@@ -209,11 +208,11 @@ struct PullTests {
     }
 
     @Test func noticeMessages() {
-        func notice(_ name: String?, _ state: SyncNotice.TopicState?) -> String {
-            SyncNotice(itemID: "i", label: "squat 100", topicName: name, topicID: nil, topicState: state).message
+        func notice(_ name: String?, _ deleted: Bool) -> String {
+            SyncNotice(itemID: "i", label: "squat 100", topicName: name, topicID: nil, topicDeleted: deleted).message
         }
-        #expect(notice("Gym", .archived) == #"Saved "squat 100" to the Inbox: Gym was archived on another Device."#)
-        #expect(notice("Gym", .deleted) == #"Saved "squat 100" to the Inbox: Gym was deleted on another Device."#)
-        #expect(notice(nil, nil) == #"Saved "squat 100" to the Inbox: its Topic isn't on this Server."#)
+        #expect(notice("Gym", true) == #"Saved "squat 100" to the Inbox: Gym was deleted on another Device."#)
+        #expect(notice("Gym", false) == #"Saved "squat 100" to the Inbox: its Topic isn't on this Server."#)
+        #expect(notice(nil, false) == #"Saved "squat 100" to the Inbox: its Topic isn't on this Server."#)
     }
 }

@@ -30,19 +30,9 @@ extension Store {
     public func quickPlaces() throws -> [QuickPlace] {
         try pool.read { db in
             let tunnelUs = try Int64.fetchOne(db, sql: "SELECT max(capture_time) FROM items WHERE in_tunnel = 1 AND deleted_at IS NULL")
-            let topics = try Row.fetchAll(db, sql: """
-                SELECT id, name, (SELECT max(capture_time) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS last_used
-                FROM topics WHERE deleted_at IS NULL AND archived_at IS NULL
-                """)
-                .map { QuickPlace(destination: .topic($0["id"]), name: $0["name"], lastUsedUs: $0["last_used"]) }
-                .sorted {
-                    switch ($0.lastUsedUs, $1.lastUsedUs) {
-                    case let (a?, b?) where a != b: a > b
-                    case (_?, nil): true
-                    case (nil, _?): false
-                    default: $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                    }
-                }
+            let topics = try Self.rankedTopics(db).map {
+                QuickPlace(destination: .topic($0.place.id), name: $0.place.name, lastUsedUs: $0.lastUsedUs)
+            }
             return [QuickPlace(destination: .inbox, name: "Inbox", lastUsedUs: nil), QuickPlace(destination: .tunnel, name: "Tunnel", lastUsedUs: tunnelUs)] + topics
         }
     }

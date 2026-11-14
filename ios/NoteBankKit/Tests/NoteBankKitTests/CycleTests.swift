@@ -191,7 +191,7 @@ struct ServerCycleTests {
         #expect(stored == times)
     }
 
-    @Test func aCaptureIntoATopicArchivedElsewhereLandsInTheInboxWithANotice() async throws {
+    @Test func aCaptureIntoATopicDeletedElsewhereLandsInTheInboxWithANotice() async throws {
         let server = try TestServer()
         try await server.start()
         let a = try Device(server)
@@ -203,13 +203,13 @@ struct ServerCycleTests {
         ])
         _ = try await a.sync()
         try await server.push(device: elsewhere, ops: [
-            ["id": newID(), "type": "ArchiveTopic", "at": Time.rfc3339(t0 + 10 * second), "topic_id": gym]
+            ["id": newID(), "type": "DeleteTopic", "at": Time.rfc3339(t0 + 10 * second), "topic_id": gym]
         ])
 
         let id = try a.capture("squat 100", at: t0 + 20 * second, to: .topic(gym))
         try await a.sync()
 
-        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicState: .archived)])
+        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicDeleted: true)])
         #expect(try a.feed().map(\.topicID) == [nil])
     }
 
@@ -223,7 +223,7 @@ struct ServerCycleTests {
         try a.store.saveSettings(url: server.url, newSecret: server.secret, secrets: a.secrets)
         try await a.sync()
 
-        #expect(a.queued == [SyncNotice(itemID: id, label: "travels along", topicName: nil, topicID: missing, topicState: nil)])
+        #expect(a.queued == [SyncNotice(itemID: id, label: "travels along", topicName: nil, topicID: missing, topicDeleted: false)])
         let b = try Device(server)
         _ = try await b.sync()
         #expect(try b.feed().map(\.text) == ["travels along"])
@@ -395,12 +395,12 @@ struct FakeServerCycleTests {
         let a = try Device(url: "http://127.0.0.1:9", secret: "secret")
         let gym = newID()
         let pullFails = PullSwitch()
-        let archived = #"{"id":"\#(gym)","name":"Gym","archived_at":"2025-10-09T08:53:20Z","deleted_at":null}"#
+        let deleted = #"{"id":"\#(gym)","name":"Gym","deleted_at":"2025-10-09T08:53:20Z"}"#
         let fake = try await FakeServer { request in
             if request.path == "/sync/push" { return Self.answerEveryOp(request, status: "changed", reason: "sent_to_inbox") }
             return pullFails.on.withLock { $0 }
                 ? .json("{}", status: 500)
-                : .json(#"{"items":[],"topics":[\#(archived)],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":null}}"#)
+                : .json(#"{"items":[],"topics":[\#(deleted)],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":null}}"#)
         }
         try a.store.saveSettings(url: fake.url, newSecret: "secret", secrets: a.secrets)
         try await a.store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name) VALUES (?, 'Gym')", arguments: [gym]) }
@@ -412,11 +412,11 @@ struct FakeServerCycleTests {
             Issue.record("expected .failed, got \(String(describing: failure))")
             return
         }
-        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicState: nil)])
+        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicDeleted: false)])
 
         pullFails.on.withLock { $0 = false }
         try await a.sync()
-        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicState: .archived)])
+        #expect(a.queued == [SyncNotice(itemID: id, label: "squat 100", topicName: "Gym", topicID: gym, topicDeleted: true)])
         #expect(fake.requests(to: "/sync/push") == 1)
     }
 
@@ -551,7 +551,7 @@ extension ServerCycleTests {
         let id = try a.capture("move", at: t0, to: .tunnel)
         try await a.sync()
         try a.store.move(itemID: id, to: .topic(topic), nowUs: t0 + second)
-        try await server.push(device: remote, ops: [["id": newID(), "type": "ArchiveTopic", "at": Time.rfc3339(t0 + 2 * second), "topic_id": topic]])
+        try await server.push(device: remote, ops: [["id": newID(), "type": "DeleteTopic", "at": Time.rfc3339(t0 + 2 * second), "topic_id": topic]])
         try await a.sync()
         #expect(a.queued.last?.kind == .move)
         #expect(try a.feed()[0].inTunnel)

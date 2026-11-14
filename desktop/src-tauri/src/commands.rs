@@ -312,20 +312,6 @@ pub async fn rename_topic(app: AppHandle, state: State<'_, AppState>, id: String
 }
 
 #[tauri::command]
-pub async fn archive_topic(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    topics::set_archived(&state.db.lock().unwrap(), &id, true, now_us())?;
-    changed(&app, &state);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn unarchive_topic(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    topics::set_archived(&state.db.lock().unwrap(), &id, false, now_us())?;
-    changed(&app, &state);
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn delete_topic(app: AppHandle, state: State<'_, AppState>, id: String, keep: topics::Keep) -> Result<(), String> {
     topics::delete(&state.db.lock().unwrap(), &id, &keep, now_us())?;
     changed(&app, &state);

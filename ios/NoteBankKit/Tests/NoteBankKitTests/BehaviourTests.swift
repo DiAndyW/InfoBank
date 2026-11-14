@@ -30,11 +30,9 @@ import Testing
             center.postTrashed(itemIDs: ids, copied: true)
             check(center, try Behaviour.rule("notice.batch_copied_trashed"), values: values)
         }
-        center.post([SyncNotice(itemID: "a", label: "note", topicName: "Gym", topicID: "g", topicState: .archived)])
-        check(center, try Behaviour.rule("notice.sync_inbox_archived"), values: ["label": "note", "topic": "Gym"])
-        center.post([SyncNotice(itemID: "a", label: "note", topicName: "Gym", topicID: "g", topicState: .deleted)])
+        center.post([SyncNotice(itemID: "a", label: "note", topicName: "Gym", topicID: "g", topicDeleted: true)])
         check(center, try Behaviour.rule("notice.sync_inbox_deleted"), values: ["label": "note", "topic": "Gym"])
-        let last = SyncNotice(itemID: "a", label: "note", topicName: "Gym", topicID: "g", topicState: .archived)
+        let last = SyncNotice(itemID: "a", label: "note", topicName: "Gym", topicID: "g", topicDeleted: true)
         center.post([last, last])
         check(center, try Behaviour.rule("notice.sync_inbox_more"), values: ["label": "note", "topic": "Gym", "count": "1"])
     }
@@ -53,7 +51,6 @@ import Testing
     @Test func copyPlaces() throws {
         checkCopy(try Behaviour.rule("copy.inbox"), place: .inbox)
         checkCopy(try Behaviour.rule("copy.topic"), place: .topic("g"))
-        checkCopy(try Behaviour.rule("copy.archived_topic"), place: .topic("archived"))
         for preference in [false, nil] {
             checkCopy(try Behaviour.rule("copy.tunnel"), place: .tunnel, trashAfterCopy: preference)
         }
@@ -100,19 +97,18 @@ extension BehaviourTests {
 
     @Test func additionalSyncNotices() throws {
         let center = NoticeCenter()
-        func sync(_ expected: Behaviour.Expectation, kind: SyncNotice.Kind, topic: String? = nil, item: String = "a", state: SyncNotice.TopicState? = nil) {
-            var notice = SyncNotice(itemID: item, label: "note", topicName: topic, topicID: nil, topicState: state)
+        func sync(_ expected: Behaviour.Expectation, kind: SyncNotice.Kind, topic: String? = nil, item: String = "a", deleted: Bool = false) {
+            var notice = SyncNotice(itemID: item, label: "note", topicName: topic, topicID: nil, topicDeleted: deleted)
             notice.kind = kind
             center.post([notice])
-            check(center, expected, values: ["label": "note", "topic": "Gym", "state": state?.rawValue ?? "archived or deleted"])
+            check(center, expected, values: ["label": "note", "topic": "Gym"])
         }
-        for state in [SyncNotice.TopicState.archived, .deleted, nil] {
-            sync(try Behaviour.rule("notice.sync_move"), kind: .move, topic: "Gym", state: state)
-        }
+        sync(try Behaviour.rule("notice.sync_move"), kind: .move, topic: "Gym", deleted: true)
+        sync(try Behaviour.rule("notice.sync_move_unknown"), kind: .move, topic: "Gym")
         sync(try Behaviour.rule("notice.sync_empty"), kind: .empty)
         sync(try Behaviour.rule("notice.sync_gone"), kind: .gone)
         sync(try Behaviour.rule("notice.sync_inbox_unknown"), kind: .inbox)
-        sync(try Behaviour.rule("notice.sync_inbox_state_unknown"), kind: .inbox, topic: "Gym")
+        sync(try Behaviour.rule("notice.sync_inbox_unknown"), kind: .inbox, topic: "Gym")
         sync(try Behaviour.rule("notice.sync_failed"), kind: .failed)
         sync(try Behaviour.rule("notice.sync_failed_without_item"), kind: .failed, item: "")
         sync(try Behaviour.rule("notice.sync_topic"), kind: .topic, item: "")

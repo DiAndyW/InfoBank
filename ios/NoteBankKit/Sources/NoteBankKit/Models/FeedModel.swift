@@ -74,7 +74,7 @@ public final class FeedModel {
         do { trashAfterCopy = try store.trashAfterCopy() } catch { trashAfterCopy = false }
         if case .topic(let id) = place {
             let topic = try? store.topic(id)
-            topicUnavailable = topic?.archived != false
+            topicUnavailable = topic == nil
             topicName = topic?.name
             topicCount = topic?.count ?? 0
         }

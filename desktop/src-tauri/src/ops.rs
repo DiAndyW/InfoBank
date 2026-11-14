@@ -23,8 +23,6 @@ pub enum Op {
     },
     CreateTopic { topic_id: String, name: String },
     RenameTopic { topic_id: String, name: String },
-    ArchiveTopic { topic_id: String },
-    UnarchiveTopic { topic_id: String },
     DeleteTopic { topic_id: String, trash: Vec<String> },
     MoveItem {
         item_id: String,
@@ -76,19 +74,18 @@ pub fn replay(conn: &Connection) -> rusqlite::Result<()> {
 fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
     let at = q.at.timestamp_micros();
     match &q.op {
-        // Capture writes its own rows, and a pull can't hold an Item before it's pushed.
-        Op::CaptureItem { .. } => {}
+        Op::CaptureItem { topic_id, .. } => {
+            conn.execute("UPDATE topics SET activity_at = max(activity_at, ?2) WHERE id = ?1", (topic_id, at))?;
+        }
         Op::CreateTopic { topic_id, name } => {
-            conn.execute("INSERT INTO topics (id, name) VALUES (?1, ?2) ON CONFLICT (id) DO NOTHING", (topic_id, name))?;
+            conn.execute(
+                "INSERT INTO topics (id, name, activity_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (id) DO UPDATE SET activity_at = max(topics.activity_at, excluded.activity_at)",
+                (topic_id, name, at),
+            )?;
         }
         Op::RenameTopic { topic_id, name } => {
             conn.execute("UPDATE topics SET name = ?2 WHERE id = ?1", (topic_id, name))?;
-        }
-        Op::ArchiveTopic { topic_id } => {
-            conn.execute("UPDATE topics SET archived_at = ?2 WHERE id = ?1", (topic_id, at))?;
-        }
-        Op::UnarchiveTopic { topic_id } => {
-            conn.execute("UPDATE topics SET archived_at = NULL WHERE id = ?1", [topic_id])?;
         }
         Op::DeleteTopic { topic_id, trash } => {
             conn.execute("UPDATE topics SET deleted_at = ?2 WHERE id = ?1", (topic_id, at))?;
@@ -101,6 +98,7 @@ fn apply(conn: &Connection, q: &Queued) -> rusqlite::Result<()> {
         }
         Op::MoveItem { item_id, topic_id, tunnel } => {
             conn.execute("UPDATE items SET topic_id = ?2, in_tunnel = ?3 WHERE id = ?1", (item_id, topic_id, tunnel))?;
+            conn.execute("UPDATE topics SET activity_at = max(activity_at, ?2) WHERE id = ?1", (topic_id, at))?;
         }
         Op::SetText { item_id, text, .. } => {
             conn.execute("UPDATE items SET text = ?2, deleted_at = NULL, purge_at = NULL WHERE id = ?1", (item_id, text))?;
@@ -175,20 +173,19 @@ mod tests {
     fn each_op_changes_the_mirror() {
         let (_d, conn) = fresh();
         conn.execute_batch(
-            "INSERT INTO topics (id, name) VALUES ('t', 'Gym'), ('u', 'Work'), ('d', 'Old');
+            "INSERT INTO topics (id, name) VALUES ('t', 'Gym'), ('d', 'Old');
              INSERT INTO items (id, topic_id, text, capture_time) VALUES
                  ('i', NULL, 'a', 1), ('keep', 'd', 'b', 1), ('bin', 'd', 'c', 1);",
         )
         .unwrap();
         queue(&conn, Op::CreateTopic { topic_id: "n".into(), name: "New".into() }, 5).unwrap();
         queue(&conn, Op::RenameTopic { topic_id: "t".into(), name: "Lifting".into() }, 5).unwrap();
-        queue(&conn, Op::ArchiveTopic { topic_id: "u".into() }, 7).unwrap();
         queue(&conn, Op::MoveItem { item_id: "i".into(), topic_id: Some("t".into()), tunnel: false }, 5).unwrap();
         queue(&conn, Op::DeleteTopic { topic_id: "d".into(), trash: vec!["bin".into()] }, 9).unwrap();
 
-        let topic = |id: &str| -> (String, Option<i64>, Option<i64>) {
-            conn.query_row("SELECT name, archived_at, deleted_at FROM topics WHERE id = ?1", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let topic = |id: &str| -> (String, Option<i64>) {
+            conn.query_row("SELECT name, deleted_at FROM topics WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap()
         };
@@ -196,17 +193,14 @@ mod tests {
             conn.query_row("SELECT topic_id, deleted_at FROM items WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
                 .unwrap()
         };
-        assert_eq!(topic("n"), ("New".into(), None, None));
+        assert_eq!(topic("n"), ("New".into(), None));
         assert_eq!(topic("t").0, "Lifting");
-        assert_eq!(topic("u").1, Some(7));
-        assert_eq!(topic("d").2, Some(9));
+        assert_eq!(topic("d").1, Some(9));
         assert_eq!(item("i"), (Some("t".into()), None));
         assert_eq!(item("keep"), (None, None));
         assert_eq!(item("bin"), (None, Some(9)));
 
-        queue(&conn, Op::UnarchiveTopic { topic_id: "u".into() }, 8).unwrap();
-        assert_eq!(topic("u").1, None);
-        assert_eq!(outbox(&conn).len(), 6);
+        assert_eq!(outbox(&conn).len(), 4);
     }
 
     fn png(id: &str) -> NewAttachment {

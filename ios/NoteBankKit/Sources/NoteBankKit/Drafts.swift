@@ -33,7 +33,7 @@ extension Store {
                 """)
             let rows = try Row.fetchAll(db, sql: """
                 SELECT place, text,
-                    (SELECT id FROM topics WHERE id = drafts.home_topic_id AND deleted_at IS NULL AND archived_at IS NULL) AS home_topic_id
+                    (SELECT id FROM topics WHERE id = drafts.home_topic_id AND deleted_at IS NULL) AS home_topic_id
                 FROM drafts
                 """)
             var result: [DraftPlace: Draft] = [:]

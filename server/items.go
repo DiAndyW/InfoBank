@@ -58,6 +58,14 @@ func (b *batch) captureItem(o pushOp, s stamp) (opResult, error) {
 			return opResult{}, err
 		}
 	}
+	if topicID != nil {
+		_, err := b.tx.Exec(b.ctx, `
+			UPDATE topics SET activity_at = $2, seq = nextval('sync_seq')
+			WHERE id = $1 AND activity_at < $2`, *topicID, s.at)
+		if err != nil {
+			return opResult{}, err
+		}
+	}
 	return result, nil
 }
 
@@ -100,6 +108,13 @@ func (b *batch) changeItem(o pushOp, s stamp) (opResult, error) {
 			return rejected("superseded"), nil
 		}
 		it.topicID, it.inTunnel, it.topicStamp, edit = o.TopicID, o.Tunnel, s, true
+		if o.TopicID != nil {
+			if _, err := b.tx.Exec(b.ctx, `
+				UPDATE topics SET activity_at = $2, seq = nextval('sync_seq')
+				WHERE id = $1 AND activity_at < $2`, *o.TopicID, s.at); err != nil {
+				return opResult{}, err
+			}
+		}
 	case "AddAttachment":
 		if o.Attachment == nil || !o.Attachment.valid() {
 			return rejected("invalid"), nil

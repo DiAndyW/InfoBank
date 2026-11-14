@@ -13,15 +13,11 @@ public struct SyncNotice: Equatable, Sendable {
     public enum Kind: Sendable { case inbox, move, gone, empty, failed, topic, topicRenamed }
     public internal(set) var kind: Kind = .inbox
 
-    public enum TopicState: String, Sendable {
-        case archived, deleted
-    }
-
     public let itemID: String
     public let label: String
     public let topicName: String?
     let topicID: String?
-    public internal(set) var topicState: TopicState?
+    public internal(set) var topicDeleted: Bool = false
 
     public var message: String {
         switch kind {
@@ -30,11 +26,14 @@ public struct SyncNotice: Equatable, Sendable {
         case .gone: return #"Couldn't save your change to "\#(label)": it was deleted for good on another Device."#
         case .empty: return #"Couldn't restore "\#(label)": it has no text or files left."#
         case .failed: return "The Server refused this change. Its version will be restored when sync completes."
-        case .move: return #"Couldn't move "\#(label)" to \#(topicName ?? ""): it was \#(topicState?.rawValue ?? "archived or deleted") on another Device."#
+        case .move:
+            return topicDeleted
+                ? #"Couldn't move "\#(label)" to \#(topicName ?? ""): it was deleted on another Device."#
+                : #"Couldn't move "\#(label)" to \#(topicName ?? ""): it isn't on this Server."#
         case .inbox: break
         }
-        guard let topicName else { return #"Saved "\#(label)" to the Inbox: its Topic isn't on this Server."# }
-        return #"Saved "\#(label)" to the Inbox: \#(topicName) was \#(topicState?.rawValue ?? "archived or deleted") on another Device."#
+        guard let topicName, topicDeleted else { return #"Saved "\#(label)" to the Inbox: its Topic isn't on this Server."# }
+        return #"Saved "\#(label)" to the Inbox: \#(topicName) was deleted on another Device."#
     }
 }
 
@@ -183,7 +182,7 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
                         var notice = SyncNotice(itemID: "", label: "", topicName: nil, topicID: op.topicID)
                         notice.kind = .topicRenamed
                         notices.append(notice)
-                    case ("rejected", let type?, _, _) where ["CreateTopic", "RenameTopic", "ArchiveTopic", "UnarchiveTopic", "DeleteTopic"].contains(type):
+                    case ("rejected", let type?, _, _) where ["CreateTopic", "RenameTopic", "DeleteTopic"].contains(type):
                         if type == "CreateTopic", let topicID = op.topicID {
                             try db.execute(sql: "DELETE FROM topics WHERE id = ?", arguments: [topicID])
                         }
@@ -224,13 +223,13 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
         queued = try await store.pool.read { db in
             try carried.map { item in
                 var notice = item
-                let state = try item.topicID.flatMap {
-                    try String.fetchOne(
+                let deleted = try item.topicID.flatMap {
+                    try Bool.fetchOne(
                         db,
-                        sql: "SELECT CASE WHEN deleted_at IS NOT NULL THEN 'deleted' WHEN archived_at IS NOT NULL THEN 'archived' END FROM topics WHERE id = ?",
+                        sql: "SELECT deleted_at IS NOT NULL FROM topics WHERE id = ?",
                         arguments: [$0])
                 }
-                notice.topicState = state.flatMap(SyncNotice.TopicState.init(rawValue:))
+                notice.topicDeleted = deleted == true
                 return notice
             }
         }

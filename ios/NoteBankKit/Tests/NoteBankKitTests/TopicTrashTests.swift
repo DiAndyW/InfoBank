@@ -28,12 +28,11 @@ struct TopicTrashTests {
         #expect(try store.places().topics.first?.name == "Mosaic")
         #expect(throws: (any Error).self) { try store.createTopic(name: "mosaic", nowUs: 2) }
         try store.renameTopic(id, name: "Library", nowUs: 3)
-        try store.setTopicArchived(id, archived: true, nowUs: 4)
+        #expect(try store.topic(id)?.name == "Library")
+        _ = try store.capture(text: "live", to: .topic(id), nowUs: 4)
+        try store.deleteTopic(id, keeping: .all, nowUs: 5)
         #expect(try store.places().topics.isEmpty)
-        #expect(try store.archivedTopics().first?.name == "Library")
         #expect(throws: ItemActionError.topicUnavailable) { try store.capture(text: "x", to: .topic(id), nowUs: 5) }
-        try store.setTopicArchived(id, archived: false, nowUs: 6)
-        #expect(try store.places().topics.count == 1)
     }
 
     @Test func deleteTopicKeepsOnlySelectedItemsAndRestoreUsesInbox() throws {
@@ -100,7 +99,7 @@ extension TopicTrashTests {
         _ = try store.editItem(itemID: id, text: "edited", baseRev: 0, adding: [staged.id], removing: [], nowUs: 3)
         try store.renameTopic(topic, name: "After", nowUs: 4)
         let json = """
-        {"items":[{"id":"\(id)","topic_id":"\(topic)","text":"original","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"tunnel":false,"attachments":[]}],"topics":[{"id":"\(topic)","name":"Before","archived_at":null,"deleted_at":null}],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":false}}
+        {"items":[{"id":"\(id)","topic_id":"\(topic)","text":"original","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"tunnel":false,"attachments":[]}],"topics":[{"id":"\(topic)","name":"Before","deleted_at":null}],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":false}}
         """
         _ = try store.applyPull(JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
         let item = try #require(store.items(in: .all, before: nil, limit: 10).first)
@@ -130,10 +129,9 @@ extension TopicTrashTests {
         let staged = try a.stageFile(at: source)
         _ = try a.editItem(itemID: id, text: "edited", baseRev: 0, adding: [staged.id], removing: [], nowUs: time + 2)
         try a.renameTopic(topic, name: "Library", nowUs: time + 3)
-        try a.setTopicArchived(topic, archived: true, nowUs: time + 4)
         _ = try await cycle(store: a, secrets: secrets, http: .live, queued: &notices)
         _ = try await cycle(store: b, secrets: secrets, http: .live, queued: &notices)
-        #expect(try b.archivedTopics().first?.name == "Library")
+        #expect(try b.places().topics.first?.name == "Library")
         let item = try #require(b.items(in: .all, before: nil, limit: 10).first)
         #expect(item.text == "edited")
         #expect(item.attachments.map(\.id) == [staged.id])

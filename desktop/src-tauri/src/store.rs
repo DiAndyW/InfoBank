@@ -12,6 +12,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007_sync_feedback.sql"),
     include_str!("../migrations/0008_tunnel_settings.sql"),
     include_str!("../migrations/0009_drafts.sql"),
+    include_str!("../migrations/0010_remove_archive.sql"),
+    include_str!("../migrations/0011_topic_activity.sql"),
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -38,6 +40,46 @@ mod tests {
 
     fn device_id(conn: &Connection) -> rusqlite::Result<String> {
         conn.query_row("SELECT device_id FROM device", [], |r| r.get(0))
+    }
+
+    #[test]
+    fn activity_migration_backfills_live_and_trashed_items_and_empty_topics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebank.db");
+        let conn = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(10) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        conn.execute_batch("INSERT INTO topics (id, name) VALUES ('mixed', 'Mixed'), ('trash', 'Trash only'), ('empty', 'Empty');
+            INSERT INTO items (id, topic_id, capture_time, deleted_at) VALUES
+            ('1', 'mixed', 10, NULL), ('2', 'mixed', 30, 1), ('3', 'trash', 20, 1);").unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let rows: Vec<(String, i64)> = conn.prepare("SELECT id, activity_at FROM topics ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("empty".into(), 0), ("mixed".into(), 30), ("trash".into(), 20)]);
+        assert!(conn.execute("UPDATE topics SET activity_at = NULL", []).is_err());
+    }
+
+    #[test]
+    fn archive_removal_migration_keeps_topics_and_other_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebank.db");
+        let conn = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(9) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 9).unwrap();
+        conn.execute_batch(r#"INSERT INTO topics (id, name, archived_at) VALUES ('t', 'Old', 1);
+            INSERT INTO outbox (op) VALUES ('{"type":"ArchiveTopic"}'), ('{"type":"UnarchiveTopic"}'), ('{"type":"CaptureItem","item_id":"i"}');"#).unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let columns: Vec<String> = conn.prepare("PRAGMA table_info(topics)").unwrap().query_map([], |r| r.get(1)).unwrap().map(Result::unwrap).collect();
+        assert!(!columns.iter().any(|c| c == "archived_at"), "archive column remains");
+        let ops: Vec<String> = conn.prepare("SELECT op FROM outbox ORDER BY seq").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(ops, [r#"{"type":"CaptureItem","item_id":"i"}"#]);
+        assert_eq!(crate::topics::list(&conn).unwrap()[0].name, "Old");
     }
 
     #[test]

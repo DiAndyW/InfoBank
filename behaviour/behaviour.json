@@ -88,16 +88,6 @@
         ]
       }
     },
-    "notice.sync_inbox_archived": {
-      "summary": "Sync inbox archived",
-      "expect": {
-        "message": "Saved \"{label}\" to the Inbox: {topic} was archived on another Device.",
-        "buttons": [
-          "Show",
-          "close"
-        ]
-      }
-    },
     "notice.sync_inbox_deleted": {
       "summary": "Sync inbox deleted",
       "expect": {
@@ -128,24 +118,6 @@
     },
     "copy.topic": {
       "summary": "Copy actions in topic; row includes accessibility Copy availability",
-      "expect": {
-        "menu": [
-          {
-            "id": "text",
-            "label": "Copy Text"
-          }
-        ],
-        "row": false,
-        "batch": [
-          {
-            "id": "items",
-            "label": "Copy"
-          }
-        ]
-      }
-    },
-    "copy.archived_topic": {
-      "summary": "Copy actions in archived topic; row includes accessibility Copy availability",
       "expect": {
         "menu": [
           {
@@ -251,7 +223,7 @@
     "notice.sync_inbox_more": {
       "summary": "Several sync notices show the last Inbox relocation and count the rest",
       "expect": {
-        "message": "Saved \"{label}\" to the Inbox: {topic} was archived on another Device. And {count} more.",
+        "message": "Saved \"{label}\" to the Inbox: {topic} was deleted on another Device. And {count} more.",
         "buttons": [
           "Show",
           "close"
@@ -301,7 +273,17 @@
     "notice.sync_move": {
       "summary": "Sync move",
       "expect": {
-        "message": "Couldn't move \"{label}\" to {topic}: it was {state} on another Device.",
+        "message": "Couldn't move \"{label}\" to {topic}: it was deleted on another Device.",
+        "buttons": [
+          "Show",
+          "close"
+        ]
+      }
+    },
+    "notice.sync_move_unknown": {
+      "summary": "Sync move into a Topic the Server doesn't have",
+      "expect": {
+        "message": "Couldn't move \"{label}\" to {topic}: it isn't on this Server.",
         "buttons": [
           "Show",
           "close"
@@ -330,16 +312,6 @@
       "summary": "Sync inbox unknown",
       "expect": {
         "message": "Saved \"{label}\" to the Inbox: its Topic isn't on this Server.",
-        "buttons": [
-          "Show",
-          "close"
-        ]
-      }
-    },
-    "notice.sync_inbox_state_unknown": {
-      "summary": "Sync inbox state unknown",
-      "expect": {
-        "message": "Saved \"{label}\" to the Inbox: {topic} was archived or deleted on another Device.",
         "buttons": [
           "Show",
           "close"

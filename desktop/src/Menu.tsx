@@ -213,7 +213,7 @@ export default function Menu({ label, entries, open, onOpenChange, trigger: show
                       if (shown[0]) {
                         close();
                         shown[0].onSelect();
-                      } else if (offerCreate) create(entry.create!, name, e.currentTarget);
+                      }
                     } else if (e.key === "Escape" && query && !composing) {
                       e.stopPropagation();
                       setQuery("");

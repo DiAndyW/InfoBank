@@ -22,3 +22,19 @@ afterEach(async () => {
   localStorage.clear();
   delete document.documentElement.dataset.theme;
 });
+
+if (!Element.prototype.animate) {
+  Element.prototype.animate = (() => ({
+    finished: Promise.resolve(),
+    cancel() {},
+    onfinish: null,
+  })) as unknown as Element["animate"];
+}
+
+if (!window.matchMedia) {
+  window.matchMedia = (() => ({
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {},
+  })) as unknown as Window["matchMedia"];
+}

@@ -17,8 +17,8 @@ function backend(opts: { load?: Promise<Row[]>; capture?: Promise<void>; save?: 
     calls.push({ cmd, args });
     if (cmd === "get_settings") return { server_url: "https://example.test", has_secret: true, quick_capture: { shortcut: "shift+super+Space", on: true } };
     if (cmd === "list_topics" && topicLoads++ > 0 && opts.topicsRefresh) return opts.topicsRefresh;
-    if (cmd === "picker_topic") { await emit("items-changed"); return { id: "books-id", name: args.name, archived: false, item_count: 0 }; }
-    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", archived: false, item_count: 0 }];
+    if (cmd === "picker_topic") { await emit("items-changed"); return { id: "books-id", name: args.name, item_count: 0 }; }
+    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", item_count: 0 }];
     if (cmd === "sync_status") return "synced";
     if (cmd === "update_status") return { current_version: "0.1.0", status: opts.updateReady ? { state: "ready", version: "0.2.0" } : { state: "off" } };
     if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
@@ -163,9 +163,9 @@ test("blur flushes the pending save", async () => {
   expect(drafts.get("inbox")?.text).toBe("hello");
 });
 
-test("a Home draft restored after its Topic was archived sends to the Inbox it shows", async () => {
+test("a Home draft restored after its Topic was deleted sends to the Inbox it shows", async () => {
   let load!: (rows: Row[]) => void;
-  const { calls } = backend({ load: new Promise<Row[]>(r => { load = r; }), topicsRefresh: Promise.resolve([{ id: "work-id", name: "Work", archived: true, item_count: 0 }]) });
+  const { calls } = backend({ load: new Promise<Row[]>(r => { load = r; }), topicsRefresh: Promise.resolve([]) });
   await start(); await open("Home");
   await act(async () => { await emit("items-changed"); });
   await settle();
@@ -185,7 +185,7 @@ test("a just-created Home Topic leaves the picker once the refresh no longer has
   fireEvent.click(screen.getByRole("menuitem", { name: "Create “Books”" }));
   await settle();
   expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Books");
-  await act(async () => release([{ id: "work-id", name: "Work", archived: false, item_count: 0 }]));
+  await act(async () => release([{ id: "work-id", name: "Work", item_count: 0 }]));
   expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Inbox");
   fireEvent.click(screen.getByRole("button", { name: "Topic" }));
   expect(screen.queryByRole("menuitemradio", { name: "Books" })).not.toBeInTheDocument();
@@ -208,7 +208,7 @@ test("creating a Home destination survives a delayed Topics refresh", async () =
   expect(drafts.get("home")?.home_topic_id).toBe("books-id");
   fireEvent.keyDown(box(), { key: "Enter" }); await settle();
   expect(calls.find(c => c.cmd === "capture")?.args.target).toEqual({ kind: "topic", id: "books-id" });
-  await act(async () => release([{ id: "work-id", name: "Work", archived: false, item_count: 0 }, { id: "books-id", name: "Books", archived: false, item_count: 0 }]));
+  await act(async () => release([{ id: "work-id", name: "Work", item_count: 0 }, { id: "books-id", name: "Books", item_count: 0 }]));
   expect(screen.getByRole("button", { name: "Topic" })).toHaveTextContent("Books");
 });
 
