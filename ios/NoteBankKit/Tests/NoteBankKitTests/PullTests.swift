@@ -93,7 +93,7 @@ struct PullTests {
     @Test func aPageIsStoredWithItsCursorAndTextRev() throws {
         let store = try configuredStore()
         let trashed = #"{"id":"j","topic_id":"t","text":null,"capture_time":"2025-10-09T08:53:21+00:00","deleted_at":"2025-10-10T00:00:00Z","purge_at":"2025-11-09T00:00:00.5Z","text_rev":2,"tunnel":false,"attachments":[]}"#
-        let topic = #"{"id":"t","name":"Mosaic","deleted_at":null}"#
+        let topic = #"{"id":"t","name":"Mosaic","activity_at":"1970-01-01T00:00:00Z","deleted_at":null}"#
         let p = try page(pageJSON(items: [item("i", "hello", textRev: 7, attachments: ["a"]), trashed], topics: [topic], cursor: 7))
 
         #expect(try store.applyPull(p, serverURL: Self.serverURL))
@@ -152,7 +152,7 @@ struct PullTests {
         let store = try configuredStore()
         let p = try page(pageJSON(
             items: [item("i", "v", textRev: 3, attachments: ["a", "b"])],
-            topics: [#"{"id":"t","name":"Gym","deleted_at":null}"#],
+            topics: [#"{"id":"t","name":"Gym","activity_at":"1970-01-01T00:00:00Z","deleted_at":null}"#],
             cursor: 4))
         _ = try store.applyPull(p, serverURL: Self.serverURL)
         let once = try snapshot(store)
@@ -185,7 +185,7 @@ struct PullTests {
 
         let other = try page(pageJSON(
             items: [item("i", "changed"), item("k", "new")],
-            topics: [#"{"id":"t","name":"Gym","deleted_at":null}"#],
+            topics: [#"{"id":"t","name":"Gym","activity_at":"1970-01-01T00:00:00Z","deleted_at":null}"#],
             tombstones: ["i"], cursor: 9))
         #expect(try !store.applyPull(other, serverURL: "http://127.0.0.1:10"))
 

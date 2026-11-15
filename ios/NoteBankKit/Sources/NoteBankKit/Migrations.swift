@@ -165,6 +165,9 @@ extension DatabaseMigrator {
                 UPDATE topics SET activity_at = coalesce((SELECT max(capture_time) FROM items WHERE topic_id = topics.id), 0);
                 """)
         }
+        migrator.registerMigration("v11") { db in
+            try db.execute(sql: "UPDATE device SET pull_cursor = 0;")
+        }
         return migrator
     }
 }

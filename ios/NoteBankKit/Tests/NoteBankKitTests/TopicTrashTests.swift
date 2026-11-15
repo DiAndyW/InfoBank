@@ -99,7 +99,7 @@ extension TopicTrashTests {
         _ = try store.editItem(itemID: id, text: "edited", baseRev: 0, adding: [staged.id], removing: [], nowUs: 3)
         try store.renameTopic(topic, name: "After", nowUs: 4)
         let json = """
-        {"items":[{"id":"\(id)","topic_id":"\(topic)","text":"original","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"tunnel":false,"attachments":[]}],"topics":[{"id":"\(topic)","name":"Before","deleted_at":null}],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":false}}
+        {"items":[{"id":"\(id)","topic_id":"\(topic)","text":"original","capture_time":"2025-10-09T08:53:20Z","deleted_at":null,"purge_at":null,"text_rev":0,"tunnel":false,"attachments":[]}],"topics":[{"id":"\(topic)","name":"Before","activity_at":"1970-01-01T00:00:00Z","deleted_at":null}],"tombstones":[],"cursor":1,"has_more":false,"settings":{"trash_after_copy":false}}
         """
         _ = try store.applyPull(JSONDecoder().decode(PullPage.self, from: Data(json.utf8)), serverURL: "https://notes.example.com")
         let item = try #require(store.items(in: .all, before: nil, limit: 10).first)
