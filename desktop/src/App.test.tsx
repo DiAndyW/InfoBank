@@ -2,10 +2,14 @@ import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@t
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import { expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
 import { behaviourTest, noticeMessage, type BehaviourExpectation } from "./behaviour-test";
 import { MAX_ATTACHMENT_BYTES, type Counts, type FeedAttachment, type FeedItem, type SearchItem, type Settings, type Staged, type StagedFiles, type SyncStatus, type Topic } from "./api";
+
+// Testing Library detects fake timers through the Jest clock API.
+beforeEach(() => { vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime }); });
+afterEach(() => { vi.unstubAllGlobals(); });
 
 type Options = {
   topics?: Topic[];
@@ -1091,7 +1095,7 @@ test("a press that barely moves, or Escape mid-drag, moves nothing", async () =>
   fireEvent.pointerEnter(gym);
   fireEvent.keyDown(window, { key: "Escape" });
   fireEvent.pointerUp(window, { clientX: 10, clientY: 0 });
-  await new Promise((r) => setTimeout(r, 50));
+  await act(async () => {});
   expect(moves(calls)).toEqual([]);
 });
 
@@ -1367,11 +1371,11 @@ test("the Notice goes on dismiss, or when the view changes", async () => {
 });
 
 test("the Notice goes by itself after 8 seconds, but waits while hovered", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     backend(configured, { topics: [topic("g", "Gym")] });
-    render(<App />);
+    await act(async () => { render(<App />); });
     await user.click(await screen.findByRole("button", { name: "Gym actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -1579,16 +1583,16 @@ test("a second Move to Trash replaces the Notice, and Undo restores the second I
 });
 
 test("a new Undo Notice gets its own 4 seconds", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   try {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     backend(configured, { items: () => [filed("1", "squat 100", null), filed("2", "bench 70", null)] });
-    render(<App />);
+    await act(async () => { render(<App />); });
     await trashOf("squat 100", user);
     const first = await screen.findByText("Item moved to Trash");
     await act(async () => vi.advanceTimersByTime(3000));
     await trashOf("bench 70", user);
-    await waitFor(() => expect(screen.getByText("Item moved to Trash")).not.toBe(first));
+    await vi.waitFor(() => expect(screen.getByText("Item moved to Trash")).not.toBe(first));
     await act(async () => vi.advanceTimersByTime(3000));
     expect(screen.getByText("Item moved to Trash")).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTime(1000));
@@ -1949,11 +1953,11 @@ test("an empty Trash says so", async () => {
 
 test("Restore puts the Item back, and Show opens its Topic with it highlighted even pages back", async () => {
   const old = filed("x", "old shoe sizes", "g");
-  const page = (day: number, prefix: string) => Array.from({ length: 100 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
+  const page = (day: number, prefix: string) => Array.from({ length: 2 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
   const calls = backend(configured, {
     topics: [topic("g", "Gym")],
     items: ({ view, before }) =>
-      view.kind === "trash" ? [inTrash(old, 15)] : before === null ? page(16, "new") : before.id === "new99" ? page(15, "mid") : [old],
+      view.kind === "trash" ? [inTrash(old, 15)] : before === null ? page(16, "new") : before.id === "new1" ? page(15, "mid") : [old],
   });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
@@ -2027,20 +2031,27 @@ test("typing in Search shows marked results over the Feed, and Esc brings the Fe
 });
 
 test("Clear search empties the field, and a field of spaces doesn't search", async () => {
-  const calls = backend(configured, { items: () => [feedItem("1", "in the feed", at(2026, 10, 14, 9, 41))] });
-  render(<App />);
-  await screen.findByText("in the feed");
-  const field = screen.getByRole("textbox", { name: "Search" });
-  await userEvent.type(field, "   ");
-  await new Promise((r) => setTimeout(r, 300));
-  expect(searchCalls(calls)).toEqual([]);
-  expect(feedHidden()).toBe(false);
-  await userEvent.type(field, "x");
-  expect(await screen.findByText("No Items match.")).toBeInTheDocument();
-  expect(feedHidden()).toBe(true);
-  await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
-  expect(field).toHaveValue("");
-  expect(feedHidden()).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [feedItem("1", "in the feed", at(2026, 10, 14, 9, 41))] });
+    await act(async () => { render(<App />); });
+    screen.getByText("in the feed");
+    const field = screen.getByRole("textbox", { name: "Search" });
+    await user.type(field, "   ");
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(searchCalls(calls)).toEqual([]);
+    expect(feedHidden()).toBe(false);
+    await user.type(field, "x");
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(screen.getByText("No Items match.")).toBeInTheDocument();
+    expect(feedHidden()).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(field).toHaveValue("");
+    expect(feedHidden()).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("⌘F focuses Search", async () => {
@@ -2112,18 +2123,23 @@ test("typing quickly sends one search, and a slow earlier answer never replaces 
 });
 
 test("Search waits while an input method is composing, and its Esc doesn't clear", async () => {
-  const calls = backend(configured);
-  render(<App />);
-  const field = await screen.findByRole("textbox", { name: "Search" });
-  fireEvent.compositionStart(field);
-  fireEvent.change(field, { target: { value: "jie" } });
-  await new Promise((r) => setTimeout(r, 300));
-  expect(searchCalls(calls)).toEqual([]);
-  fireEvent.change(field, { target: { value: "截" } });
-  fireEvent.compositionEnd(field);
-  await vi.waitFor(() => expect(searchCalls(calls).map((c) => c.args.query.text)).toEqual(["截"]));
-  fireEvent.keyDown(field, { key: "Escape", keyCode: 229 });
-  expect(field).toHaveValue("截");
+  vi.useFakeTimers();
+  try {
+    const calls = backend(configured);
+    await act(async () => { render(<App />); });
+    const field = screen.getByRole("textbox", { name: "Search" });
+    fireEvent.compositionStart(field);
+    fireEvent.change(field, { target: { value: "jie" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(searchCalls(calls)).toEqual([]);
+    fireEvent.change(field, { target: { value: "截" } });
+    fireEvent.compositionEnd(field);
+    await vi.waitFor(() => expect(searchCalls(calls).map((c) => c.args.query.text)).toEqual(["截"]));
+    fireEvent.keyDown(field, { key: "Escape", keyCode: 229 });
+    expect(field).toHaveValue("截");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("results follow changes from sync", async () => {
@@ -2263,10 +2279,10 @@ test("a Topic chosen as the place that's deleted elsewhere falls back to Anywher
 
 test("opening a result shows it highlighted in its Topic even pages back, and the field brings the results back", async () => {
   const old = filed("x", "the invoice", "g");
-  const page = (day: number, prefix: string) => Array.from({ length: 100 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
+  const page = (day: number, prefix: string) => Array.from({ length: 2 }, (_, i) => feedItem(`${prefix}${i}`, `${prefix} ${i}`, at(2026, 10, day, 10, 0) - i));
   backend(configured, {
     topics: [topic("g", "Gym")],
-    items: ({ before }) => (before === null ? page(16, "new") : before.id === "new99" ? page(15, "mid") : before.id === "mid99" ? [old] : []),
+    items: ({ before }) => (before === null ? page(16, "new") : before.id === "new1" ? page(15, "mid") : before.id === "mid1" ? [old] : []),
     search: () => [found(old)],
   });
   render(<App />);
@@ -2279,7 +2295,7 @@ test("opening a result shows it highlighted in its Topic even pages back, and th
   expect(screen.queryByRole("heading", { name: 'Results for "invoice"' })).not.toBeInTheDocument();
   await userEvent.click(field);
   expect(screen.getByRole("heading", { name: 'Results for "invoice"' })).toBeInTheDocument();
-}, 15_000);
+});
 
 test("a result in a Topic opens that Topic", async () => {
   const it = filed("x", "kept note", "o");
@@ -2317,18 +2333,25 @@ test("scrolling to the end of the results loads the next page", async () => {
 });
 
 test("hidden results don't search on every sync, and catch up when shown again", async () => {
-  const it = feedItem("1", "found note", at(2026, 10, 14, 9, 41));
-  const calls = backend(configured, { items: () => [it], search: () => [found(it)] });
-  render(<App />);
-  const field = await screen.findByRole("textbox", { name: "Search" });
-  await userEvent.type(field, "found");
-  await userEvent.click(await screen.findByRole("button", { name: /found note/ }));
-  const before = searchCalls(calls).length;
-  await act(() => emit("items-changed"));
-  await new Promise((r) => setTimeout(r, 300));
-  expect(searchCalls(calls)).toHaveLength(before);
-  await userEvent.click(field);
-  await vi.waitFor(() => expect(searchCalls(calls)).toHaveLength(before + 1));
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const it = feedItem("1", "found note", at(2026, 10, 14, 9, 41));
+    const calls = backend(configured, { items: () => [it], search: () => [found(it)] });
+    await act(async () => { render(<App />); });
+    const field = screen.getByRole("textbox", { name: "Search" });
+    await user.type(field, "found");
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    await user.click(screen.getByRole("button", { name: /found note/ }));
+    const before = searchCalls(calls).length;
+    await act(() => emit("items-changed"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    expect(searchCalls(calls)).toHaveLength(before);
+    await user.click(field);
+    await vi.waitFor(() => expect(searchCalls(calls)).toHaveLength(before + 1));
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("Past month and Past year on a day the earlier month lacks end on that month's last day", async () => {
@@ -2362,43 +2385,50 @@ test("a submenu opened by hovering closes when the pointer leaves it", async () 
 });
 
 test("heading toward the Move to submenu keeps it open even across other rows; pausing or backing off closes it", async () => {
-  backend(configured, { topics: [topic("t", "Taxes")], items: () => [feedItem("1", "hello", at(2026, 10, 14, 9, 41))] });
-  render(<App />);
-  await screen.findByText("hello");
-  await userEvent.click(screen.getByRole("button", { name: "Item actions" }));
-  const moveTo = screen.getByRole("menuitem", { name: "Move to" });
-  const open = async () => {
-    await userEvent.hover(moveTo);
-    const sub = screen.getByRole("menu", { name: "Move to" });
-    // Opened upward and to the left: near edge x = 100, bottom just 5 px below the Move to row.
-    vi.spyOn(sub, "getBoundingClientRect").mockReturnValue({ left: 0, right: 100, top: 0, bottom: 200, x: 0, y: 0, width: 100, height: 200, toJSON: () => ({}) });
-  };
-  const subOpen = () => screen.queryByRole("menu", { name: "Move to" }) !== null;
-  const wrap = moveTo.parentElement!;
-  const copyText = screen.getByRole("menuitem", { name: "Copy Text" });
-  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    backend(configured, { topics: [topic("t", "Taxes")], items: () => [feedItem("1", "hello", at(2026, 10, 14, 9, 41))] });
+    await act(async () => { render(<App />); });
+    screen.getByText("hello");
+    await user.click(screen.getByRole("button", { name: "Item actions" }));
+    const moveTo = screen.getByRole("menuitem", { name: "Move to" });
+    const open = async () => {
+      fireEvent.mouseEnter(moveTo);
+      const sub = screen.getByRole("menu", { name: "Move to" });
+      // Opened upward and to the left: near edge x = 100, bottom just 5 px below the Move to row.
+      vi.spyOn(sub, "getBoundingClientRect").mockReturnValue({ left: 0, right: 100, top: 0, bottom: 200, x: 0, y: 0, width: 100, height: 200, toJSON: () => ({}) });
+    };
+    const subOpen = () => screen.queryByRole("menu", { name: "Move to" }) !== null;
+    const wrap = moveTo.parentElement!;
+    const copyText = screen.getByRole("menuitem", { name: "Copy Text" });
+    const pause = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
-  await open();
-  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
-  fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
-  await pause(250);
-  fireEvent.mouseMove(copyText, { clientX: 150, clientY: 210 });
-  await pause(250);
-  expect(subOpen()).toBe(true);
-  await userEvent.hover(within(screen.getByRole("menu", { name: "Move to" })).getByRole("menuitemradio", { name: "Taxes" }));
-  await pause(500);
-  expect(subOpen()).toBe(true);
+    await open();
+    fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+    fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
+    await pause(250);
+    fireEvent.mouseMove(copyText, { clientX: 150, clientY: 210 });
+    await pause(250);
+    expect(subOpen()).toBe(true);
+    await user.hover(within(screen.getByRole("menu", { name: "Move to" })).getByRole("menuitemradio", { name: "Taxes" }));
+    await pause(500);
+    expect(subOpen()).toBe(true);
 
-  await open();
-  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
-  fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
-  await vi.waitFor(() => expect(subOpen()).toBe(false));
+    await open();
+    fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+    fireEvent.mouseMove(copyText, { clientX: 200, clientY: 205 });
+    await pause(400);
+    expect(subOpen()).toBe(false);
 
-  await open();
-  fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
-  fireEvent.mouseMove(copyText, { clientX: 248, clientY: 205 });
-  fireEvent.mouseMove(copyText, { clientX: 251, clientY: 215 });
-  expect(subOpen()).toBe(false);
+    await open();
+    fireEvent.mouseLeave(wrap, { clientX: 250, clientY: 195, relatedTarget: copyText });
+    fireEvent.mouseMove(copyText, { clientX: 248, clientY: 205 });
+    fireEvent.mouseMove(copyText, { clientX: 251, clientY: 215 });
+    expect(subOpen()).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 const openSettings = async () => userEvent.click(await screen.findByRole("button", { name: "Settings" }));
@@ -2699,11 +2729,11 @@ test("Show on a sync-notice move opens the Item's Topic with it highlighted; emp
 });
 
 test("a Notice expires after 4 seconds while the window is unfocused", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
   try {
     backend(configured);
-    render(<App />);
+    await act(async () => { render(<App />); });
     await screen.findByRole("button", { name: /^Inbox/ });
     await act(() => emit("sync-notices", [syncNotice("empty", "a")]));
     expect(await screen.findByText(/no text or files left/)).toBeInTheDocument();
@@ -2717,8 +2747,8 @@ test("a Notice expires after 4 seconds while the window is unfocused", async () 
 
 
 const tunnelItem = (text: string | null = "transfer this"): FeedItem => ({ ...filed("tunnel-note", text ?? "", null), text, in_tunnel: true });
-async function openTunnel() {
-  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
+async function openTunnel(user: { click: (el: Element) => Promise<void> } = userEvent) {
+  await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
   return screen.findByText("transfer this");
 }
 
@@ -2778,31 +2808,41 @@ for (const answer of ["Turn on", "Not now"]) {
 }
 
 test("double-clicking a Tunnel note edits it with at most one copy and no trash", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
-  render(<App />);
-  await user.dblClick(await openTunnel());
-  expect(await screen.findByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.filter((c) => c.cmd === "copy_item").length).toBeLessThanOrEqual(1);
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await user.dblClick(await openTunnel(user));
+    expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.filter((c) => c.cmd === "copy_item").length).toBeLessThanOrEqual(1);
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("links, attachments, and row buttons in the Tunnel never copy or trash", async () => {
-  const user = userEvent.setup();
-  const note = tunnelItem("https://example.com");
-  note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
-  const calls = backend(configured, { items: () => [note], trashAfterCopy: true });
-  render(<App />);
-  await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
-  await user.click(screen.getByRole("link", { name: "https://example.com" }));
-  await user.click(screen.getByRole("button", { name: "Open note.pdf" }));
-  await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
-  expect(calls.some((c) => c.cmd === "plugin:opener|open_url")).toBe(true);
-  expect(calls.some((c) => c.cmd === "open_attachment")).toBe(true);
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const note = tunnelItem("https://example.com");
+    note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
+    const calls = backend(configured, { items: () => [note], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await user.click(screen.getByRole("button", { name: /^Tunnel/ }));
+    await user.click(screen.getByRole("link", { name: "https://example.com" }));
+    await user.click(screen.getByRole("button", { name: "Open note.pdf" }));
+    await user.click(within(screen.getByRole("article")).getByRole("button", { name: "Item actions" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
+    expect(calls.some((c) => c.cmd === "plugin:opener|open_url")).toBe(true);
+    expect(calls.some((c) => c.cmd === "open_attachment")).toBe(true);
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 const mixedTunnelItem = () => ({ ...tunnelItem(), attachments: [report, photo] });
@@ -2835,17 +2875,22 @@ test("Inbox attachment and text copy buttons show confirmations without trashing
 });
 
 test("a Tunnel Attachment's copy button copies only that file and never trashes", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
-  render(<App />);
-  await openTunnel();
-  expect(screen.getByRole("button", { name: "Copy photo.jpg" })).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
-  expect(await screen.findByText("Copied report.pdf")).toBeInTheDocument();
-  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
-  expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a1" } });
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await openTunnel(user);
+    expect(screen.getByRole("button", { name: "Copy photo.jpg" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
+    expect(await screen.findByText("Copied report.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+    expect(calls).toContainEqual({ cmd: "copy_attachment", args: { attachmentId: "a1" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a failed Attachment copy shows why on the file", async () => {
@@ -2859,26 +2904,32 @@ test("a failed Attachment copy shows why on the file", async () => {
 });
 
 test("a Tunnel Item with files has a Copy Text button that copies only the text", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
-  render(<App />);
-  await openTunnel();
-  const item = screen.getByRole("article");
-  const copyButton = within(item).getByRole("button", { name: "Copy Text" });
-  const meta = item.querySelector<HTMLElement>(".nb-item-meta")!;
-  const time = within(meta).getByRole("time");
-  expect(meta.contains(copyButton)).toBe(true);
-  expect(copyButton.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(item.querySelector(".nb-item-text")?.contains(copyButton)).toBe(false);
-  await user.click(screen.getByRole("button", { name: "Select" }));
-  expect(within(item).queryByRole("button", { name: "Copy Text" })).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Done" }));
-  await user.click(screen.getByRole("button", { name: "Copy Text" }));
-  expect(await screen.findByText("Copied text")).toBeInTheDocument();
-  expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
-  expect(await navigator.clipboard.readText()).toBe("transfer this");
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [mixedTunnelItem()], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await openTunnel(user);
+    const item = screen.getByRole("article");
+    const copyButton = within(item).getByRole("button", { name: "Copy Text" });
+    const meta = item.querySelector<HTMLElement>(".nb-item-meta")!;
+    const time = within(meta).getByRole("time");
+    expect(meta.contains(copyButton)).toBe(true);
+    expect(copyButton.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(item.querySelector(".nb-item-text")?.contains(copyButton)).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    expect(within(item).queryByRole("button", { name: "Copy Text" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    await user.click(screen.getByRole("button", { name: "Copy Text" }));
+    expect(await screen.findByText("Copied text")).toBeInTheDocument();
+    expect(screen.queryByText("Copied", { selector: ".nb-mark" })).not.toBeInTheDocument();
+    const copiedText = navigator.clipboard.readText();
+    await vi.waitFor(async () => expect(await copiedText).toBe("transfer this"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("an attachment-only Tunnel Item has no Copy Text button", async () => {
@@ -2970,14 +3021,20 @@ test("Attachment copy buttons hide during multi-select without remounting their 
 });
 
 test("finishing a text selection in a Tunnel Item doesn't copy it", async () => {
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
-  render(<App />);
-  const text = await openTunnel();
-  document.getSelection()!.selectAllChildren(text);
-  fireEvent.click(text, { detail: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
-  document.getSelection()!.removeAllRanges();
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    const text = await openTunnel(user);
+    document.getSelection()!.selectAllChildren(text);
+    fireEvent.click(text, { detail: 1 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => ["copy_item", "trash_item"].includes(c.cmd))).toBe(false);
+    document.getSelection()!.removeAllRanges();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a failed clipboard write never changes the setting or trashes", async () => {
@@ -2990,30 +3047,41 @@ test("a failed clipboard write never changes the setting or trashes", async () =
 });
 
 test("an empty Tunnel Item is not copyable", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [tunnelItem(null)], trashAfterCopy: true });
-  render(<App />);
-  await user.click(await screen.findByRole("button", { name: /^Tunnel/ }));
-  await user.click(screen.getByRole("article"));
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem(null)], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await user.click(screen.getByRole("button", { name: /^Tunnel/ }));
+    await user.click(screen.getByRole("article"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => c.cmd === "copy_item")).toBe(false);
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("an attachment-only Tunnel Item copies completely before it can be trashed", async () => {
-  let finish!: () => void;
-  const gate = new Promise<void>((resolve) => { finish = resolve; });
-  const note = tunnelItem(null);
-  note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
-  const calls = backend(configured, { items: () => [note], trashAfterCopy: true, gates: { copy_item: gate } });
-  render(<App />);
-  await userEvent.click(await screen.findByRole("button", { name: /^Tunnel/ }));
-  await userEvent.click(screen.getByRole("article"));
-  await vi.waitFor(() => expect(calls.some((c) => c.cmd === "copy_item")).toBe(true));
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
-  await act(async () => finish());
-  expect(await screen.findByText("Copied, moved to Trash")).toBeInTheDocument();
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const note = tunnelItem(null);
+    note.attachments = [{ id: "f", filename: "note.pdf", mime_type: "application/pdf", size_bytes: 1, has_thumbnail: false, runnable: false }];
+    const calls = backend(configured, { items: () => [note], trashAfterCopy: true, gates: { copy_item: gate } });
+    await act(async () => { render(<App />); });
+    await user.click(screen.getByRole("button", { name: /^Tunnel/ }));
+    await user.click(screen.getByRole("article"));
+    await vi.waitFor(() => expect(calls.some((c) => c.cmd === "copy_item")).toBe(true));
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+    await act(async () => finish());
+    expect(screen.getByText("Copied, moved to Trash")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a whole-Item download or clipboard failure retains the Tunnel Item", async () => {
@@ -3027,16 +3095,22 @@ test("a whole-Item download or clipboard failure retains the Tunnel Item", async
 });
 
 test("leaving Tunnel during attachment downloads keeps the Item out of Trash", async () => {
-  let finish!: () => void;
-  const gate = new Promise<void>((resolve) => { finish = resolve; });
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, gates: { copy_item: gate } });
-  render(<App />);
-  await userEvent.click(await openTunnel());
-  await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
-  await act(async () => finish());
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
-  expect(screen.queryByText("Copied, moved to Trash")).not.toBeInTheDocument();
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, gates: { copy_item: gate } });
+    await act(async () => { render(<App />); });
+    await user.click(await openTunnel(user));
+    await user.click(screen.getByRole("button", { name: /^Inbox/ }));
+    await act(async () => finish());
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+    expect(screen.queryByText("Copied, moved to Trash")).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("Move to Tunnel and Undo preserve the original place", async () => {
@@ -3107,13 +3181,18 @@ test("two quickly clicked Tunnel notes both move to Trash", async () => {
 });
 
 test("leaving Tunnel cancels a pending copy-to-Trash decision", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
-  render(<App />);
-  await user.click(await openTunnel());
-  await user.click(screen.getByRole("button", { name: /^Inbox/ }));
-  await new Promise((resolve) => setTimeout(resolve, 650));
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true });
+    await act(async () => { render(<App />); });
+    await user.click(await openTunnel(user));
+    await user.click(screen.getByRole("button", { name: /^Inbox/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a synced setting change updates the switch while Settings stays open", async () => {
@@ -3129,55 +3208,70 @@ test("a synced setting change updates the switch while Settings stays open", asy
 });
 
 test("copying the same Tunnel note again restarts its Copied confirmation", async () => {
-  const user = userEvent.setup();
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: false });
-  render(<App />);
-  await user.click(await openTunnel());
-  await screen.findByText("Copied");
-  await act(() => new Promise((resolve) => setTimeout(resolve, 750)));
-  await user.click(screen.getByText("transfer this"));
-  await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(3));
-  await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
-  expect(screen.getByText("Copied")).toBeInTheDocument();
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: false });
+    await act(async () => { render(<App />); });
+    await user.click(await openTunnel(user));
+    await screen.findByText("Copied");
+    await act(async () => { await vi.advanceTimersByTimeAsync(750); });
+    await user.click(screen.getByText("transfer this"));
+    await vi.waitFor(() => expect(calls.filter((c) => c.cmd === "trash_after_copy")).toHaveLength(3));
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a Copied confirmation expiring just as the note is copied again doesn't clear the new one", async () => {
+  vi.useFakeTimers();
   const timers = vi.spyOn(globalThis, "setTimeout");
-  const user = userEvent.setup();
-  let asked = 0;
-  let answer = (_: boolean) => {};
-  backend(configured, {
-    items: () => [tunnelItem()],
-    pulledTrashAfterCopy: () => (++asked <= 2 ? false : new Promise<boolean>((resolve) => { answer = resolve; })),
-  });
-  render(<App />);
-  await user.click(await openTunnel());
-  await screen.findByText("Copied");
-  const expireFirst = await vi.waitFor(() => timers.mock.calls.find(([, ms]) => ms === 1500)![0] as () => void);
-  await user.click(screen.getByText("transfer this"));
-  await vi.waitFor(() => expect(asked).toBe(3));
-  // React holds updates until act ends, so the new confirmation is set but not yet shown when the old timer fires.
-  await act(async () => {
-    answer(false);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expireFirst();
-  });
-  expect(screen.getByText("Copied")).toBeInTheDocument();
-  timers.mockRestore();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let asked = 0;
+    let answer = (_: boolean) => {};
+    backend(configured, {
+      items: () => [tunnelItem()],
+      pulledTrashAfterCopy: () => (++asked <= 2 ? false : new Promise<boolean>((resolve) => { answer = resolve; })),
+    });
+    render(<App />);
+    await user.click(await openTunnel(user));
+    await screen.findByText("Copied");
+    const expireFirst = await vi.waitFor(() => timers.mock.calls.find(([, ms]) => ms === 1500)![0] as () => void);
+    await user.click(screen.getByText("transfer this"));
+    await vi.waitFor(() => expect(asked).toBe(3));
+    // React holds updates until act ends, so the new confirmation is set but not yet shown when the old timer fires.
+    await act(async () => {
+      answer(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expireFirst();
+    });
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+  } finally {
+    timers.mockRestore();
+    vi.useRealTimers();
+  }
 });
 
 test("a slow system double-click edits a Tunnel note without trashing it", async () => {
-  userEvent.setup();
-  const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, doubleClickIntervalMs: 900 });
-  render(<App />);
-  const text = await openTunnel();
-  fireEvent.click(text, { detail: 1 });
-  await act(() => new Promise((resolve) => setTimeout(resolve, 650)));
-  fireEvent.click(text, { detail: 2 });
-  fireEvent.doubleClick(text, { detail: 2 });
-  expect(await screen.findByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
-  await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
-  expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  vi.useFakeTimers();
+  try {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const calls = backend(configured, { items: () => [tunnelItem()], trashAfterCopy: true, doubleClickIntervalMs: 900 });
+    await act(async () => { render(<App />); });
+    const text = await openTunnel(user);
+    fireEvent.click(text, { detail: 1 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(650); });
+    fireEvent.click(text, { detail: 2 });
+    fireEvent.doubleClick(text, { detail: 2 });
+    expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("transfer this");
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(calls.some((c) => c.cmd === "trash_item")).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a failed system timing read keeps a copied Tunnel note out of Trash", async () => {
@@ -4385,8 +4479,11 @@ async function checkCopyPlace(expected: BehaviourExpectation, place: string, pre
       fireEvent.keyDown(menu, { key: "Escape" });
     }
     const row = rowOf("transfer this");
-    fireEvent.click(row, { detail: 1 });
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(row, { detail: 1 });
+      await act(async () => { await vi.advanceTimersByTimeAsync(550); });
+    } finally { vi.useRealTimers(); }
     expect(calls.some(call => call.cmd === "copy_item")).toBe(expected.row);
   } else {
     await userEvent.type(screen.getByRole("textbox", { name: "Search" }), "transfer");

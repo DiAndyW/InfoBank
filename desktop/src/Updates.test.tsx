@@ -66,7 +66,7 @@ test.each([
   vi.setSystemTime(now);
   try {
     await settings(status);
-    expect(screen.getByText(text)).toBeInTheDocument();
+    expect(await screen.findByText(text)).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
 });
 
@@ -105,7 +105,7 @@ test("settings_refreshes_relative_time_each_minute", async () => {
   vi.setSystemTime(now);
   try {
     await settings({ state: "up_to_date", checked_at: now.toISOString() });
-    expect(screen.getByText("Up to date, just now")).toBeInTheDocument();
+    expect(await screen.findByText("Up to date, just now")).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(60_000));
     expect(screen.getByText("Up to date, 1 minute ago")).toBeInTheDocument();
   } finally { vi.useRealTimers(); }
