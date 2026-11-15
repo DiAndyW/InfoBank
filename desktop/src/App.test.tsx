@@ -161,6 +161,41 @@ const topic = (id: string, name: string, extra: Partial<Topic> = {}): Topic => (
 
 const configured = { server_url: "https://notes.example.com", has_secret: true };
 
+test.each(["Gym", "Inbox", "Tunnel", "Trash"])("the Feed's header names the place beside Select: %s", async name => {
+  backend(configured, { topics: [topic("g", "Gym")] });
+  render(<App />);
+  const nav = within(await screen.findByRole("navigation"));
+  await userEvent.click(nav.getByRole("button", { name: name === "Gym" ? name : new RegExp(`^${name}`) }));
+  const heading = screen.getByRole("heading", { name, level: 2 });
+  const header = heading.parentElement!;
+  await userEvent.click(within(header).getByRole("button", { name: "Select" }));
+  expect(within(header).getByRole("heading", { name })).toBeInTheDocument();
+  await userEvent.click(within(header).getByRole("button", { name: "Done" }));
+  expect(within(header).getByRole("button", { name: "Select" })).toBeInTheDocument();
+  await userEvent.click(nav.getByRole("button", { name: "Home" }));
+  expect(screen.getByRole("heading", { name: "NoteBank", level: 1 })).toHaveClass("nb-home-title");
+  expect(screen.queryByRole("heading", { level: 2 })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select" })).not.toBeInTheDocument();
+});
+
+test("the Feed's header names the renamed Topic", async () => {
+  const gym = topic("g", "Gym");
+  backend(configured, { topics: [gym] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Gym" }));
+  expect(screen.getByRole("heading", { name: "Gym" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Gym actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const field = screen.getByLabelText("Topic name");
+  await userEvent.clear(field);
+  await userEvent.type(field, "Lifting{Enter}");
+  gym.name = "Lifting";
+  await act(() => emit("items-changed"));
+  expect(await screen.findByRole("heading", { name: "Lifting" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Gym" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Lifting" })).toBeInTheDocument();
+});
+
 test("multi-select Tunnel modifier clicks do not copy, final deselection exits, and batch Copy trashes once", async () => {
   const items = [feedItem("b", "newer", 2), feedItem("a", "older", 1)];
   const calls = backend(configured, { items: () => items, trashAfterCopy: true });

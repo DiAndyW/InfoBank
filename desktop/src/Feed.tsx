@@ -357,7 +357,8 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
   return (
     <main className={["nb-feed", covered && "is-covered", home && "is-home"].filter(Boolean).join(" ")} aria-hidden={covered || undefined} inert={covered}>
       {home && <h1 className="nb-home-title">NoteBank</h1>}
-      {!home && <div className="nb-selection-controls">
+      {!home && <div className="nb-feed-head">
+        <h2 className="nb-feed-title">{view.kind === "topic" ? current?.name : view.kind === "tunnel" ? "Tunnel" : trash ? "Trash" : "Inbox"}</h2>
         <button className="nb-btn nb-btn-quiet" onClick={() => {
           cancelCopy();
           setMenuFor(null);

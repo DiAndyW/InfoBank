@@ -11,6 +11,7 @@ struct AttachmentView: View {
     var attachments: [FeedAttachment] = []
     @Environment(\.attachmentTransfers) private var transfers
     @Environment(\.palette) private var palette
+    @Environment(\.ruledLine) private var ruledLine
     @State private var thumbnail: URL?
     @State private var thumbnailPending = true
     @State private var preview: URL?
@@ -23,7 +24,7 @@ struct AttachmentView: View {
     private var isVideo: Bool { attachment.mimeType.hasPrefix("video/") }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: ruledLine == nil ? 4 : 0) {
             Button {
                 guard !loading, let transfers else { return }
                 if attachment.mimeType.hasPrefix("image/") || isVideo {
@@ -43,9 +44,10 @@ struct AttachmentView: View {
                     loading = false
                 }
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: ruledLine == nil ? 4 : 0) {
                     if let thumbnail, let image = UIImage(contentsOfFile: thumbnail.path) {
-                        Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 180)
+                        Image(uiImage: image).resizable().scaledToFit().frame(height: ruledLine.map { 6 * $0 - 8 })
+                            .frame(maxHeight: ruledLine == nil ? 180 : nil)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay {
                                 if loading { ProgressView().padding(8).background(.regularMaterial, in: Circle()) }
@@ -57,16 +59,19 @@ struct AttachmentView: View {
                             }
                     } else if thumbnailPending && (attachment.mimeType.hasPrefix("image/") || isVideo) {
                         // Reserves the thumbnail's height so rows don't grow after the Feed scrolls to an Item.
-                        RoundedRectangle(cornerRadius: 8).fill(palette.chip).frame(maxWidth: .infinity).frame(height: 180)
+                        RoundedRectangle(cornerRadius: 8).fill(palette.chip).frame(maxWidth: .infinity).frame(height: ruledLine.map { 6 * $0 - 8 } ?? 180)
                     } else {
-                        HStack(spacing: 6) {
+                        HStack(alignment: ruledLine == nil ? .center : .top, spacing: 6) {
                             if loading { ProgressView() } else { Image(systemName: "doc") }
-                            Text(attachment.filename).lineLimit(2)
+                            Text(attachment.filename).lineLimit(ruledLine == nil ? 2 : nil)
                             Text(ByteCountFormatter.string(fromByteCount: attachment.sizeBytes, countStyle: .file)).foregroundStyle(palette.inkMuted)
                         }
                         .font(.plex(.sans, 13, relativeTo: .footnote))
+                        .ruledTextSpacing(.sans, 13, relativeTo: .footnote, padsTop: false)
+                        .frame(minHeight: ruledLine.map { 2 * $0 - 8 }, alignment: ruledLine == nil ? .leading : .bottomLeading)
                     }
                 }
+                .padding(.vertical, ruledLine == nil ? 0 : 4)
                 .foregroundStyle(palette.ink)
                 .frame(minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
@@ -75,6 +80,8 @@ struct AttachmentView: View {
             .accessibilityLabel("\(isVideo ? "Play" : "Open") \(attachment.filename)")
             if let error = error ?? attachment.uploadError {
                 Label(error, systemImage: "exclamationmark.triangle").font(.plex(.sans, 12, relativeTo: .caption)).foregroundStyle(palette.danger)
+                    .ruledTextSpacing(.sans, 12, relativeTo: .caption1)
+                    .snapToLines()
             }
         }
         .task(id: attachment) {

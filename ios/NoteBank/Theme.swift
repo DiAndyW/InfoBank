@@ -3,6 +3,8 @@ import SwiftUI
 struct Palette {
     let surface, surfaceSidebar, surfaceRaised, hover, line, lineStrong, ink, inkMuted: Color
     let accent, onAccent, accentSoft, okMark, danger, dangerSoft, chip: Color
+    var rule: Color? = nil
+    var feedBar: Color? = nil
 }
 
 enum Theme: String, CaseIterable {
@@ -39,7 +41,8 @@ enum Theme: String, CaseIterable {
                 surface: Color(0xfdf5b8), surfaceSidebar: Color(0xefe2a0), surfaceRaised: Color(0xfffbe0), hover: Color(0xebdc95),
                 line: Color(0xd8c879), lineStrong: Color(0x8a7f4c), ink: Color(0x1f2a44), inkMuted: Color(0x5c5433),
                 accent: Color(0x1e4fa8), onAccent: Color(0xfffbe0), accentSoft: Color(0xe4dfb4),
-                okMark: Color(0x2f8f52), danger: Color(0xa3261b), dangerSoft: Color(0xf7dcc4), chip: Color(0xf3e7a6))
+                okMark: Color(0x2f8f52), danger: Color(0xa3261b), dangerSoft: Color(0xf7dcc4), chip: Color(0xf3e7a6),
+                rule: Color(0xa9c5e3), feedBar: Color(0xb3473a))
         }
     }
 }
@@ -52,6 +55,7 @@ extension Color {
 
 extension EnvironmentValues {
     @Entry var palette = Theme.paper.palette
+    @Entry var ruledLine: CGFloat? = nil
 }
 
 enum PlexFont: String {

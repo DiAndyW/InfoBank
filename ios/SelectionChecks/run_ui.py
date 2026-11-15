@@ -82,7 +82,7 @@ struct BatchActionsBar: View {''' + toolbar)
         subprocess.run(["xcodebuild", "test", "-project", str(project), "-scheme", "Selection", "-destination", f"platform=iOS Simulator,id={device}", "-derivedDataPath", str(root / "build"), "-resultBundlePath", result, "-parallel-testing-enabled", "NO"], check=True)
         summary = json.loads(subprocess.check_output(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path", result], text=True))
         assert summary["totalTestCount"] == 4 and summary["passedTests"] == 4, summary
-        print("4 Item selection UI tests passed: compact toolbar, exchanged action slot, hold, add, final deselection, normal tap, and scrolling")
+        print("4 Item selection UI tests passed: hold opens actions, explicit Select entry, final deselection, compact toolbar, normal tap, and scrolling")
     finally:
         for identifier in ["app.notebank.selection-ui", "app.notebank.selection-ui.tests.xctrunner"]:
             subprocess.run(["xcrun", "simctl", "uninstall", device, identifier], check=False)
