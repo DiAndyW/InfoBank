@@ -127,6 +127,12 @@ struct SearchView: View {
                 .background(palette.chip, in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(RoundedRectangle(cornerRadius: 10))
                 .onTapGesture { fieldFocused = true }
+                if !batch.selection.isSelecting && !model.results.isEmpty {
+                    Button("Select") { fieldFocused = false; batch.selection.enter() }
+                        .font(.plex(.sans, 17))
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: 44)
+                }
                 Button(batch.selection.isSelecting ? "Done" : "Cancel", action: batch.selection.isSelecting ? batch.cancel : onCancel)
                     .font(.plex(.sans, 17))
                     .padding(.horizontal, 8)
@@ -210,8 +216,7 @@ struct SearchView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(model.results) { result in
                                 if result.id != model.results.first?.id { Divider().overlay(palette.line) }
-                                SelectableItemRow(selection: batch.selection, item: result.item, busy: batch.busy,
-                                                  onBegin: { fieldFocused = false }) {
+                                SelectableItemRow(selection: batch.selection, item: result.item, busy: batch.busy) {
                                     SearchResultRow(result: result) { onOpen(result.id) }
                                 }
                                     .onAppear { if result.id == model.results.last?.id { model.loadMore() } }

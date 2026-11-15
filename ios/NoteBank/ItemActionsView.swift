@@ -6,7 +6,6 @@ struct ItemActionsView: View {
     let store: Store
     var place: Place = .inbox
     var trashAfterCopy: Bool? = false
-    var onSelect: (() -> Void)?
     enum Copy { case item(Bool?), text }
     let onCopy: (Copy) -> Void
     let onChanged: (_ trashed: Bool, _ moved: Bool) -> Void
@@ -57,7 +56,6 @@ struct ItemActionsView: View {
                 switch page {
                 case .commands:
                     List {
-                        if let onSelect, item.syncError == nil { Button("Select", systemImage: "checkmark.circle", action: onSelect) }
                         ForEach(CopyActions(place: place, hasText: item.text != nil, trashAfterCopy: trashAfterCopy).menu, id: \.kind) { action in
                             Button(action.label, systemImage: "doc.on.doc") {
                                 onCopy(action.kind == .text ? .text : .item(trashAfterCopy))

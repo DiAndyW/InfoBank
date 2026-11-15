@@ -471,5 +471,34 @@ mod tests {
             url: window.url().unwrap(), body: serde_json::json!({}).into(), headers: Default::default(), invoke_key: INVOKE_KEY.to_string(),
         });
         assert_eq!(result.unwrap_err(), serde_json::json!("No update is ready"));
+        assert!(!dir.path().join("restart-after-update").exists());
+    }
+
+    #[test]
+    fn restart_marker_exists_during_install_and_is_removed_on_failure() {
+        use tauri::test::{INVOKE_KEY, get_ipc_response, mock_builder};
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("restart-after-update");
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder().invoke_handler(tauri::generate_handler![crate::commands::restart_to_update])
+            .build(tauri::generate_context!(test = true)).unwrap();
+        let state = crate::AppState::new(conn, secret, dir.path().to_path_buf());
+        let seen = Arc::new(Mutex::new(None));
+        let recorded = seen.clone();
+        let install_marker = marker.clone();
+        state.update.inner.lock().unwrap().install = Some(Box::new(move |relaunch| {
+            *recorded.lock().unwrap() = Some((relaunch, install_marker.is_file()));
+            Err("install failed".into())
+        }));
+        app.manage(state);
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default()).build().unwrap();
+        let result = get_ipc_response(&window, tauri::webview::InvokeRequest {
+            cmd: "restart_to_update".into(), callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
+            url: window.url().unwrap(), body: serde_json::json!({}).into(), headers: Default::default(), invoke_key: INVOKE_KEY.to_string(),
+        });
+        assert_eq!(result.unwrap_err(), serde_json::json!("install failed"));
+        assert_eq!(*seen.lock().unwrap(), Some((true, true)));
+        assert!(!marker.exists());
     }
 }

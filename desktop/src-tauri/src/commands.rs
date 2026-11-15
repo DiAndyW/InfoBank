@@ -440,7 +440,14 @@ pub async fn restart_to_update<R: Runtime>(app: AppHandle<R>, window: tauri::Web
     }
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        handle.state::<AppState>().update.install(true, &mut |status| crate::updater::emit(&handle, status))
+        let state = handle.state::<AppState>();
+        let marker = state.dir.join(crate::RESTART_AFTER_UPDATE);
+        std::fs::write(&marker, []).map_err(crate::error_message::message)?;
+        let result = state.update.install(true, &mut |status| crate::updater::emit(&handle, status));
+        if result.is_err() {
+            let _ = std::fs::remove_file(marker);
+        }
+        result
     }).await.map_err(crate::error_message::message)??;
     app.restart();
 }

@@ -6,7 +6,8 @@ import XCTest
         app.launch()
         let first = app.buttons["Item 1"]
         XCTAssertTrue(first.waitForExistence(timeout: 5))
-        first.press(forDuration: 0.8)
+        app.buttons["Select"].tap()
+        app.buttons["Item 1"].tap()
         let copy = app.buttons["Copy & Trash"]
         XCTAssertTrue(copy.waitForExistence(timeout: 3))
         let trash = app.buttons["Trash"].frame
@@ -19,41 +20,41 @@ import XCTest
         XCTAssertEqual(count.midY, copy.frame.midY, accuracy: 2)
     }
 
-    func testSelectionExchangesActionSlotWithoutChangingContentWidth() {
+    func testHoldOpensActionsAndDoesNotSelect() {
         let app = XCUIApplication()
         app.launch()
         let first = app.buttons["Item 1"]
         XCTAssertTrue(first.waitForExistence(timeout: 5))
-        let origin = Double(app.staticTexts["content-origin"].label)!
-        let width = Double(app.staticTexts["content-width"].label)!
-        let height = app.staticTexts["content-height"].label
         first.press(forDuration: 0.8)
-        XCTAssertTrue(app.staticTexts["Selected: 1"].waitForExistence(timeout: 3))
-        XCTAssertEqual(Double(app.staticTexts["content-origin"].label)!, origin + 36, accuracy: 1)
-        XCTAssertEqual(Double(app.staticTexts["content-width"].label)!, width, accuracy: 1)
-        XCTAssertEqual(height, app.staticTexts["content-height"].label)
-        let contentRight = Double(app.staticTexts["content-origin"].label)! + Double(app.staticTexts["content-width"].label)!
-        XCTAssertEqual(Double(app.staticTexts["row-right"].label)! - contentRight, 8, accuracy: 1)
+        XCTAssertTrue(app.staticTexts["Commands: 1"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Copies: 0"].exists)
+        XCTAssertFalse(app.buttons["Item 1"].value as? String == "Selected")
+        XCTAssertFalse(app.buttons["Item 1"].value as? String == "Not selected")
+        XCTAssertFalse(app.staticTexts["0 selected"].exists)
+        XCTAssertFalse(app.staticTexts["1 selected"].exists)
         XCTAssertFalse(app.buttons["Item actions"].exists)
-        app.buttons["Item 1"].tap()
-        XCTAssertTrue(app.staticTexts["Selected: 0"].exists)
-        XCTAssertEqual(Double(app.staticTexts["content-origin"].label)!, origin, accuracy: 1)
-        XCTAssertEqual(Double(app.staticTexts["content-width"].label)!, width, accuracy: 1)
     }
 
-    func testHoldSelectsWithoutCopyAndLastDeselectionRestoresNormalTaps() {
+    func testSelectButtonEntersAndLastDeselectionExits() {
         let app = XCUIApplication()
         app.launch()
-        let first = app.buttons["Item 1"]
-        XCTAssertTrue(first.waitForExistence(timeout: 5))
-        first.press(forDuration: 0.8)
-        XCTAssertTrue(app.staticTexts["Selected: 1"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Copies: 0"].exists)
-        app.buttons["Item 2"].tap()
-        XCTAssertTrue(app.staticTexts["Selected: 2"].exists)
+        XCTAssertTrue(app.buttons["Item 1"].waitForExistence(timeout: 5))
+        let select = app.buttons["Select"]
+        XCTAssertTrue(select.waitForExistence(timeout: 3))
+        guard select.exists else { return }
+        select.tap()
+        XCTAssertTrue(app.staticTexts["0 selected"].waitForExistence(timeout: 3))
+        XCTAssertEqual(app.buttons["Item 1"].value as? String, "Not selected")
+        XCTAssertFalse(app.buttons["Copy & Trash"].isEnabled)
+        XCTAssertFalse(app.buttons["Trash"].isEnabled)
         app.buttons["Item 1"].tap()
-        app.buttons["Item 2"].tap()
-        XCTAssertTrue(app.staticTexts["Selected: 0"].exists)
+        XCTAssertTrue(app.staticTexts["1 selected"].exists)
+        XCTAssertEqual(app.buttons["Item 1"].value as? String, "Selected")
+        XCTAssertTrue(app.buttons["Copy & Trash"].isEnabled)
+        XCTAssertTrue(app.buttons["Trash"].isEnabled)
+        app.buttons["Item 1"].tap()
+        XCTAssertFalse(app.staticTexts["0 selected"].exists)
+        XCTAssertFalse(app.buttons["Item 1"].value as? String == "Not selected")
         XCTAssertTrue(app.staticTexts["Copies: 0"].exists)
         app.buttons["Item 1"].tap()
         XCTAssertTrue(app.staticTexts["Copies: 1"].exists)
@@ -67,7 +68,9 @@ import XCTest
         first.tap()
         XCTAssertTrue(app.staticTexts["Copies: 1"].exists)
         XCTAssertTrue(app.staticTexts["Selected: 0"].exists)
+        XCTAssertFalse(app.buttons["Item 1"].value as? String == "Not selected")
         app.scrollViews.firstMatch.swipeUp()
         XCTAssertTrue(app.staticTexts["Selected: 0"].exists)
+        XCTAssertFalse(app.staticTexts["0 selected"].exists)
     }
 }

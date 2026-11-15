@@ -96,8 +96,11 @@ fn open_store(dir: &Path) -> Result<rusqlite::Connection, String> {
     Ok(db)
 }
 
-fn show_main_at_launch(args: &[String], failed: bool) -> bool {
-    failed || !args.iter().any(|a| a == "--hidden")
+const RESTART_AFTER_UPDATE: &str = "restart-after-update";
+
+fn show_main_at_launch(args: &[String], failed: bool, dir: Option<&Path>) -> bool {
+    let restarted = dir.is_some_and(|dir| std::fs::remove_file(dir.join(RESTART_AFTER_UPDATE)).is_ok());
+    failed || restarted || !args.iter().any(|a| a == "--hidden")
 }
 
 pub(crate) fn show_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -174,9 +177,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let failure = match app.path().app_data_dir() {
+            let data_dir = app.path().app_data_dir();
+            let failure = match &data_dir {
                 Err(e) => Some(StartupError { message: format!("Couldn't find the data folder: {e}"), data_dir: None }),
-                Ok(dir) => start(app.handle(), &dir)
+                Ok(dir) => start(app.handle(), dir)
                     .err()
                     .map(|message| StartupError { message, data_dir: Some(dir.display().to_string()) }),
             };
@@ -188,7 +192,7 @@ pub fn run() {
             for window in &app.config().app.windows {
                 tauri::WebviewWindowBuilder::from_config(app.handle(), window)?.build()?;
             }
-            if show_main_at_launch(&std::env::args().collect::<Vec<_>>(), failed) {
+            if show_main_at_launch(&std::env::args().collect::<Vec<_>>(), failed, data_dir.as_deref().ok()) {
                 show_main(app.handle());
             }
             Ok(())
@@ -330,9 +334,33 @@ mod tests {
     #[test]
     fn the_window_stays_hidden_only_for_a_login_launch_that_started() {
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert!(show_main_at_launch(&args(&["notebank"]), false));
-        assert!(!show_main_at_launch(&args(&["notebank", "--hidden"]), false));
-        assert!(show_main_at_launch(&args(&["notebank", "--hidden"]), true), "a failure was invisible");
+        assert!(show_main_at_launch(&args(&["notebank"]), false, None));
+        assert!(!show_main_at_launch(&args(&["notebank", "--hidden"]), false, None));
+        assert!(show_main_at_launch(&args(&["notebank", "--hidden"]), true, None), "a failure was invisible");
+    }
+
+    #[test]
+    fn restart_marker_shows_a_hidden_launch_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("restart-after-update");
+        let args = vec!["notebank".into(), "--hidden".into()];
+        assert!(!show_main_at_launch(&args, false, Some(dir.path())));
+        std::fs::write(&marker, []).unwrap();
+        assert!(show_main_at_launch(&args, false, Some(dir.path())));
+        assert!(!marker.exists());
+        assert!(!show_main_at_launch(&args, false, Some(dir.path())));
+    }
+
+    #[test]
+    fn restart_marker_is_consumed_even_on_a_normal_or_failed_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("restart-after-update");
+        for failed in [false, true] {
+            std::fs::write(&marker, []).unwrap();
+            assert!(show_main_at_launch(&["notebank".into()], failed, Some(dir.path())));
+            assert!(!marker.exists());
+            assert!(!show_main_at_launch(&["notebank".into(), "--hidden".into()], false, Some(dir.path())));
+        }
     }
 
     #[test]

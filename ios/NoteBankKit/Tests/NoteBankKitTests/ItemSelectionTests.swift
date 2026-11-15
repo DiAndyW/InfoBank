@@ -2,9 +2,27 @@ import Testing
 @testable import NoteBankKit
 
 @MainActor struct ItemSelectionTests {
-    @Test func holdEntryToggleAndLastDeselectionExit() {
+    @Test func enterSelectsNothingAndStaysSelecting() {
+        let s = ItemSelection(); s.enter()
+        #expect(s.isSelecting && s.ids.isEmpty)
+    }
+    @Test func deselectingTheLastItemExits() {
+        let s = ItemSelection(); s.enter(); s.toggle("a"); s.toggle("b"); s.toggle("a")
+        #expect(s.isSelecting); s.toggle("b"); #expect(!s.isSelecting)
+    }
+    @Test func reconcileExitsOnlyWhenItRemovedTheLastChosenItem() {
+        let s = ItemSelection(); s.enter(); s.reconcile(["x"]); #expect(s.isSelecting)
+        s.toggle("a"); s.reconcile(["x"]); #expect(!s.isSelecting && s.ids.isEmpty)
+    }
+    @Test func clearExits() {
+        let s = ItemSelection(); s.enter(); s.toggle("a"); s.clear()
+        #expect(!s.isSelecting && s.ids.isEmpty)
+    }
+
+    @Test func explicitEntryToggleAndLastDeselectionExit() {
         let selection = ItemSelection()
-        selection.begin("a")
+        selection.enter()
+        selection.toggle("a")
         #expect(selection.ids == ["a"])
         selection.toggle("b")
         #expect(selection.ids == ["a", "b"])
@@ -15,7 +33,8 @@ import Testing
 
     @Test func refreshDropsMissingIDsWithoutSelectingArrivalsAndPreservesOrder() {
         let selection = ItemSelection()
-        selection.begin("a")
+        selection.enter()
+        selection.toggle("a")
         selection.toggle("b")
         selection.reconcile(["b", "c"])
         #expect(selection.orderedIDs(in: ["c", "b"]) == ["b"])

@@ -34,6 +34,7 @@ struct FeedView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.palette) private var palette
+    @ScaledMetric(relativeTo: .body) private var lineHeight: CGFloat = 26
     @State private var model: FeedModel
     private let composers: Composers
     let onUndoClear: (DraftPlace) -> Void
@@ -124,26 +125,23 @@ struct FeedView: View {
     }
 
     private var loadMore: some View {
-        ProgressView().frame(maxWidth: .infinity).onScrollVisibilityChange { shown in
+        ProgressView().frame(maxWidth: .infinity).ruledLines().onScrollVisibilityChange { shown in
             if shown { model.loadOlder() }
         }
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        HStack(spacing: 10) {
-            Rectangle().fill(palette.line).frame(height: 1)
-            Text(title).font(.plex(.sansSemibold, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
-            Rectangle().fill(palette.line).frame(height: 1)
-        }.padding(.top, 14).padding(.bottom, 6).accessibilityAddTraits(.isHeader)
+        FeedSectionHeader(title: title).ruledLines()
     }
 
     private func itemRow(_ item: FeedItem, showsTime: Bool = true) -> some View {
         SelectableItemRow(selection: batch.selection, item: item, busy: batch.busy,
-                          onBegin: { copyTask?.cancel() }, onCommands: { commands = item }) {
+                          onCommands: { commands = item }) {
             ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
                     copyable: CopyActions(place: place.query, hasText: item.text != nil).row, copied: copiedID == item.id,
                     onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
         }
+        .ruledLines()
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
@@ -191,67 +189,87 @@ struct FeedView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if model.hasOlder && place != .trash { loadMore }
-                    if let error = model.loadError {
-                        Text(error).font(.plex(.sansMedium, 13, relativeTo: .footnote)).foregroundStyle(palette.danger)
-                    }
-                    if place == .trash {
-                        TimelineView(.periodic(from: .now, by: 60)) { context in
-                            let groups = TrashGroup.group(model.items, nowUs: Int64(context.date.timeIntervalSince1970 * 1_000_000))
-                            ForEach(groups) { group in
-                                sectionHeader(group.title)
-                                ForEach(group.items) { item in itemRow(item) }
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if model.hasOlder && place != .trash { loadMore }
+                        if let error = model.loadError {
+                            Text(error).font(.plex(.sansMedium, 13, relativeTo: .footnote)).foregroundStyle(palette.danger)
+                                .ruledTextSpacing(.sansMedium, 13, relativeTo: .footnote)
+                                .frame(maxWidth: palette.rule == nil ? nil : .infinity, alignment: .leading).ruledLines()
+                        }
+                        if place == .trash {
+                            TimelineView(.periodic(from: .now, by: 60)) { context in
+                                let groups = TrashGroup.group(model.items, nowUs: Int64(context.date.timeIntervalSince1970 * 1_000_000))
+                                ForEach(groups) { group in
+                                    sectionHeader(group.title)
+                                    ForEach(group.items) { item in itemRow(item) }
+                                }
+                            }
+                        } else {
+                            ForEach(FeedDay.group(model.items)) { day in
+                                sectionHeader(Calendar.current.isDateInToday(day.start) ? "Today" : day.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
+                                ForEach(day.rows) { row in itemRow(row.item, showsTime: row.showsTime) }
                             }
                         }
-                    } else {
-                        ForEach(FeedDay.group(model.items)) { day in
-                            sectionHeader(Calendar.current.isDateInToday(day.start) ? "Today" : day.start.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day().year()))
-                            ForEach(day.rows) { row in itemRow(row.item, showsTime: row.showsTime) }
+                        if model.hasOlder && place == .trash { loadMore }
+                        if model.items.isEmpty && model.loadError == nil {
+                            Text(place == .trash ? "Trash is empty" : "No Items yet")
+                                .font(.plex(.sans, 15)).foregroundStyle(palette.inkMuted)
+                                .ruledTextSpacing(.sans, 15, relativeTo: .body)
+                                .frame(maxWidth: .infinity).padding(.vertical, palette.rule == nil ? 32 : 0).ruledLines()
                         }
                     }
-                    if model.hasOlder && place == .trash { loadMore }
-                    if model.items.isEmpty && model.loadError == nil {
-                        Text(place == .trash ? "Trash is empty" : "No Items yet")
-                            .font(.plex(.sans, 15)).foregroundStyle(palette.inkMuted)
-                            .frame(maxWidth: .infinity).padding(.vertical, 32)
+                    .frame(maxWidth: palette.rule == nil ? nil : .infinity, alignment: .leading)
+                    .background {
+                        if palette.rule != nil {
+                            GeometryReader { content in
+                                RuledPaper()
+                                    .frame(height: max(0, viewport.size.height - 4 - content.size.height))
+                                    .offset(y: content.size.height)
+                            }
+                        }
+                    }
+                    .frame(minHeight: palette.rule == nil ? nil : max(0, viewport.size.height - 4), alignment: .topLeading)
+                    .environment(\.ruledLine, palette.rule == nil ? nil : lineHeight)
+                    .padding(.horizontal, feedHorizontalGutter)
+                    .padding(.bottom, palette.rule == nil ? 8 : 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if let bar = palette.feedBar { bar.frame(height: 4) }
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(.rect)
+                .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
+                .defaultScrollAnchor(place == .trash ? .top : .bottom)
+                .background(palette.surface)
+                .onChange(of: model.items.last?.id) { _, newest in
+                    guard scrollsToNewest, let newest else { return }
+                    scrollsToNewest = false
+                    withAnimation { proxy.scrollTo(newest, anchor: .bottom) }
+                }
+                .onChange(of: pendingReveal) { _, id in
+                    guard let id else { return }
+                    pendingReveal = nil
+                    highlighted = id
+                    // A scroll sent before the Feed's first layout is dropped, so wait for that layout.
+                    Task { @MainActor in
+                        await Task.yield()
+                        withAnimation { proxy.scrollTo(id, anchor: .center) } completion: {
+                            withAnimation(.easeOut(duration: 1.5)) { highlighted = nil }
+                        }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(.rect)
-            .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
-            .defaultScrollAnchor(place == .trash ? .top : .bottom)
-            .background(palette.surface)
-            .onChange(of: model.items.last?.id) { _, newest in
-                guard scrollsToNewest, let newest else { return }
-                scrollsToNewest = false
-                withAnimation { proxy.scrollTo(newest, anchor: .bottom) }
-            }
-            .onChange(of: pendingReveal) { _, id in
-                guard let id else { return }
-                pendingReveal = nil
-                highlighted = id
-                // A scroll sent before the Feed's first layout is dropped, so wait for that layout.
-                Task { @MainActor in
-                    await Task.yield()
-                    withAnimation { proxy.scrollTo(id, anchor: .center) } completion: {
-                        withAnimation(.easeOut(duration: 1.5)) { highlighted = nil }
-                    }
+                .onChange(of: foregrounds) { model.reload() }
+                .onChange(of: target, initial: true) { revealTarget(proxy) }
+                .onAppear {
+                    visible = true
+                    revealTarget(proxy)
                 }
-            }
-            .onChange(of: foregrounds) { model.reload() }
-            .onChange(of: target, initial: true) { revealTarget(proxy) }
-            .onAppear {
-                visible = true
-                revealTarget(proxy)
             }
         }
         .overlay(alignment: .bottom) {
@@ -293,7 +311,6 @@ struct FeedView: View {
             if place == .trash {
                 NavigationStack {
                     List {
-                        Button("Select", systemImage: "checkmark.circle") { commands = nil; batch.selection.begin(item.id) }
                         Button("Restore", systemImage: "arrow.uturn.backward") {
                             do {
                                 try store.restore(itemID: item.id, nowUs: Time.nowUs())
@@ -309,11 +326,7 @@ struct FeedView: View {
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
                 }.presentationDetents([.medium])
             } else {
-            ItemActionsView(item: item, store: store, place: place.query, trashAfterCopy: model.trashAfterCopy, onSelect: {
-                copyTask?.cancel()
-                commands = nil
-                batch.selection.begin(item.id)
-            }, onCopy: { choice in
+            ItemActionsView(item: item, store: store, place: place.query, trashAfterCopy: model.trashAfterCopy, onCopy: { choice in
                 copyAfterSheet = (item, choice)
                 commands = nil
             }, onChanged: { trashed, moved in
@@ -371,6 +384,11 @@ struct FeedView: View {
         .toolbar {
             if batch.selection.isSelecting {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { batch.cancel() } }
+            }
+            if !batch.selection.isSelecting && !model.items.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Select") { copyTask?.cancel(); batch.selection.enter() }
+                }
             }
             if !batch.selection.isSelecting, let searchPlace {
                 ToolbarItem(placement: .topBarTrailing) {

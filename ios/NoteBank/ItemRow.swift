@@ -31,6 +31,7 @@ struct ItemRow: View {
     var showsTime = true
 
     @Environment(\.palette) private var palette
+    @Environment(\.ruledLine) private var ruledLine
     @State private var showingReason = false
 
     private var chipTitle: String? {
@@ -48,35 +49,44 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: ruledLine == nil ? 4 : 0) {
                 if let text = item.text {
                     Text(linkified(text))
                         .font(.plex(.serif, 17))
-                        .lineSpacing(3)
+                        .ruledTextSpacing(.serif, 17, relativeTo: .body, unruledSpacing: 3)
                         .foregroundStyle(palette.ink)
+                        .snapToLines()
                 }
                 ForEach(item.attachments) { attachment in
                     AttachmentView(attachment: attachment, attachments: item.attachments)
+                        .snapToLines()
                 }
                 if item.conflict != nil && !inTrash {
-                    Button(action: onCommands) { Label("Text conflict", systemImage: "exclamationmark.bubble") }
+                    Button(action: onCommands) {
+                        Label("Text conflict", systemImage: "exclamationmark.bubble")
+                            .ruledTextSpacing(.sansSemibold, 12, relativeTo: .caption1)
+                    }
                         .font(.plex(.sansSemibold, 12, relativeTo: .caption))
                         .foregroundStyle(palette.danger)
-                        .frame(minHeight: 44)
+                        .frame(minHeight: ruledLine)
+                        .frame(minHeight: 44, alignment: ruledLine == nil ? .center : .topLeading)
                         .buttonStyle(.plain)
+                        .snapToLines()
                 }
                 if let reason = item.syncError {
                     Button { showingReason = true } label: {
                         Label("Couldn't sync", systemImage: "exclamationmark.triangle")
+                            .ruledTextSpacing(.sansSemibold, 12, relativeTo: .caption1)
                             .font(.plex(.sansSemibold, 12, relativeTo: .caption))
                             .foregroundStyle(palette.danger)
                             .padding(.horizontal, 6)
-                            .frame(minHeight: 20)
+                            .frame(minHeight: ruledLine ?? 20)
                             .background(palette.dangerSoft, in: RoundedRectangle(cornerRadius: 4))
-                            .frame(minHeight: 44)
+                            .frame(minHeight: 44, alignment: ruledLine == nil ? .center : .topLeading)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .snapToLines()
                     .popover(isPresented: $showingReason) {
                         Text(reasonText(reason))
                             .font(.plex(.sans, 14, relativeTo: .callout))
@@ -120,10 +130,10 @@ struct ItemRow: View {
                 }
             }
             }
-            .frame(minHeight: 25, alignment: .trailing)
+            .frame(minHeight: ruledLine ?? 25, maxHeight: ruledLine, alignment: .trailing)
             .layoutPriority(1)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, ruledLine == nil ? 6 : 0)
         .contentShape(Rectangle())
         .onTapGesture {
             if copyable { onCopy() }

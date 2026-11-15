@@ -11,8 +11,6 @@ struct SelectionFixture: View {
     private var selection: ItemSelection { batch.selection }
     @State private var copies = 0
     @State private var commands = 0
-    @State private var contentFrame = CGRect.zero
-    @State private var rowFrame = CGRect.zero
     private let items: [FeedItem]
 
     init() {
@@ -22,41 +20,43 @@ struct SelectionFixture: View {
     }
 
     var body: some View {
-        VStack {
-            Text("Copies: \(copies)")
-            Text("Commands: \(commands)")
-            Text("Selected: \(selection.ids.count)")
-            Text("\(contentFrame.minX)").accessibilityIdentifier("content-origin")
-            Text("\(contentFrame.width)").accessibilityIdentifier("content-width")
-            Text("\(contentFrame.height)").accessibilityIdentifier("content-height")
-            Text("\(rowFrame.maxX)").accessibilityIdentifier("row-right")
-            ScrollView {
-                VStack {
-                    ForEach(items) { item in
-                        SelectableItemRow(selection: selection, item: item, onCommands: { commands += 1 }) {
-                            Button { copies += 1 } label: {
-                                VStack(alignment: .leading) {
-                                    Text(item.text!)
-                                    if item.id == items.first?.id {
-                                        Text("A longer note that wraps across several lines so the selection check verifies real content keeps its width and height when the actions move to the other side of the row.")
+        NavigationStack {
+            VStack {
+                Text("Copies: \(copies)")
+                Text("Commands: \(commands)")
+                Text("Selected: \(selection.ids.count)")
+                ScrollView {
+                    VStack {
+                        ForEach(items) { item in
+                            SelectableItemRow(selection: selection, item: item, onCommands: { commands += 1 }) {
+                                Button { copies += 1 } label: {
+                                    VStack(alignment: .leading) {
+                                        Text(item.text!)
+                                        if item.id == items.first?.id {
+                                            Text("A longer note that wraps across several lines so the selection check exercises a row with multiple lines of content.")
+                                        }
                                     }
-                                }
                                     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
-                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                                        if item.id == items.first?.id { contentFrame = frame }
-                                    }
-                            }.buttonStyle(.plain).accessibilityLabel(item.text!)
-                        }
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                            if item.id == items.first?.id { rowFrame = frame }
+                                }.buttonStyle(.plain).accessibilityLabel(item.text!)
+                            }
                         }
                     }
                 }
-            }
-        }.padding()
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if selection.isSelecting { BatchActionsBar(batch: batch, items: items, tunnel: true, trashAfterCopy: true) }
-            }
-            .environment(\.palette, Theme.paper.palette)
+            }.padding()
+                .navigationTitle("Tunnel")
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if selection.isSelecting {
+                            Button("Done") { selection.clear() }
+                        } else {
+                            Button("Select") { selection.enter() }
+                        }
+                    }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if selection.isSelecting { BatchActionsBar(batch: batch, items: items, tunnel: true, trashAfterCopy: true) }
+                }
+                .environment(\.palette, Theme.paper.palette)
+        }
     }
 }

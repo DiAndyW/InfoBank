@@ -3,17 +3,28 @@ import Observation
 @MainActor @Observable
 public final class ItemSelection {
     public private(set) var ids: Set<String> = []
-    public var isSelecting: Bool { !ids.isEmpty }
+    public private(set) var isSelecting: Bool = false
 
     public init() {}
 
-    public func begin(_ id: String) { ids = [id] }
+    public func enter() {
+        ids.removeAll()
+        isSelecting = true
+    }
 
     public func toggle(_ id: String) {
         if !ids.insert(id).inserted { ids.remove(id) }
+        isSelecting = !ids.isEmpty
     }
 
-    public func reconcile(_ available: [String]) { ids.formIntersection(available) }
+    public func reconcile(_ available: [String]) {
+        let hadChosenItems = !ids.isEmpty
+        ids.formIntersection(available)
+        if hadChosenItems && ids.isEmpty { isSelecting = false }
+    }
     public func orderedIDs(in order: [String]) -> [String] { order.filter { ids.contains($0) } }
-    public func clear() { ids.removeAll() }
+    public func clear() {
+        ids.removeAll()
+        isSelecting = false
+    }
 }
