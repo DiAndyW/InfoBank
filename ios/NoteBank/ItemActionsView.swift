@@ -8,35 +8,22 @@ struct ItemActionsView: View {
     var trashAfterCopy: Bool? = false
     enum Copy { case item(Bool?), text }
     let onCopy: (Copy) -> Void
+    let onEdit: (String) -> Void
     let onChanged: (_ trashed: Bool, _ moved: Bool) -> Void
 
-    private enum Page { case commands, edit, move, conflict }
+    private enum Page { case commands, move, conflict }
     @State private var page = Page.commands
-    @State private var text = ""
     @State private var topics: [TopicPlace] = []
     @State private var error: String?
     @State private var discard = false
     @State private var naming = false
-    @State private var imports: ComposerModel?
-    @State private var removed: Set<String> = []
-
-    private func beginEdit(_ value: String) {
-        text = value
-        removed = []
-        if imports == nil { imports = ComposerModel(store: store, destination: .inbox, placeholder: "", onCaptured: {}) }
-        page = .edit
-    }
-
-    private func discardImports() {
-        guard let imports else { return }
-        for attachment in imports.attachments { imports.removeAttachment(attachment.id) }
-        removed = []
-    }
-    @Environment(\.dismiss) private var dismiss
+    let onDismiss: () -> Void
+    @Binding var expanded: Bool
+    @Binding var actionError: String?
     @Environment(\.palette) private var palette
 
     private func run(_ action: () throws -> Void) {
-        do { try action(); dismiss() } catch { self.error = errorMessage(error) }
+        do { try action(); onDismiss() } catch { self.error = errorMessage(error) }
     }
 
     private func move(_ destination: Destination) {
@@ -46,74 +33,70 @@ struct ItemActionsView: View {
         }
     }
 
+    private var copy: CopyActions { CopyActions(place: place, hasText: item.text != nil, trashAfterCopy: trashAfterCopy) }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let error {
+                if let error = error ?? actionError {
                     Text(error).foregroundStyle(palette.danger).padding()
                         .accessibilityAddTraits(.isStaticText)
                 }
                 switch page {
                 case .commands:
                     List {
-                        ForEach(CopyActions(place: place, hasText: item.text != nil, trashAfterCopy: trashAfterCopy).menu, id: \.kind) { action in
-                            Button(action.label, systemImage: "doc.on.doc") {
-                                onCopy(action.kind == .text ? .text : .item(trashAfterCopy))
-                            }
-                        }
+                        Group {
                         if item.syncError != nil {
+                            ForEach(copy.menu, id: \.kind) { action in
+                                Button(action.label, systemImage: "doc.on.doc") {
+                                    onCopy(action.kind == .text ? .text : .item(trashAfterCopy))
+                                }
+                            }
                             Button("Discard…", systemImage: "trash", role: .destructive) { discard = true }
                         } else {
                             if item.conflict != nil {
                                 Button("Resolve text conflict", systemImage: "exclamationmark.bubble") { page = .conflict }
                             }
-                            Button("Edit", systemImage: "pencil") { beginEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "") }
-                            Button("Move to…", systemImage: "folder") {
-                                do { topics = try store.places().topics; page = .move }
-                                catch { self.error = errorMessage(error) }
-                            }
-                            Section {
-                                Button("Move to Trash", systemImage: "trash", role: .destructive) {
-                                    run {
-                                        try store.trash(itemID: item.id, nowUs: Time.nowUs())
-                                        onChanged(true, false)
+                            ForEach(copy.itemCommands, id: \.self) { command in
+                                switch command {
+                                case "edit":
+                                    Button("Edit", systemImage: "pencil") { onEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "") }
+                                case "move":
+                                    Button("Move to…", systemImage: "folder") {
+                                        do { topics = try store.places().topics; page = .move }
+                                        catch { self.error = errorMessage(error) }
+                                    }
+                                case "trash":
+                                    Section {
+                                        Button("Move to Trash", systemImage: "trash", role: .destructive) {
+                                            run {
+                                                try store.trash(itemID: item.id, nowUs: Time.nowUs())
+                                                onChanged(true, false)
+                                            }
+                                        }
+                                    }
+                                default:
+                                    if let action = copy.menu.first(where: { "copy_\($0.kind.rawValue)" == command }) {
+                                        Button(action.label, systemImage: "doc.on.doc") {
+                                            onCopy(action.kind == .text ? .text : .item(trashAfterCopy))
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                case .edit:
-                    TextEditor(text: $text)
-                        .font(.plex(.serif, 17))
-                        .scrollContentBackground(.hidden)
-                        .padding()
-                        .accessibilityLabel("Edit text")
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(item.attachments.filter { !removed.contains($0.id) }) { attachment in
-                                HStack {
-                                    AttachmentView(attachment: attachment)
-                                    Button { removed.insert(attachment.id) } label: { Image(systemName: "minus.circle").frame(minWidth: 44, minHeight: 44) }
-                                        .accessibilityLabel("Remove \(attachment.filename)")
-                                }
-                            }
-                            if let imports {
-                                StagedAttachmentsView(model: imports)
-                                AttachmentPicker(model: imports)
-                                if let error = imports.error { Text(error).foregroundStyle(palette.danger) }
-                            }
-                        }.padding(.horizontal)
-                    }
-                    .containerRelativeFrame(.vertical) { height, _ in height * 0.35 }
+                        }.themedSheetRow()
+                    }.themedSheetList()
                 case .move:
                     List {
+                        Group {
                         destination("Inbox", .inbox)
                         destination("Tunnel", .tunnel)
                         Section("Topics") {
                             Button("New Topic…", systemImage: "plus") { naming = true }
                             ForEach(topics) { topic in destination(topic.name, .topic(topic.id)) }
                         }
-                    }
+                        }.themedSheetRow()
+                    }.themedSheetList()
                 case .conflict:
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
@@ -127,41 +110,26 @@ struct ItemActionsView: View {
                             Button("Keep mine") { resolve(true) }
                             Button("Use Server") { resolve(false) }
                             Button("Edit mine") {
-                                beginEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "")
+                                onEdit(item.conflict?.mine == true ? item.conflict?.text ?? "" : item.text ?? "")
                             }
                         }.padding()
                     }
                 }
             }
             .foregroundStyle(palette.ink)
-            .background(palette.surface)
-            .tint(palette.accent)
-            .navigationTitle(page == .commands ? "Item actions" : page == .edit ? "Edit Item" : page == .move ? "Move to…" : "Text conflict")
+            .themedSheet()
+            .navigationTitle(page == .commands ? "Item actions" : page == .move ? "Move to…" : "Text conflict")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(page == .commands ? "Done" : "Cancel") {
-                        if page == .commands { dismiss() } else { discardImports(); error = nil; page = .commands }
-                    }
-                    .disabled(imports?.isImporting == true)
-                }
-                if page == .edit {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Save") {
-                            run {
-                                let trashed = try store.editItem(itemID: item.id, text: text, baseRev: item.editBase, adding: imports?.attachments.map(\.id) ?? [], removing: removed, nowUs: Time.nowUs())
-                                onChanged(trashed, false)
-                            }
-                        }
-                        .disabled(imports?.isImporting == true)
+                        if page == .commands { onDismiss() } else { error = nil; page = .commands }
                     }
                 }
             }
         }
-        .interactiveDismissDisabled(imports?.isImporting == true)
-        .onDisappear { discardImports() }
-        .presentationDetents(page == .commands ? [.medium, .large] : [.large])
-        .presentationDragIndicator(.visible)
+        .themedSheet()
+        .onChange(of: page) { _, page in expanded = page != .commands }
         .newTopicDialog(isPresented: $naming) { name in
             try? store.pickerTopicProblem(named: name)
         } create: { name in

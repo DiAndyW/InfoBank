@@ -5,6 +5,12 @@
     "ios"
   ],
   "rules": {
+    "composer.draft_attachments": {
+      "summary": "Composer attachments survive restart with their draft, retaining missing originals for removal or reattachment",
+      "expect": {
+        "offered": true
+      }
+    },
     "notice.duration": {
       "summary": "Notices expire after four seconds of active display",
       "expect": {
@@ -407,6 +413,197 @@
         "buttons": [
           "close"
         ]
+      }
+    },
+    "style.palette": {
+      "summary": "Theme colours match across the apps",
+      "expect": {
+        "match": true
+      },
+      "differs": {
+        "ios": {
+          "expect": {
+            "blackboard.hover": "#34403a"
+          },
+          "reason": "iPhone rows sit on the lighter raised card, where the desktop hover colour was nearly invisible"
+        }
+      }
+    },
+    "failure.send": {
+      "summary": "Item failed to send.",
+      "expect": {
+        "message": "Item failed to send."
+      }
+    },
+    "failure.edit": {
+      "summary": "Edit failed to save.",
+      "expect": {
+        "message": "Edit failed to save."
+      }
+    },
+    "failure.draft": {
+      "summary": "Draft failed to save.",
+      "expect": {
+        "message": "Draft failed to save."
+      }
+    },
+    "failure.attach": {
+      "summary": "Attach warnings clear when an operation starts; failures append and successful files never clear warnings.",
+      "expect": {
+        "message": "{name} failed to attach."
+      }
+    },
+    "failure.item_gone": {
+      "summary": "That Item no longer exists.",
+      "expect": {
+        "message": "That Item no longer exists."
+      }
+    },
+    "editor.empty": {
+      "summary": "An emptied edit shows the empty outline and a Move to Trash button, with no warning text; the button asks before trashing",
+      "expect": {
+        "message": "Move this Item to Trash?",
+        "label": "Move to Trash",
+        "actions": [
+          "Cancel",
+          "Move to Trash"
+        ]
+      }
+    },
+    "editor.clear": {
+      "summary": "The editor's Clear empties the text and attachments without saving",
+      "expect": {
+        "label": "Clear",
+        "offered": true
+      }
+    },
+    "editor.discard": {
+      "summary": "Leaving the editor with unsaved changes asks first, including navigation and pending imports; on iPhone, Item actions is a native sheet and Edit closes it and docks the editor in the Composer bar, where Feed taps ask before leaving and navigation waits for the editor to close",
+      "expect": {
+        "message": "Discard your changes?",
+        "actions": [
+          "Keep Editing",
+          "Discard"
+        ],
+        "offered": true
+      }
+    },
+    "editor.paste": {
+      "summary": "Pasting a file into the editor attaches it",
+      "expect": {
+        "offered": true
+      }
+    },
+    "editor.save_restores": {
+      "summary": "Saving an edit of an Item trashed elsewhere brings it back",
+      "expect": {
+        "offered": true
+      }
+    },
+    "search.start": {
+      "summary": "Search always starts at All places, whichever place was open",
+      "expect": {
+        "offered": true
+      }
+    },
+    "search.topics": {
+      "summary": "Topics appear only at All places; dates and Has files leave them visible",
+      "expect": {
+        "offered": true
+      }
+    },
+    "editor.attachment_preview": {
+      "summary": "Capture and edit images page in the image viewer. Videos play like the Feed: iPhone viewer, desktop default app. Sent videos show Server frames; unsent iPhone videos show local frames. Viewers refuse drops; remove badges sit outside tile corners.",
+      "expect": {
+        "actions": [
+          "image",
+          "video",
+          "file"
+        ],
+        "label": "Play {filename}"
+      },
+      "differs": {
+        "macos": {
+          "expect": {
+            "label": "Play {filename}"
+          },
+          "reason": "Unsent videos show a play icon until sent: no bundled video decoder, and WebView2 cannot read .mov."
+        },
+        "windows": {
+          "expect": {
+            "label": "Play {filename}"
+          },
+          "reason": "Unsent videos show a play icon until sent: no bundled video decoder, and WebView2 cannot read .mov."
+        }
+      }
+    },
+    "composer.attachment_order": {
+      "summary": "Attachments append in accepted input order",
+      "expect": {
+        "order": "input"
+      }
+    },
+    "item.menu": {
+      "summary": "Available normal Item commands follow shared order; special conflict, rejected and Trash paths retain their policies",
+      "expect": {
+        "actions": [
+          "edit",
+          "move",
+          "copy_item",
+          "copy_text",
+          "trash"
+        ]
+      }
+    },
+    "search.enter": {
+      "summary": "Entering Search protects changed Item edits before query or results mutation",
+      "expect": {
+        "offered": true
+      }
+    },
+    "search.activity": {
+      "summary": "Topic Search displays stored local activity on the right using Item result timestamp typography and formatting; name and count have no separators, and accessibility retains full Last active semantics",
+      "expect": {
+        "offered": true,
+        "label": "1 item",
+        "message": "{count} items"
+      }
+    },
+    "feed.attachment_pending": {
+      "summary": "An attachment not yet on the Server says so before it is opened; opening or copying one that is not on this Device does nothing instead of failing, and attachment errors clear after a few seconds",
+      "expect": {
+        "offered": true,
+        "label": "Not uploaded yet"
+      }
+    },
+    "feed.opening": {
+      "summary": "Ordinary opening is bounded; older pages and explicit continuous reveal preserve history",
+      "expect": {
+        "initial_items": 30,
+        "older_items": 30
+      }
+    },
+    "composer.clear": {
+      "summary": "Clear draft is composer-wide, offered for pending-only drafts, and retires visible imports only after persistence; Undo restores completed content only",
+      "expect": {
+        "offered": true,
+        "label": "Clear draft"
+      }
+    },
+    "composer.pending_imports": {
+      "summary": "Count accepted operations including ordered publication waits; Clear retires only the originating generation, while physical work still gates restart and editor safety",
+      "expect": {
+        "message": "{count} imports pending",
+        "label": "1 import pending",
+        "offered": true
+      },
+      "differs": {
+        "ios": {
+          "expect": {
+            "offered": false
+          },
+          "reason": "The existing single-picker-batch API disables Attach while physically importing; desktop accepts overlapping operations."
+        }
       }
     }
   }

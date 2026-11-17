@@ -17,13 +17,14 @@ public enum CopyOutcome: Equatable { case copied, trashed, ask }
 
 @MainActor @Observable
 public final class FeedModel {
-    private static let pageSize = 100
+    private static let pageSize = 30
 
     public private(set) var trashAfterCopy: Bool? = false
     public private(set) var items: [FeedItem] = []
     public private(set) var hasOlder = false
     public private(set) var topicUnavailable = false
     public private(set) var topicCount = 0
+    public private(set) var topicPlace: TopicPlace?
     public private(set) var topicName: String?
     public private(set) var loadError: String?
 
@@ -42,9 +43,10 @@ public final class FeedModel {
 
     public func loadOlder() {
         do {
-            let page = try store.items(in: place, before: (place == .trash ? items.last : items.first)?.cursor, limit: Self.pageSize)
+            let limit = Self.pageSize
+            let page = try store.items(in: place, before: (place == .trash ? items.last : items.first)?.cursor, limit: limit)
             items = place == .trash ? items + page : page.reversed() + items
-            hasOlder = page.count == Self.pageSize
+            hasOlder = page.count == limit
             loadError = nil
         } catch {
             loadError = errorMessage(error)
@@ -74,6 +76,7 @@ public final class FeedModel {
         do { trashAfterCopy = try store.trashAfterCopy() } catch { trashAfterCopy = false }
         if case .topic(let id) = place {
             let topic = try? store.topic(id)
+            topicPlace = topic
             topicUnavailable = topic == nil
             topicName = topic?.name
             topicCount = topic?.count ?? 0

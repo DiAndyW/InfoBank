@@ -34,6 +34,7 @@ type Props = {
   home?: boolean;
   topics: Topic[];
   covered: boolean;
+  beforeLeave: () => Promise<boolean>;
   editor: RefObject<EditorHandle | null>;
   composer: Ref<ComposerHandle>;
   notice: NoticeData | null;
@@ -54,7 +55,7 @@ function refusal(reason: string) {
   return `${what} It's only on this Device.`;
 }
 
-export default function Feed({ home, view, topics, covered, editor, composer, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
+export default function Feed({ home, view, topics, covered, editor, beforeLeave, composer, notice, onDismissNotice, onNotice, onError, onTrashed, onRestored, onMove, onDragStart, highlight, onHighlightDone }: Props) {
   const [copyPreference, setCopyPreference] = useState<boolean | null>(false);
   useEffect(() => {
     if (view.kind !== "tunnel") return;
@@ -245,17 +246,37 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     window.addEventListener("pointerup", stop);
   }
 
-  async function load(pageCount: number) {
+  async function load(pageCount: number, refresh = false) {
     const id = ++latestLoad.current;
     const key = viewKey;
     let all: FeedItem[] = [];
     let page: FeedItem[] = [];
     try {
-      for (let i = 0; i < pageCount; i++) {
+      const previous = displayed.current;
+      const boundary = previous.key === key && (refresh || pageCount > 1) ? previous.items[previous.items.length - 1] : undefined;
+      const older = pageCount > pages.current ? 30 : 0;
+      const order = (it: FeedItem) => [trash ? it.purge_at_us ?? Number.POSITIVE_INFINITY : 0, it.capture_time_us, it.id] as const;
+      const reachesBoundary = (it: FeedItem) => {
+        if (!boundary) return false;
+        const a = order(it), b = order(boundary);
+        return a[0] < b[0] || (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] <= b[2])));
+      };
+      while (true) {
         const last = all[all.length - 1];
-        page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id, purge_at_us: last.purge_at_us } : null);
+        page = await listItems(view, last ? { capture_time_us: last.capture_time_us, id: last.id, purge_at_us: last.purge_at_us } : null, last ? 100 : 30);
+        if (id !== latestLoad.current) return;
         all = all.concat(page);
-        if (page.length === 0) break;
+        if (!boundary || page.length === 0) break;
+        const boundaryIndex = all.findIndex(reachesBoundary);
+        if (boundaryIndex >= 0) {
+          all = all.slice(0, boundaryIndex + (all[boundaryIndex].id === boundary.id ? 1 : 0));
+          break;
+        }
+      }
+      if (older && all.length) {
+        const last = all[all.length - 1];
+        page = await listItems(view, { capture_time_us: last.capture_time_us, id: last.id, purge_at_us: last.purge_at_us }, older);
+        all = all.concat(page);
       }
     } catch (e) {
       if (id !== latestLoad.current) return;
@@ -299,7 +320,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     atBottom.current = true;
     if (home) { latestLoad.current++; return; }
     load(1);
-    const unlisten = listen("items-changed", () => load(pages.current));
+    const unlisten = listen("items-changed", () => load(pages.current, true));
     return () => {
       unlisten.then((stop) => stop());
     };
@@ -338,7 +359,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
     cancelCopy(it.id);
     setAsking(null);
     if (editing?.id === it.id) return;
-    if (editing && !(await editor.current!.save())) return;
+    if (editing && !(await beforeLeave())) return;
     setInitialText(text);
     setEditing(it);
   }
@@ -412,6 +433,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                   {editing?.id === it.id ? (
                     <article className="nb-item is-editing" data-item={it.id}>
                       <ItemEditor
+                        acceptsDrops={!covered && !viewing}
                         ref={editor}
                         item={it}
                         initialText={initialText}
@@ -419,7 +441,6 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
                           setEditing(null);
                           if (trashed) onTrashed(it.id);
                         }}
-                        onGone={(e) => onError("Couldn't save the edit", e)}
                       />
                     </article>
                   ) : (
@@ -644,7 +665,7 @@ export default function Feed({ home, view, topics, covered, editor, composer, no
           ref={composer}
           onNotice={onNotice}
           drafts={{ place: home ? "home" : view.kind === "topic" ? `topic:${view.id}` : view.kind, initial: drafts, homeTopicId: homeChosen?.id ?? null, restoreHomeTopic: (id) => { if (!homeTopicChanged.current) setHomeTopic(id); } }}
-          acceptsDrops={!noComposer && !covered && !viewing}
+          acceptsDrops={!noComposer && !covered && !viewing && !editing}
           picker={home ? <CaptureDestination topics={[...topics, ...(homeCreated && !topics.some((t) => t.id === homeCreated.id) ? [homeCreated] : [])]} tunnel={homeTunnel} topicId={homeChosen?.id ?? null} onTunnelChange={setHomeTunnel} onTopicChange={(id, created) => { homeTopicChanged.current = true; if (created) setHomeCreated(created); setHomeTopic(id); }} /> : undefined}
           target={home ? homeTunnel ? { kind: "tunnel" } : homeChosen ? { kind: "topic", id: homeChosen.id } : { kind: "inbox" } : view.kind === "topic" ? { kind: "topic", id: view.id } : view.kind === "tunnel" ? { kind: "tunnel" } : { kind: "inbox" }}
           placeholder={home ? homeTunnel ? "Send to your other devices…" : "Capture something…" : view.kind === "tunnel" ? "Send to your other devices…" : `Write to ${current ? current.name : "Inbox"}…`}

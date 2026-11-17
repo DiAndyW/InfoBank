@@ -2,13 +2,14 @@ import { test, vi } from "vitest";
 import file from "../../behaviour/behaviour.json";
 
 export type BehaviourExpectation = {
+  initial_items?: number; older_items?: number;
   message?: string; buttons?: string[]; duration_seconds?: number;
   menu?: { id: string; label: string }[]; row?: boolean; batch?: { id: string; label: string }[];
-  offered?: boolean; label?: string;
+  order?: string; offered?: boolean; label?: string; actions?: string[];
 };
 type Rule = { expect: BehaviourExpectation; differs?: Partial<Record<string, { expect: BehaviourExpectation; reason: string }>> };
 
-export function behaviourTest(id: keyof typeof file.rules, run: (expected: BehaviourExpectation) => void | Promise<void>) {
+export function behaviourTest(id: Exclude<keyof typeof file.rules, `style.${string}`>, run: (expected: BehaviourExpectation) => void | Promise<void>) {
   test.each(["macos", "windows"] as const)(`${id} on %s`, async platform => {
     const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(platform === "macos" ? "Macintosh" : "Windows NT");
     try {

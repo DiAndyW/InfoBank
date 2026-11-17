@@ -117,3 +117,39 @@ extension View {
     func card() -> some View { modifier(Card()) }
     func chipStyle(active: Bool = false) -> some View { modifier(ChipStyle(active: active)) }
 }
+
+struct ThemedSheet: ViewModifier {
+    @Environment(\.palette) private var palette
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(palette.ink)
+            .tint(palette.accent)
+            .background(palette.surface)
+            .presentationBackground(palette.surface)
+            .toolbarBackground(palette.surface, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+    }
+}
+
+struct ThemedSheetList: ViewModifier {
+    @Environment(\.palette) private var palette
+
+    func body(content: Content) -> some View {
+        content.scrollContentBackground(.hidden).background(palette.surface)
+    }
+}
+
+struct ThemedSheetRow: ViewModifier {
+    @Environment(\.palette) private var palette
+
+    func body(content: Content) -> some View {
+        content.listRowBackground(palette.surfaceRaised).listRowSeparatorTint(palette.line)
+    }
+}
+
+extension View {
+    func themedSheet() -> some View { modifier(ThemedSheet()) }
+    func themedSheetList() -> some View { modifier(ThemedSheetList()) }
+    func themedSheetRow() -> some View { modifier(ThemedSheetRow()) }
+}

@@ -15,11 +15,13 @@ struct TopicTrashTests {
         let trashed = try store.capture(text: "trashed", to: .topic(topic), nowUs: 200)
         try store.trash(itemID: trashed, nowUs: 201)
         model.reload()
-        #expect(model.items.count == 100)
+        #expect(model.items.count == 30)
         #expect(model.topicCount == 105)
-        model.loadOlder()
-        #expect(model.items.count == 105)
-        #expect(model.topicCount == 105)
+        for count in [60, 90, 105] {
+            model.loadOlder()
+            #expect(model.items.count == count)
+            #expect(model.topicCount == 105)
+        }
     }
 
     @Test func topicLifecycleAndCaptureGate() throws {

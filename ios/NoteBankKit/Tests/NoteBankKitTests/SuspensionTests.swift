@@ -35,7 +35,7 @@ extension QuickCaptureSuspensionTests {
             """) }
         model.text = "Unsaved text"
         for _ in 0..<3 { model.flushDraft() }
-        #expect(model.error == "Couldn't save your draft. Your text is still here.")
+        #expect(model.error == "Draft failed to save. NoteBank couldn't read or save its data. Try again.")
         #expect(model.text == "Unsaved text")
         #expect(try store.drafts()[.inbox] == nil)
         try store.pool.write { try $0.execute(sql: "DROP TRIGGER fail_draft") }

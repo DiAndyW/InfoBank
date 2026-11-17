@@ -46,8 +46,9 @@ extension Store {
             }
             guard Set(attachmentIDs).count == attachmentIDs.count else { throw AttachmentError("Choose each attachment once") }
             let attachments = try attachmentIDs.map { id -> [String: Any] in
+                try Self.requireUnowned(db, id: id, source: draft?.key)
                 guard let row = try Row.fetchOne(db, sql: "SELECT s.*, c.path FROM staged_files s JOIN cached_files c ON c.attachment_id = s.id AND c.kind = 'file' WHERE s.id = ?", arguments: [id]),
-                      FileManager.default.fileExists(atPath: directory.appending(path: row["path"] as String).path) else { throw AttachmentError("An attachment is no longer available") }
+                      FileManager.default.fileExists(atPath: directory.appending(path: row["path"] as String).path) else { throw AttachmentError("An attachment is missing; add it again") }
                 return ["id": id, "filename": row["filename"] as String, "mime_type": row["mime_type"] as String, "size_bytes": row["size_bytes"] as Int64]
             }
             fields["attachments"] = attachments
@@ -58,6 +59,7 @@ extension Store {
             try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [nowUs, topicID])
             for attachment in attachments {
                 try db.execute(sql: "INSERT INTO attachments(id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES (?, ?, ?, ?, ?, 0, 0)", arguments: [attachment["id"] as! String, itemID, attachment["filename"] as! String, attachment["mime_type"] as! String, attachment["size_bytes"] as! Int64])
+                try db.execute(sql: "DELETE FROM draft_attachments WHERE attachment_id = ?", arguments: [attachment["id"] as! String])
                 try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [attachment["id"] as! String])
             }
             try db.execute(sql: "INSERT INTO outbox (op) VALUES (?)", arguments: [String(decoding: op, as: UTF8.self)])

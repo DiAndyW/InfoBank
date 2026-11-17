@@ -22,7 +22,7 @@ public final class SearchModel {
             }
         }
     }
-    public var place: SearchPlace { didSet { run() } }
+    public var place = SearchPlace.all { didSet { run() } }
     public var dates = SearchDates.any {
         didSet {
             presetFromUs = switch dates {
@@ -58,12 +58,12 @@ public final class SearchModel {
         }
         return SearchQuery(text: text, place: place, fromUs: fromUs, toUs: toUs, hasFiles: hasFiles)
     }
+    public var showsTopics: Bool { place == .all }
     public var hasFilters: Bool { place != .all || dates != .any || hasFiles }
     public var isEmptyResult: Bool { query != nil && query == lastRun && error == nil && results.isEmpty }
 
-    public init(store: Store, place: SearchPlace = .all, calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }, debounce: Duration = .milliseconds(150)) {
+    public init(store: Store, calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }, debounce: Duration = .milliseconds(150)) {
         self.store = store
-        self.place = if case .topic(let id) = place, (try? store.topic(id)) == nil { .all } else { place }
         self.calendar = calendar
         self.now = now
         self.debounce = debounce

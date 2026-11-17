@@ -66,8 +66,26 @@ export default function App() {
   const noticeId = useRef(0);
   const show = (message: string, action?: NoticeData["action"]) => setNotice({ id: ++noticeId.current, message, action });
   const editor = useRef<EditorHandle>(null);
+  const [leavePrompt, setLeavePrompt] = useState(false);
+  const leaveAnswer = useRef<((leave: boolean) => void) | null>(null);
+  const beforeLeave = async () => {
+    if (leaveAnswer.current || editor.current?.isSaving) return false;
+    if (editor.current?.hasChanges) {
+      const leave = await new Promise<boolean>(resolve => {
+        leaveAnswer.current = resolve;
+        setLeavePrompt(true);
+      });
+      if (!leave) return false;
+    }
+    editor.current?.discard();
+    return true;
+  };
+  const answerLeave = (leave: boolean) => {
+    setLeavePrompt(false);
+    leaveAnswer.current?.(leave);
+    leaveAnswer.current = null;
+  };
   const composer = useRef<ComposerHandle>(null);
-  const [restartFiles, setRestartFiles] = useState(0);
   const restarting = useRef(false);
   const [searchText, setSearchText] = useState("");
   const [resultsOpen, setResultsOpen] = useState(false);
@@ -87,6 +105,28 @@ export default function App() {
     beforeSearch.current = null;
     setSidebarOpen(!sidebarOpen);
     localStorage.setItem("sidebarOpen", String(!sidebarOpen));
+  };
+  const enteringSearch = useRef(false);
+  const enterSearch = async () => {
+    if (enteringSearch.current) {
+      if (leaveAnswer.current) {
+        searchField.current?.blur();
+        document.querySelector<HTMLElement>('[role="alertdialog"]')?.focus();
+      }
+      return;
+    }
+    enteringSearch.current = true;
+    if (editor.current) {
+      searchField.current?.blur();
+      if (!(await beforeLeave())) {
+        focusEditor();
+        enteringSearch.current = false;
+        return;
+      }
+    }
+    setResultsOpen(true);
+    searchField.current?.focus();
+    enteringSearch.current = false;
   };
   const openSearch = () => {
     if (beforeSearch.current === null) beforeSearch.current = sidebarOpen;
@@ -110,7 +150,7 @@ export default function App() {
     }
   }, [sidebarOpen, covered, settings]);
   const select = async (key: string) => {
-    if (editor.current && !(await editor.current.save())) return false;
+    if (editor.current && !(await beforeLeave())) return false;
     setFeed(key);
     localStorage.setItem("place", key);
     setNotice(null);
@@ -118,19 +158,15 @@ export default function App() {
     return true;
   };
   const showError = (title: string, err: unknown) => setError({ title, message: String(err) });
-  async function restart(confirmedFiles = 0) {
+  async function restart() {
     composer.current?.freeze(true);
     try {
-      await Promise.all([composer.current?.saveDrafts(), composer.current?.waitForStaging()]);
+      await composer.current?.waitForStaging();
+      await composer.current?.saveDrafts();
     } catch (err) {
       restarting.current = false;
       composer.current?.freeze(false);
       showError("Couldn't save your drafts", err);
-      return;
-    }
-    const files = composer.current?.unsentFiles() ?? 0;
-    if (files > confirmedFiles) {
-      setRestartFiles(files);
       return;
     }
     try {
@@ -142,17 +178,11 @@ export default function App() {
       restarting.current = false;
     }
   }
-  const cancelRestart = () => {
-    composer.current?.freeze(false);
-    setRestartFiles(0);
-    restarting.current = false;
-  };
-  const onRestart = () => {
+  const onRestart = async () => {
     if (restarting.current) return;
     restarting.current = true;
-    const files = composer.current?.unsentFiles() ?? 0;
-    if (files > 0) setRestartFiles(files);
-    else void restart();
+    if (editor.current && !(await beforeLeave())) { restarting.current = false; return; }
+    void restart();
   };
   const onCheckForUpdates = () => { checkForUpdates().catch((err) => showError("Couldn't update", err)); };
   const [dragging, setDragging] = useState<{ item: FeedItem; x: number; y: number } | null>(null);
@@ -254,8 +284,7 @@ export default function App() {
   useEffect(() => {
     if (!settings) return;
     if (!["home", "inbox", "tunnel", "trash"].includes(feed) && !topics.some((t) => t.id === feed)) {
-      setFeed("home");
-      localStorage.setItem("place", "home");
+      void select("home");
     }
   }, [topics, !!settings]);
 
@@ -379,10 +408,11 @@ export default function App() {
           drag={dragging && { from: dragging.item.in_tunnel ? "tunnel" : dragging.item.topic_id ?? "inbox", over: dropOn }}
           onDragOver={setDropOn}
           onSearch={(text) => {
+            if (enteringSearch.current) return;
             setSearchText(text);
             setResultsOpen(true);
           }}
-          onSearchFocus={() => setResultsOpen(true)}
+          onSearchFocus={() => { void enterSearch(); }}
           onSearchEscape={(empty) => {
             if (empty && beforeSearch.current !== null) {
               setSidebarOpen(beforeSearch.current);
@@ -400,6 +430,7 @@ export default function App() {
         topics={topics}
         covered={covered}
         editor={editor}
+        beforeLeave={beforeLeave}
         composer={composer}
         notice={notice}
         onDismissNotice={() => setNotice(null)}
@@ -430,20 +461,17 @@ export default function App() {
         <SearchResults
           text={searchText}
           topics={topics}
-          startPlace={feed === "home" || feed === "trash" ? "all" : feed}
           hidden={!resultsOpen}
           notice={notice?.inSearch ? notice : null}
           onNotice={(message, action) => setNotice({ id: ++noticeId.current, message, action, inSearch: true })}
           onError={showError}
           onDismissNotice={() => setNotice(null)}
           onOpenTopic={async (topic) => {
-            if (!(await select(topic.id))) setResultsOpen(false);
+            await select(topic.id);
           }}
           onOpen={async (it) => {
             const place = it.in_tunnel ? "tunnel" : topics.some((t) => t.id === it.topic_id) ? it.topic_id! : "inbox";
             if (await select(place)) setHighlight(it.id);
-            // The save failed: uncover the Feed so the editor's error line shows.
-            else setResultsOpen(false);
           }}
         />
       )}
@@ -473,15 +501,11 @@ export default function App() {
           onError={showError}
         />
       )}
-      {restartFiles > 0 && (
-        <Dialog alert title={`Restart and remove ${restartFiles} unsent ${restartFiles === 1 ? "file" : "files"}?`}
-          hint="Files you attached but haven't sent aren't kept across a restart."
-          onClose={cancelRestart}
-          actions={<>
-            <button type="button" className="nb-btn nb-btn-secondary" autoFocus onClick={cancelRestart}>Cancel</button>
-            <button type="button" className="nb-btn nb-btn-primary" onClick={() => { setRestartFiles(0); void restart(restartFiles); }}>Restart</button>
-          </>}
-        />
+      {leavePrompt && (
+        <Dialog alert title="Discard your changes?" onClose={() => answerLeave(false)} actions={<>
+          <button type="button" className="nb-btn nb-btn-secondary" autoFocus onClick={() => answerLeave(false)}>Keep Editing</button>
+          <button type="button" className="nb-btn nb-btn-danger" onClick={() => answerLeave(true)}>Discard</button>
+        </>} />
       )}
       {errorDialog}
       {dragging && <DragCard item={dragging.item} x={dragging.x} y={dragging.y} />}

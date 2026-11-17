@@ -9,3 +9,5 @@ ios/**/xcuserdata/
 
 package/
 tools/
+
+node_modules

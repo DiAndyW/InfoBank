@@ -44,7 +44,6 @@ struct HomeComposerView: View {
             ComposerInput(text: $model.text, placeholder: tunnelOn ? "Send to your other devices…" : "Capture something…", minimumLines: 4, lineSpacing: 3, focusRequest: focusRequest) { provider, type in
                 model.importPaste(provider, type: type)
             }
-            .padding(.trailing, model.canClear ? 44 : 0)
             StagedAttachmentsView(model: model)
             HStack(spacing: 8) {
                 Toggle("Tunnel", isOn: $tunnelOn)
@@ -90,6 +89,13 @@ struct HomeComposerView: View {
                     .accessibilityLabel("Send")
                 }
             }
+            if model.canClear {
+                Button("Clear draft") { if model.clear() { notices.postCleared(.home) } }
+                    .font(.plex(.sansMedium, 14, relativeTo: .callout))
+                    .foregroundStyle(palette.inkMuted)
+                    .frame(minHeight: 44)
+                    .buttonStyle(.plain)
+            }
             if let error = model.error {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.plex(.sansMedium, 13, relativeTo: .footnote))
@@ -101,21 +107,6 @@ struct HomeComposerView: View {
         .padding(.bottom, 4)
         .background(tunnelOn ? palette.accentSoft : palette.surfaceRaised, in: RoundedRectangle(cornerRadius: 14))
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(tunnelOn ? palette.accent : palette.line))
-        .overlay(alignment: .topTrailing) {
-            if model.canClear {
-                Button {
-                    model.clear()
-                    notices.postCleared(.home)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(palette.inkMuted)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear")
-            }
-        }
         .onAppear(perform: sync)
         .onChange(of: tunnelOn) { sync() }
         .onChange(of: topics) {

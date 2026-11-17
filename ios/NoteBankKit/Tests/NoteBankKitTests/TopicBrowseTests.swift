@@ -3,7 +3,7 @@ import Testing
 @testable import NoteBankKit
 
 struct TopicBrowseTests {
-    private let topics = (0..<12).map { TopicPlace(id: "\($0)", name: String(format: "Topic %02d", $0), count: $0) }
+    private let topics = (0..<12).map { TopicPlace(id: "\($0)", name: String(format: "Topic %02d", $0), count: $0, activityAtUs: 1) }
 
     @Test func browsingKeepsInputOrder() {
         #expect(TopicPlace.browsing(topics, expanded: false).map(\.count) == Array(0..<10))
@@ -17,7 +17,7 @@ struct TopicBrowseTests {
     }
 
     @Test func matchingKeepsInputOrder() {
-        let tied = [TopicPlace(id: "z", name: "Zebra", count: 0), TopicPlace(id: "a", name: "apple", count: 0)]
+        let tied = [TopicPlace(id: "z", name: "Zebra", count: 0, activityAtUs: 1), TopicPlace(id: "a", name: "apple", count: 0, activityAtUs: 1)]
         #expect(TopicPlace.browsing(tied, expanded: false).map(\.id) == ["z", "a"])
         #expect(TopicPlace.matching(tied, text: "a").map(\.id) == ["z", "a"])
         #expect(TopicPlace.matching(tied, text: " APP ").map(\.id) == ["a"])

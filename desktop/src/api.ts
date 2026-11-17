@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 // shortcut is the stored form, e.g. "shift+super+Space"; it is kept while quick capture is off.
 export type Hotkey = { shortcut: string; on: boolean };
 export type Settings = { server_url: string | null; has_secret: boolean; quick_capture: Hotkey };
-export type Topic = { id: string; name: string; item_count: number };
+export type Topic = { id: string; name: string; item_count: number; activity_at_us: number };
 export type Keep = { kind: "all" } | { kind: "none" } | { kind: "only"; ids: string[] };
 
 export const getSettings = () => invoke<Settings>("get_settings");
@@ -46,7 +46,7 @@ export type SyncNotice = {
 };
 export type SyncStatus = "synced" | "syncing" | "offline" | "unauthorized" | "keychain" | "not_configured";
 
-export type FeedAttachment = { id: string; filename: string; mime_type: string; size_bytes: number; has_thumbnail: boolean; runnable: boolean };
+export type FeedAttachment = { id: string; filename: string; mime_type: string; size_bytes: number; uploaded: boolean; has_thumbnail: boolean; runnable: boolean };
 export type Staged = { id: string; filename: string; size_bytes: number; mime_type: string };
 export type StagedFiles = { staged: Staged[]; errors: string[] };
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
@@ -60,10 +60,10 @@ export const resolveConflict = (itemId: string, keep: "theirs" | "mine") =>
 export const trashItem = (itemId: string) => invoke<void>("trash_item", { itemId });
 export const restoreItem = (itemId: string) => invoke<void>("restore_item", { itemId });
 export const navCounts = () => invoke<Counts>("nav_counts");
-export type Draft = { place: string; text: string; home_topic_id: string | null };
+export type Draft = { place: string; text: string; home_topic_id: string | null; attachments: Staged[] };
 export const listDrafts = () => invoke<Draft[]>("list_drafts");
-export const saveDraft = (place: string, text: string, homeTopicId: string | null) =>
-  invoke<void>("save_draft", { place, text, homeTopicId });
+export const saveDraft = (place: string, text: string, homeTopicId: string | null, attachmentIds: string[]) =>
+  invoke<void>("save_draft", { place, text, homeTopicId, attachmentIds });
 export const capture = (text: string, attachmentIds: string[], target: Target, draft?: string) =>
   invoke<void>("capture", { text, attachmentIds, target, draft: draft ?? null });
 export const doubleClickIntervalMs = () => invoke<number>("double_click_interval_ms");
@@ -83,11 +83,12 @@ export const discardCopyItems = (token: string) => invoke<void>("discard_copy_it
 export const setItemsTrashed = (itemIds: string[], trashed: boolean) => invoke<void>("set_items_trashed", { itemIds, trashed });
 export const attachmentStored = (id: string): Promise<boolean> => invoke<boolean>("attachment_stored", { id });
 export const attachmentOriginal = (id: string): Promise<string> => invoke<string>("attachment_original", { id });
+export const openStagedAttachment = (id: string) => invoke<void>("open_staged_attachment", { id });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
 export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
 export type Before = { capture_time_us: number; id: string; purge_at_us?: number | null };
 // Nested keys aren't renamed by Tauri, so `before` and `query` keep Rust's snake_case.
-export const listItems = (view: View, before: Before | null) => invoke<FeedItem[]>("list_items", { view, before });
+export const listItems = (view: View, before: Before | null, limit?: number) => invoke<FeedItem[]>("list_items", { view, before, ...(limit === undefined ? {} : { limit }) });
 export type Place = { kind: "all" } | Target;
 export type SearchQuery = { text: string; place: Place; from_us: number | null; to_us: number | null; has_files: boolean };
 // Matches arrive wrapped in U+E000 … U+E001; marked_filenames follows attachments' order.

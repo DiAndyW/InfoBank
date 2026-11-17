@@ -26,7 +26,7 @@ struct AttachmentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: ruledLine == nil ? 4 : 0) {
             Button {
-                guard !loading, let transfers else { return }
+                guard !loading, let transfers, (try? transfers.canOpen(attachment.id)) == true else { return }
                 if attachment.mimeType.hasPrefix("image/") || isVideo {
                     showingImage = true
                     return
@@ -82,7 +82,15 @@ struct AttachmentView: View {
                 Label(error, systemImage: "exclamationmark.triangle").font(.plex(.sans, 12, relativeTo: .caption)).foregroundStyle(palette.danger)
                     .ruledTextSpacing(.sans, 12, relativeTo: .caption1)
                     .snapToLines()
+            } else if !attachment.uploaded {
+                Label(FeedAttachment.pendingLabel, systemImage: "icloud.and.arrow.up").font(.plex(.sans, 12, relativeTo: .caption)).foregroundStyle(palette.inkMuted)
+                    .ruledTextSpacing(.sans, 12, relativeTo: .caption1)
+                    .snapToLines()
             }
+        }
+        .task(id: error) {
+            guard error != nil, (try? await Task.sleep(for: .seconds(4))) != nil else { return }
+            error = nil
         }
         .task(id: attachment) {
             thumbnail = try? await transfers?.thumbnail(attachment.id)

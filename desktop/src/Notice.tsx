@@ -8,6 +8,13 @@ export default function Notice({ message, action, onClose }: { message: string; 
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    // Leaving for another app can skip mouseleave, which would hold the notice forever.
+    const release = () => setHeld(false);
+    window.addEventListener("blur", release);
+    return () => window.removeEventListener("blur", release);
+  }, []);
+
+  useEffect(() => {
     if (held || busy) return;
     const timer = setTimeout(onClose, 4000);
     return () => clearTimeout(timer);

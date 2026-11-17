@@ -17,7 +17,7 @@ function backend(status: Status, configured = true, opts: { save?: Promise<void>
     if (cmd === "update_status") return { current_version: "0.1.0", status };
     if (cmd === "sync_status") return "synced";
     if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
-    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", item_count: 0 }];
+    if (cmd === "list_topics") return [{ id: "work-id", name: "Work", activity_at_us: 1794629106000000, item_count: 0 }];
     if (["list_items", "list_drafts"].includes(cmd)) return [];
     if (cmd === "save_draft") { await (typeof opts.save === "function" ? opts.save((args as { text: string }).text) : opts.save); localStorage.setItem("saved-draft", JSON.stringify(args)); }
     if (cmd === "restart_to_update") { await opts.install; if (opts.restartError) throw opts.restartError; }
@@ -167,21 +167,14 @@ test("a_failed_draft_save_does_not_restart", async () => {
   expect(screen.getByRole("textbox", { name: "New Item" })).toHaveValue("keep this");
 });
 
-test.each([1, 2])("unsent_files_anywhere_ask_first (%s)", async (count) => {
+test.each([1, 2])("unsent_files_anywhere_are_persisted (%s)", async (count) => {
   const calls = await ready();
   await act(() => emit("attachments-staged", { staged: [{ id: "one", filename: "one.png", size_bytes: 10, mime_type: "image/png" }], errors: [] }));
   await work();
   if (count === 2) await act(() => emit("attachments-staged", { staged: [{ id: "two", filename: "two.png", size_bytes: 10, mime_type: "image/png" }], errors: [] }));
   await restart();
-  const title = count === 1 ? "Restart and remove 1 unsent file?" : "Restart and remove 2 unsent files?";
-  const dialog = screen.getByRole("alertdialog", { name: title });
-  expect(dialog).toHaveTextContent("Files you attached but haven't sent aren't kept across a restart.");
-  expect(calls).not.toContain("restart_to_update");
-  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-  expect(calls).not.toContain("restart_to_update");
-  await restart();
-  await act(async () => { fireEvent.click(within(screen.getByRole("alertdialog", { name: title })).getByRole("button", { name: "Restart" })); });
+  expect(calls).toContain("save_draft");
   expect(calls).toContain("restart_to_update");
 });
 
@@ -323,7 +316,7 @@ test.each(["save", "install"])("restart_unfreezes_after_%s_error", async (failur
   expect(screen.getByRole("button", { name: "Attach files" })).toBeEnabled();
 });
 
-test.each([true, false])("restart_waits_for_staging_then_confirms_the_final_count (saveFirst=%s)", async (saveFirst) => {
+test.each([true, false])("restart_waits_for_staging_and_durable_save (saveFirst=%s)", async (saveFirst) => {
   let save!: () => void;
   const calls = await ready({ save: new Promise<void>(r => { save = r; }) });
   typeDraft("keep");
@@ -338,25 +331,20 @@ test.each([true, false])("restart_waits_for_staging_then_confirms_the_final_coun
     expect(calls).not.toContain("restart_to_update");
     await act(async () => save());
   }
-  const dialog = screen.getByRole("alertdialog", { name: "Restart and remove 1 unsent file?" });
-  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  expect(calls).not.toContain("restart_to_update");
-  expect(screen.getByRole("textbox", { name: "New Item" })).not.toHaveAttribute("readonly");
-  typeDraft("editable");
-  expect(screen.getByRole("textbox", { name: "New Item" })).toHaveValue("editable");
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(calls).toContain("restart_to_update");
+  expect(JSON.parse(localStorage.getItem("saved-draft")!)).toMatchObject({ text: "keep", attachmentIds: ["one"] });
 });
 
 
-test("restart_confirms_the_larger_count_after_an_initial_confirmation", async () => {
+test("restart_keeps_files_arriving_during_its_wait", async () => {
   const calls = await ready();
   const file = { id: "one", filename: "one.txt", size_bytes: 1, mime_type: "text/plain" };
   await act(() => emit("attachments-staged", { staged: [file], errors: [] }));
   await act(() => emit("attachments-staging", "pending"));
   await restart();
-  await act(async () => { fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Restart" })); });
   expect(calls).not.toContain("restart_to_update");
   await act(() => emit("attachments-staged", { drop_id: "pending", staged: [{ ...file, id: "two", filename: "two.txt" }], errors: [] }));
-  const dialog = screen.getByRole("alertdialog", { name: "Restart and remove 2 unsent files?" });
-  await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Restart" })); });
+  expect(JSON.parse(localStorage.getItem("saved-draft")!)).toMatchObject({ attachmentIds: ["one", "two"] });
   expect(calls.filter(c => c === "restart_to_update")).toHaveLength(1);
 });

@@ -9,6 +9,9 @@ export function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const downloading = "Downloading…";
+const pendingLabel = "Not uploaded yet";
+
 export function viewable(a: FeedAttachment): boolean {
   return !a.runnable && a.mime_type.startsWith("image/");
 }
@@ -31,12 +34,19 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
     };
   }, [a.id, image, closedCount]);
 
+  useEffect(() => {
+    if (!note || note === downloading) return;
+    const timer = setTimeout(() => setNote(null), 4000);
+    return () => clearTimeout(timer);
+  }, [note]);
+
   async function fetchThen(action: (id: string) => Promise<void>) {
     if (busy.current) return false;
     busy.current = true;
     try {
       const stored = await attachmentStored(a.id).catch(() => false);
-      setNote(stored ? null : "Downloading…");
+      if (!stored && !a.uploaded) return false;
+      setNote(stored ? null : downloading);
       await action(a.id);
       setNote(null);
       if (image && !src) {
@@ -54,10 +64,12 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
   function open() {
     if (a.runnable) setRefused(true);
     else if (viewable(a)) {
-      onView(a.id);
+      if (a.uploaded) onView(a.id);
+      else attachmentStored(a.id).then((stored) => stored && onView(a.id), () => {});
     } else fetchThen(openAttachment);
   }
 
+  const status = note ?? (a.uploaded ? null : pendingLabel);
   const opener = refused ? (
     <div className="nb-file is-blocked">
       <Icon name="alert" />
@@ -87,15 +99,15 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
           {a.filename}
         </span>
       )}
-      {note && <span className="nb-thumb-note">{note}</span>}
+      {status && <span className="nb-thumb-note">{status}</span>}
     </button>
   ) : (
-    <button type="button" className={note && note !== "Downloading…" ? "nb-file is-error" : "nb-file"} onClick={open} aria-label={`Open ${a.filename}`}>
+    <button type="button" className={note && note !== downloading ? "nb-file is-error" : "nb-file"} onClick={open} aria-label={`Open ${a.filename}`}>
       <Icon name="file" />
       <span className="nb-file-text">
         <span className="nb-file-name">{a.filename}</span>
         <span className="nb-file-meta">{formatSize(a.size_bytes)}</span>
-        {note && <span className="nb-file-meta">{note}</span>}
+        {status && <span className="nb-file-meta">{status}</span>}
       </span>
     </button>
   );

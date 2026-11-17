@@ -139,7 +139,9 @@ struct ItemRow: View {
             if copyable { onCopy() }
             else { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
         }
-        .background(highlighted ? palette.accentSoft : .clear)
+        .padding(.horizontal, 8)
+        .background(highlighted ? palette.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, -8)
         .environment(\.openURL, OpenURLAction { ["http", "https"].contains($0.scheme?.lowercased()) ? .systemAction : .discarded })
         .accessibilityElement(children: item.attachments.isEmpty ? .combine : .contain)
         .accessibilityAddTraits(copyable ? .isButton : [])

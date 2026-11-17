@@ -88,7 +88,7 @@ struct QuickCaptureTests {
         model.flushDraft()
         #expect(model.error == nil)
         model.flushDraft()
-        #expect(model.error == "Couldn't save your draft. Your text is still here.")
+        #expect(model.error == "Draft failed to save. NoteBank couldn't read or save its data. Try again.")
         store.resumeFileDatabaseAccess()
         model.flushDraft()
         #expect(try store.drafts()[.inbox]?.text == "Keep this draft")
@@ -99,14 +99,14 @@ struct QuickCaptureTests {
         model.reportImportError("Send failed")
         model.flushDraft()
         model.flushDraft()
-        #expect(model.error == "Send failed")
+        #expect(model.error == "Draft failed to save. NoteBank couldn't read or save its data. Try again.\nSend failed")
         #expect(!model.send())
         model.flushDraft()
         model.flushDraft()
-        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+        #expect(model.error == "Item failed to send. NoteBank couldn't read or save its data. Try again.\nSend failed")
         store.resumeFileDatabaseAccess()
         model.flushDraft()
-        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+        #expect(model.error == "Item failed to send. NoteBank couldn't read or save its data. Try again.\nSend failed")
     }
 
     @Test @MainActor func sendDatabaseFailureIsPlain() throws {
@@ -116,7 +116,7 @@ struct QuickCaptureTests {
         store.suspendFileDatabaseAccess()
         defer { store.resumeFileDatabaseAccess() }
         #expect(!model.send())
-        #expect(model.error == "NoteBank couldn't read or save its data. Try again.")
+        #expect(model.error == "Item failed to send. NoteBank couldn't read or save its data. Try again.")
         #expect(model.text == "keep")
     }
 

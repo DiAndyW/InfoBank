@@ -53,6 +53,7 @@ pub struct FeedAttachment {
     pub filename: String,
     pub mime_type: String,
     pub size_bytes: i64,
+    pub uploaded: bool,
     pub has_thumbnail: bool,
     pub runnable: bool,
 }
@@ -82,7 +83,7 @@ pub struct Before {
     pub purge_at_us: Option<i64>,
 }
 
-const GONE: &str = "That Item no longer exists";
+const GONE: &str = "That Item no longer exists.";
 
 fn checked_text(text: &str) -> Result<Option<String>, String> {
     let text = text.trim();
@@ -140,6 +141,7 @@ pub fn capture(
             (Some(id.as_str()), false)
         }
     };
+    for id in attachment_ids { files::require_unowned(conn, id, draft)?; }
     let attachments = staged_attachments(dir, attachment_ids)?;
     let item_id = uuid::Uuid::new_v4().to_string();
 
@@ -191,6 +193,7 @@ pub fn edit_item(
         .prepare("SELECT id FROM attachments WHERE item_id = ?1")
         .and_then(|mut stmt| stmt.query_map([item_id], |r| r.get(0))?.collect())
         .map_err(crate::error_message::message)?;
+    for id in add_ids { files::require_unowned(conn, id, None)?; }
     let adding = staged_attachments(dir, add_ids)?;
     let (removing, kept): (Vec<String>, Vec<String>) = files.into_iter().partition(|id| remove_ids.contains(id));
 
@@ -348,6 +351,10 @@ const PURGE_ORDER: &str = "CASE ?2 WHEN 'trash' THEN COALESCE(purge_at, 92233720
 
 /// Newest first (Trash: latest purge first), at most PAGE_SIZE. `before` continues from the last Item of the previous page.
 pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_us: i64) -> rusqlite::Result<Vec<FeedItem>> {
+    list_items_limited(conn, view, before, now_us, PAGE_SIZE)
+}
+
+pub fn list_items_limited(conn: &Connection, view: &View, before: Option<&Before>, now_us: i64, limit: i64) -> rusqlite::Result<Vec<FeedItem>> {
     let (kind, topic) = match view {
         View::All => ("all", None),
         View::Inbox => ("inbox", None),
@@ -369,7 +376,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
     let purge_key = before.map(|b| if kind == "trash" { b.purge_at_us.unwrap_or(i64::MAX) } else { 0 });
     let mut items: Vec<FeedItem> = stmt
         .query_map(
-            (now_us, kind, topic, before.map(|b| b.capture_time_us), before.map(|b| b.id.as_str()), PAGE_SIZE, purge_key),
+            (now_us, kind, topic, before.map(|b| b.capture_time_us), before.map(|b| b.id.as_str()), limit, purge_key),
             |r| {
                 let (sync_error, conflict) = feedback(r, 7)?;
                 Ok(FeedItem {
@@ -395,7 +402,7 @@ pub fn list_items(conn: &Connection, view: &View, before: Option<&Before>, now_u
 pub(crate) fn attach(conn: &Connection, items: &mut [FeedItem]) -> rusqlite::Result<()> {
     let ids = serde_json::to_string(&items.iter().map(|i| &i.id).collect::<Vec<_>>()).expect("strings serialize");
     let mut stmt = conn.prepare(
-        "SELECT item_id, id, filename, mime_type, size_bytes, has_thumbnail FROM attachments
+        "SELECT item_id, id, filename, mime_type, size_bytes, uploaded, has_thumbnail FROM attachments
          WHERE item_id IN (SELECT value FROM json_each(?1)) ORDER BY rowid",
     )?;
     let mut rows = stmt.query([ids])?;
@@ -407,7 +414,8 @@ pub(crate) fn attach(conn: &Connection, items: &mut [FeedItem]) -> rusqlite::Res
                 id: r.get(1)?,
                 mime_type: r.get(3)?,
                 size_bytes: r.get(4)?,
-                has_thumbnail: r.get(5)?,
+                uploaded: r.get(5)?,
+                has_thumbnail: r.get(6)?,
                 runnable: files::runnable(&filename),
                 filename,
             });
@@ -431,6 +439,13 @@ pub fn nav_counts(conn: &Connection, now_us: i64) -> rusqlite::Result<Counts> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gone_matches_the_shared_rule() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../behaviour/behaviour.json");
+        let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(GONE, rules["rules"]["failure.item_gone"]["expect"]["message"]);
+    }
 
     #[test]
     fn capture_deletes_its_draft_in_the_same_transaction() {
@@ -841,7 +856,7 @@ mod tests {
             assert!(edit_item(&conn, d.path(), "i", text, &[], &[], 0, 2).is_err(), "accepted {:.20?}", text);
         }
         assert!(edit_item(&conn, d.path(), "i", "y", &["../files".into()], &[], 0, 2).is_err());
-        assert_eq!(edit_item(&conn, d.path(), "nope", "y", &[], &[], 0, 2).unwrap_err(), GONE);
+        assert_eq!(edit_item(&conn, d.path(), "nope", "y", &[], &[], 0, 2).unwrap_err(), "That Item no longer exists.");
         assert_eq!(count(&conn, "outbox"), 0);
     }
 
@@ -891,8 +906,8 @@ mod tests {
         set_trashed(&conn, "i", false, 7).unwrap();
         set_trashed(&conn, "i", false, 8).unwrap();
         assert_eq!(types(&conn), ["TrashItem", "RestoreItem"]);
-        assert_eq!(set_trashed(&conn, "nope", true, 9).unwrap_err(), GONE);
-        assert_eq!(set_trashed(&conn, "nope", false, 9).unwrap_err(), GONE);
+        assert_eq!(set_trashed(&conn, "nope", true, 9).unwrap_err(), "That Item no longer exists.");
+        assert_eq!(set_trashed(&conn, "nope", false, 9).unwrap_err(), "That Item no longer exists.");
     }
 
     #[test]
@@ -933,6 +948,16 @@ mod tests {
         capture(&conn, d.path(), "", &ids, &Target::Inbox, None, 1).unwrap();
         let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
         assert_eq!(item.attachments.iter().map(|a| a.runnable).collect::<Vec<_>>(), [true, false]);
+    }
+
+    #[test]
+    fn the_feed_says_which_files_reached_the_server() {
+        let (d, conn) = fresh();
+        let ids = ["a.pdf", "b.pdf"].map(|n| crate::files::stage_bytes(d.path(), n, b"x").unwrap().id);
+        capture(&conn, d.path(), "", &ids, &Target::Inbox, None, 1).unwrap();
+        conn.execute("UPDATE attachments SET uploaded = 1 WHERE id = ?1", [&ids[0]]).unwrap();
+        let item = &list_items(&conn, &View::All, None, 0).unwrap()[0];
+        assert_eq!(item.attachments.iter().map(|a| a.uploaded).collect::<Vec<_>>(), [true, false]);
     }
 
     fn with_topics(conn: &Connection) {
@@ -1033,4 +1058,24 @@ mod tests {
         set_trashed(&conn, &id, false, 5).unwrap();
         assert_eq!(list_items(&conn, &View::Tunnel, None, 0).unwrap()[0].id, id);
     }
+    #[test]
+    fn bounded_initial_page_continues_equal_times_without_gaps() {
+        let (_d, conn) = fresh();
+        for n in 0..231 {
+            conn.execute("INSERT INTO items(id,text,capture_time) VALUES (?1,'synthetic',7)", [format!("i{n:04}")]).unwrap();
+        }
+        let mut page = list_items_limited(&conn, &View::All, None, 0, 30).unwrap();
+        assert_eq!(page.len(), 30);
+        let mut ids = page.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+        while let Some(last) = page.last() {
+            let before = Before { capture_time_us: last.capture_time_us, id: last.id.clone(), purge_at_us: last.purge_at_us };
+            page = list_items_limited(&conn, &View::All, Some(&before), 0, 100).unwrap();
+            ids.extend(page.iter().map(|i| i.id.clone()));
+        }
+        assert_eq!(ids, (0..231).rev().map(|n| format!("i{n:04}")).collect::<Vec<_>>());
+        assert_eq!(list_items(&conn, &View::All, None, 0).unwrap().len(), 100);
+        let query = crate::search::Query { text: "synthetic".into(), place: crate::search::Place::All, from_us: None, to_us: None, has_files: false };
+        assert_eq!(crate::search::search(&conn, &query, None).unwrap().len(), 100);
+    }
+
 }

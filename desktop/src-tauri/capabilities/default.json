@@ -32,6 +32,7 @@
     "allow-pick-files",
     "allow-stage-attachment-bytes",
     "allow-unstage-attachment",
+    "allow-open-staged-attachment",
     "allow-thumbnail",
     "allow-attachment-stored",
     "allow-attachment-original",

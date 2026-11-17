@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { searchItems, type SearchItem, type SearchQuery, type Topic } from "./api";
 import { Icon } from "./icons";
@@ -27,9 +27,9 @@ const midnight = (day: string, plusDays = 0) => {
 const marks = (s: string) =>
   s.split(/([^]*)/).map((part, i) => (part.startsWith("") ? <mark key={i}>{part.slice(1, -1)}</mark> : part));
 
-type Props = { text: string; topics: Topic[]; startPlace: string; hidden: boolean; onOpen: (it: SearchItem) => void; onOpenTopic: (topic: Topic) => void | Promise<void>; onNotice: ShowNotice; onError: (title: string, error: unknown) => void; notice: NoticeData | null; onDismissNotice: () => void };
+type Props = { text: string; topics: Topic[]; hidden: boolean; onOpen: (it: SearchItem) => void; onOpenTopic: (topic: Topic) => void | Promise<void>; onNotice: ShowNotice; onError: (title: string, error: unknown) => void; notice: NoticeData | null; onDismissNotice: () => void };
 
-export default function SearchResults({ text, topics, startPlace, hidden, onOpen, onOpenTopic, onNotice, onError, notice, onDismissNotice }: Props) {
+export default function SearchResults({ text, topics, hidden, onOpen, onOpenTopic, onNotice, onError, notice, onDismissNotice }: Props) {
   const [items, setItems] = useState<SearchItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exhausted, setExhausted] = useState(false);
@@ -37,7 +37,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
   const loading = useRef(false);
   // Answers can arrive out of order; only the latest request may render.
   const latest = useRef(0);
-  const [place, setPlace] = useState(startPlace); // "all", "inbox", "tunnel", or a Topic id
+  const [place, setPlace] = useState("all"); // "all", "inbox", "tunnel", or a Topic id
   const [range, setRange] = useState<Range>("any");
   // Set when a preset is picked, not on every render, so the query stays the same between renders.
   const [presetFrom, setPresetFrom] = useState<number | null>(null);
@@ -46,7 +46,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
   const [hasFiles, setHasFiles] = useState(false);
   const [menu, setMenu] = useState<"place" | "date" | null>(null);
   const topicQuery = text.trim().toLocaleLowerCase();
-  const matchingTopics = topicQuery ? topics.filter((topic) => topic.name.toLocaleLowerCase().includes(topicQuery)) : [];
+  const matchingTopics = place === "all" && topicQuery ? topics.filter((topic) => topic.name.toLocaleLowerCase().includes(topicQuery)) : [];
   const filtered = place !== "all" || range !== "any" || hasFiles;
   const query: SearchQuery = {
     text,
@@ -86,6 +86,7 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
       for (let i = 0; i < pageCount; i++) {
         const last = all[all.length - 1];
         page = await searchItems(query, last ? { capture_time_us: last.capture_time_us, id: last.id } : null);
+        if (id !== latest.current) return;
         all = all.concat(page);
         if (page.length === 0) break;
       }
@@ -114,13 +115,19 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
     }
   }, [hidden]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    ++latest.current;
+    loading.current = true;
+    setItems(null);
+    setError(null);
+    setExhausted(false);
     const timer = setTimeout(() => load(1), WAIT_MS);
     const unlisten = listen("items-changed", () => {
       if (hiddenNow.current) stale.current = true;
       else load(pages.current);
     });
     return () => {
+      ++latest.current;
       clearTimeout(timer);
       unlisten.then((stop) => stop());
     };
@@ -195,11 +202,13 @@ export default function SearchResults({ text, topics, startPlace, hidden, onOpen
                 {matchingTopics.map((topic) => (
                   <button key={topic.id} className="nb-item nb-result nb-topic-result" onClick={() => onOpenTopic(topic)}>
                     <span className="nb-item-body">
-                      <span className="nb-item-text">{topic.name}</span>
-                    </span>{" "}
-                    <span className="nb-item-meta">
-                      <span className="nb-count">{topic.item_count}</span>
+                      <span className="nb-item-text">{topic.name}</span>{" "}
+                      <span className="nb-count">{topic.item_count} {topic.item_count === 1 ? "item" : "items"}</span>
                     </span>
+                    {" "}<time className="nb-item-time" dateTime={new Date(topic.activity_at_us / 1000).toISOString()} aria-label={`Last active ${new Date(topic.activity_at_us / 1000).toLocaleString(undefined, { dateStyle: "full", timeStyle: "long" })}`}>
+                      {new Date(topic.activity_at_us / 1000).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}{" "}
+                      {new Date(topic.activity_at_us / 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                    </time>
                   </button>
                 ))}
               </div>

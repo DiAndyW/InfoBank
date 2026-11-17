@@ -27,7 +27,7 @@ struct FeedView: View {
     let openSettings: () -> Void
     let notices: NoticeCenter
     let onShow: (String) -> Void
-    let onSearch: (SearchPlace) -> Void
+    let onSearch: () -> Void
     let foregrounds: Int
     let wake: () -> Void
     @Binding var target: ShowTarget?
@@ -41,13 +41,23 @@ struct FeedView: View {
     @State private var highlighted: String?
     @State private var visible = false
     @State private var scrollsToNewest = false
+    @State private var scrollPosition = ScrollPosition()
+    @State private var scrollGeometry: ScrollGeometry?
+    @State private var beforePrepend: ScrollGeometry?
+    @State private var prependOffset: CGFloat?
+    @State private var scrollPhase: ScrollPhase = .idle
+    @State private var olderVisible = false
     @State private var pendingReveal: String?
     @State private var title: String
     @State private var copiedID: String?
     @State private var copyTask: Task<Void, Never>?
     @State private var copies = 0
     @State private var commands: FeedItem?
-    @State private var copyAfterSheet: (item: FeedItem, choice: ItemActionsView.Copy)?
+    @State private var panel: ItemPanelPresentation?
+    @State private var expandedActions = false
+    @Environment(\.dismiss) private var dismiss
+    let editorNavigation: EditorNavigation
+    @State private var editing: (item: FeedItem, model: ItemEditorModel)?
     @State private var actionError: String?
     @State private var asking: FeedItem?
     @State private var renameTopic = false
@@ -58,8 +68,9 @@ struct FeedView: View {
 
     init(
         place: FeedPlace, topicName: String?, services: Services, composers: Composers, onUndoClear: @escaping (DraftPlace) -> Void, status: SyncStatus, openSettings: @escaping () -> Void,
-        onShow: @escaping (String) -> Void, onSearch: @escaping (SearchPlace) -> Void, foregrounds: Int, target: Binding<ShowTarget?>
+        onShow: @escaping (String) -> Void, onSearch: @escaping () -> Void, foregrounds: Int, target: Binding<ShowTarget?>, editorNavigation: EditorNavigation
     ) {
+        self.editorNavigation = editorNavigation
         self.composers = composers
         self.onUndoClear = onUndoClear
         self.store = services.store
@@ -108,12 +119,86 @@ struct FeedView: View {
         return composers.model(for: draftPlace, destination: destination, placeholder: placeholder)
     }
 
-    private var searchPlace: SearchPlace? {
-        switch place {
-        case .inbox: .inbox
-        case .tunnel: .tunnel
-        case .topic(let id): .topic(id)
-        case .trash: nil
+    private func requestLeave(_ action: @escaping () -> Void) {
+        guard commands == nil else { return }
+        editorNavigation.requestLeave(action)
+    }
+
+    private func openActions(_ item: FeedItem) {
+        guard panel == nil else { return }
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        expandedActions = false
+        actionError = nil
+        panel = ItemPanelPresentation()
+        commands = item
+    }
+
+    private func closePanel(then action: @escaping () -> Void = {}) {
+        guard let current = panel else { action(); return }
+        current.dismiss {
+            guard panel?.id == current.id else { return }
+            actionError = nil
+            commands = nil
+            panel = nil
+            action()
+        }
+    }
+
+    @ViewBuilder private var panelContent: some View {
+        if let item = commands {
+            if place == .trash {
+                NavigationStack {
+                    List {
+                        if let actionError { Text(actionError).foregroundStyle(palette.danger) }
+                        Button("Restore", systemImage: "arrow.uturn.backward") {
+                            do {
+                                try store.restore(itemID: item.id, nowUs: Time.nowUs())
+                                try notices.postRestored(itemID: item.id, store: store)
+                                model.reload()
+                                wake()
+                                closePanel()
+                            } catch { actionError = errorMessage(error) }
+                        }.themedSheetRow()
+                    }.themedSheetList()
+                    .navigationTitle("Item actions")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { closePanel() } } }
+                }.themedSheet()
+            } else {
+                ItemActionsView(item: item, store: store, place: place.query, trashAfterCopy: model.trashAfterCopy, onCopy: { choice in
+                    switch choice {
+                    case .item:
+                        let panelID = panel?.id
+                        copy(item, choice: choice, onCopied: {
+                            guard panel?.id == panelID, commands?.id == item.id else { return }
+                            closePanel()
+                        })
+                    case .text:
+                        if let text = item.text { UIPasteboard.general.string = text; notices.postCopiedText() }
+                        closePanel()
+                    }
+                }, onEdit: { text in
+                    guard panel?.closing == false else { return }
+                    closePanel {
+                        requestLeave {
+                            let editor = ItemEditorModel(store: store, item: item, text: text)
+                            withAnimation(reduceMotion ? nil : .smooth) { editing = (item, editor) }
+                            editorNavigation.begin(editor) { completion in
+                                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                withAnimation(reduceMotion ? nil : .smooth) { editing = nil } completion: { completion() }
+                            }
+                        }
+                    }
+                }, onChanged: { trashed, moved in
+                    model.reload()
+                    if trashed { notices.postTrashed(itemID: item.id, copied: false) }
+                    if moved {
+                        do { try notices.postMoved(itemID: item.id, from: item.destination, store: store) }
+                        catch { actionError = errorMessage(error) }
+                    }
+                    wake()
+                }, onDismiss: { closePanel() }, expanded: $expandedActions, actionError: $actionError)
+            }
         }
     }
 
@@ -121,12 +206,39 @@ struct FeedView: View {
         // A covered Feed of the same Place must not take the target from the one on top.
         guard visible, let shown = target, shown.place == place else { return }
         target = nil
+        olderVisible = false
+        beforePrepend = nil
+        prependOffset = nil
         if model.reveal(shown.itemID) { pendingReveal = shown.itemID }
+    }
+
+    private func correctPrepend() {
+        guard let before = beforePrepend, let geometry = scrollGeometry,
+              prependOffset == nil, !scrollPhase.isScrolling,
+              geometry.contentSize.height != before.contentSize.height else { return }
+        let offset = before.contentOffset.y + before.contentInsets.top + geometry.contentSize.height - before.contentSize.height
+        prependOffset = offset
+        Task { @MainActor in
+            await Task.yield()
+            guard visible, prependOffset == offset else { return }
+            scrollPosition.scrollTo(y: offset)
+        }
+    }
+
+    private func loadOlderIfReady() {
+        guard model.hasOlder, olderVisible, visible, !scrollPhase.isScrolling, beforePrepend == nil, prependOffset == nil else { return }
+        let count = model.items.count
+        beforePrepend = place == .trash ? nil : scrollGeometry
+        var transaction = Transaction()
+        transaction.disablesAnimations = place != .trash
+        withTransaction(transaction) { model.loadOlder() }
+        if model.items.count == count { beforePrepend = nil }
     }
 
     private var loadMore: some View {
         ProgressView().frame(maxWidth: .infinity).ruledLines().onScrollVisibilityChange { shown in
-            if shown { model.loadOlder() }
+            olderVisible = shown
+            loadOlderIfReady()
         }
     }
 
@@ -136,16 +248,16 @@ struct FeedView: View {
 
     private func itemRow(_ item: FeedItem, showsTime: Bool = true) -> some View {
         SelectableItemRow(selection: batch.selection, item: item, busy: batch.busy,
-                          onCommands: { commands = item }) {
-            ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id,
+                          onCommands: { openActions(item) }) {
+            ItemRow(item: item, showsTopic: place == .trash, highlighted: highlighted == item.id || editing?.item.id == item.id,
                     copyable: CopyActions(place: place.query, hasText: item.text != nil).row, copied: copiedID == item.id,
-                    onCopy: { copy(item) }, onCommands: { commands = item }, inTrash: place == .trash, showsTime: showsTime)
+                    onCopy: { copy(item) }, onCommands: { openActions(item) }, inTrash: place == .trash, showsTime: showsTime)
         }
         .ruledLines()
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 
-    private func copy(_ item: FeedItem, choice: ItemActionsView.Copy? = nil) {
+    private func copy(_ item: FeedItem, choice: ItemActionsView.Copy? = nil, onCopied: (() -> Void)? = nil) {
         guard copyTask == nil, item.syncError == nil else { return }
         copyTask = Task { @MainActor in
             defer { copyTask = nil }
@@ -175,6 +287,7 @@ struct FeedView: View {
                     copiedID = nil
                     notices.postTrashed(itemID: item.id)
                 } else { copiedID = item.id }
+                onCopied?()
                 if outcome == .ask { asking = item }
                 wake()
             } catch is CancellationError {
@@ -244,8 +357,24 @@ struct FeedView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(.rect)
                 .onTapGesture { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
+                .highPriorityGesture(TapGesture().onEnded { requestLeave {} }, including: editing == nil ? .subviews : .all)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: model.items.map(\.id))
-                .defaultScrollAnchor(place == .trash ? .top : .bottom)
+                .defaultScrollAnchor(place == .trash ? .top : .bottom, for: .initialOffset)
+                .scrollPosition($scrollPosition)
+                .onScrollGeometryChange(for: ScrollGeometry.self) { $0 } action: { _, geometry in
+                    scrollGeometry = geometry
+                    if let offset = prependOffset, abs(geometry.contentOffset.y + geometry.contentInsets.top - offset) < 1 {
+                        beforePrepend = nil
+                        prependOffset = nil
+                    } else {
+                        correctPrepend()
+                    }
+                }
+                .onScrollPhaseChange { _, phase in
+                    scrollPhase = phase
+                    correctPrepend()
+                    loadOlderIfReady()
+                }
                 .background(palette.surface)
                 .onChange(of: model.items.last?.id) { _, newest in
                     guard scrollsToNewest, let newest else { return }
@@ -273,74 +402,44 @@ struct FeedView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: onShow, onError: { actionError = $0 }, onUndoClear: onUndoClear)
+            ItemNoticeView(notices: notices, store: store, wake: wake, onShow: { id in requestLeave { onShow(id) } }, onError: { actionError = $0 }, onUndoClear: onUndoClear)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if batch.selection.isSelecting {
+            if let (item, editor) = editing {
+                ItemEditorView(model: editor, navigation: editorNavigation, actionError: $actionError, onSaved: { outcome in
+                    model.reload()
+                    if outcome == .trashed { notices.postTrashed(itemID: item.id, copied: false) }
+                    wake()
+                    editorNavigation.end()
+                }, onCancel: { requestLeave {} })
+                .id(ObjectIdentifier(editor))
+                .bottomBar(palette)
+                .transition(.move(edge: .bottom))
+            } else if batch.selection.isSelecting {
                 BatchActionsBar(batch: batch, items: model.items, trash: place == .trash, tunnel: place == .tunnel, trashAfterCopy: model.trashAfterCopy)
             } else {
                 VStack(spacing: 8) {
                     if let composer, let draftPlace {
-                        ComposerView(model: composer, onClear: { notices.postCleared(draftPlace) }) {
+                        ComposerView(model: composer, title: model.topicName ?? title, onClear: { notices.postCleared(draftPlace) }) {
                             scrollsToNewest = true
                             model.reload()
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(palette.surface)
-                .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
+                .bottomBar(palette)
+                .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.35)), removal: .identity))
             }
         }
+        .modifier(ItemPanel(presentation: panel, expanded: expandedActions, onDismissed: { closePanel() }) {
+            panelContent
+        })
         .onChange(of: model.items) { _, items in batch.reconcile(items) }
         .onChange(of: batch.error) { _, error in if let error { actionError = error; batch.error = nil } }
-        .sheet(item: $commands, onDismiss: {
-            if let pending = copyAfterSheet {
-                copyAfterSheet = nil
-                switch pending.choice {
-                case .item: copy(pending.item, choice: pending.choice)
-                case .text:
-                    if let text = pending.item.text {
-                        UIPasteboard.general.string = text
-                        notices.postCopiedText()
-                    }
-                }
-            }
-        }) { item in
-            if place == .trash {
-                NavigationStack {
-                    List {
-                        Button("Restore", systemImage: "arrow.uturn.backward") {
-                            do {
-                                try store.restore(itemID: item.id, nowUs: Time.nowUs())
-                                try notices.postRestored(itemID: item.id, store: store)
-                                commands = nil
-                                model.reload()
-                                wake()
-                            } catch { actionError = errorMessage(error) }
-                        }
-                    }
-                    .navigationTitle("Item actions")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { commands = nil } } }
-                }.presentationDetents([.medium])
-            } else {
-            ItemActionsView(item: item, store: store, place: place.query, trashAfterCopy: model.trashAfterCopy, onCopy: { choice in
-                copyAfterSheet = (item, choice)
-                commands = nil
-            }, onChanged: { trashed, moved in
-                model.reload()
-                if trashed { notices.postTrashed(itemID: item.id, copied: false) }
-                if moved {
-                    do { try notices.postMoved(itemID: item.id, from: item.destination, store: store) }
-                    catch { actionError = errorMessage(error) }
-                }
-                wake()
-            })
-            }
-        }
-        .alert("Couldn't finish the action", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+        .navigationBarBackButtonHidden(editing != nil)
+        .background(EditorBackGestureGuard(active: editing != nil, blocked: editing != nil) {
+            requestLeave { dismiss() }
+        })
+        .alert("Couldn't finish the action", isPresented: Binding(get: { actionError != nil && panel == nil && editing == nil }, set: { if !$0 { actionError = nil } })) {
             Button("OK") { actionError = nil }
         } message: { Text(actionError ?? "") }
         .task(id: copies) {
@@ -351,7 +450,7 @@ struct FeedView: View {
         .sensoryFeedback(.impact(weight: .light), trigger: copies)
         .alert(
             "Move Tunnel notes to Trash after you copy them?",
-            isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
+            isPresented: Binding(get: { asking != nil && panel == nil }, set: { if !$0 { asking = nil } }),
             presenting: asking
         ) { item in
             Button("Turn on") { answer(true, item) }
@@ -359,6 +458,10 @@ struct FeedView: View {
         }
         .onDisappear {
             visible = false
+            beforePrepend = nil
+            prependOffset = nil
+            scrollPhase = .idle
+            olderVisible = false
             copyTask?.cancel()
             batch.cancel()
         }
@@ -377,36 +480,44 @@ struct FeedView: View {
         }
         .emptyTopicDeletionAlert(topic: $deletingEmpty, store: store, notices: notices, wake: wake, onError: { actionError = $0 })
         .fullScreenCover(isPresented: $deleteTopic) {
-            if case .topic(let id) = place {
-                TopicDeletionView(store: store, topic: TopicPlace(id: id, name: model.topicName ?? title, count: model.topicCount), notices: notices, wake: wake)
+            if let topic = model.topicPlace {
+                TopicDeletionView(store: store, topic: topic, notices: notices, wake: wake)
             }
         }
         .toolbar {
+            if editing != nil {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { requestLeave { dismiss() } } label: { Image(systemName: "chevron.backward") }
+                        .accessibilityLabel("Back")
+                }
+            }
             if batch.selection.isSelecting {
                 ToolbarItem(placement: .topBarTrailing) { Button("Done") { batch.cancel() } }
-            }
-            if !batch.selection.isSelecting && !model.items.isEmpty {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Select") { copyTask?.cancel(); batch.selection.enter() }
+            } else {
+                if place != .trash {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { requestLeave { onSearch() } } label: { Image(systemName: "magnifyingglass") }
+                            .accessibilityLabel("Search")
+                    }
                 }
-            }
-            if !batch.selection.isSelecting, let searchPlace {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { onSearch(searchPlace) } label: { Image(systemName: "magnifyingglass") }
-                        .accessibilityLabel("Search")
-                }
-            }
-            if !batch.selection.isSelecting, case .topic(let id) = place, model.topicName != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button("Rename", systemImage: "pencil") { topicNameDraft = model.topicName ?? title; renameTopic = true }
-                        Button("Delete Topic…", systemImage: "trash", role: .destructive) {
-                            if model.topicCount == 0 {
-                                deletingEmpty = TopicPlace(id: id, name: model.topicName ?? title, count: 0)
-                            } else { deleteTopic = true }
+                        Button("Select", systemImage: "checkmark.circle") {
+                            requestLeave { copyTask?.cancel(); batch.selection.enter() }
+                        }
+                        .disabled(model.items.isEmpty)
+                        if case .topic = place, model.topicName != nil {
+                            Button("Rename", systemImage: "pencil") { requestLeave { topicNameDraft = model.topicName ?? title; renameTopic = true } }
+                            Button("Delete Topic…", systemImage: "trash", role: .destructive) {
+                                requestLeave {
+                                    if model.topicCount == 0 {
+                                        deletingEmpty = model.topicPlace
+                                    } else { deleteTopic = true }
+                                }
+                            }
                         }
                     } label: { Image(systemName: "ellipsis") }
-                    .accessibilityLabel("Topic actions")
+                    .accessibilityLabel("More")
                 }
             }
             ToolbarItem(placement: .principal) {
@@ -415,11 +526,20 @@ struct FeedView: View {
                     SyncStatusLine(status: status)
                 }
                 if status.needsSettings {
-                    Button(action: openSettings) { header.frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.plain)
+                    Button { requestLeave(openSettings) } label: { header.frame(minHeight: 44).contentShape(Rectangle()) }.buttonStyle(.plain)
                 } else {
                     header
                 }
             }
         }
+    }
+}
+
+private extension View {
+    func bottomBar(_ palette: Palette) -> some View {
+        padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(palette.surface.ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) { Rectangle().fill(palette.line).frame(height: 1) }
     }
 }

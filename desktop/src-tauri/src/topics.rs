@@ -11,6 +11,7 @@ pub struct Topic {
     pub id: String,
     pub name: String,
     pub item_count: i64,
+    pub activity_at_us: i64,
 }
 
 #[derive(Deserialize)]
@@ -24,11 +25,11 @@ pub enum Keep {
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Topic>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.name,
-                (SELECT count(*) FROM items i WHERE i.topic_id = t.id AND i.deleted_at IS NULL)
+                (SELECT count(*) FROM items i WHERE i.topic_id = t.id AND i.deleted_at IS NULL), t.activity_at
          FROM topics t WHERE t.deleted_at IS NULL
          ORDER BY t.activity_at DESC, lower(t.name), t.id",
     )?;
-    stmt.query_map([], |r| Ok(Topic { id: r.get(0)?, name: r.get(1)?, item_count: r.get(2)? }))?
+    stmt.query_map([], |r| Ok(Topic { id: r.get(0)?, name: r.get(1)?, item_count: r.get(2)?, activity_at_us: r.get(3)? }))?
         .collect()
 }
 
@@ -93,7 +94,7 @@ pub fn create(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, Strin
     let id = uuid::Uuid::new_v4().to_string();
     let name = checked_name(conn, name, &id)?;
     queue_one(conn, Op::CreateTopic { topic_id: id.clone(), name: name.clone() }, now_us)?;
-    Ok(Topic { id, name, item_count: 0 })
+    Ok(Topic { id, name, item_count: 0, activity_at_us: now_us })
 }
 
 pub fn picker_topic(conn: &Connection, name: &str, now_us: i64) -> Result<Topic, String> {
@@ -175,6 +176,8 @@ mod tests {
             ('1', 'old', 'x', 10, NULL), ('2', 'trash', 'x', 30, 1);").unwrap();
         let topics = list(&conn).unwrap();
         assert_eq!(topics.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["empty", "trash", "old"]);
+        assert_eq!(serde_json::to_value(&topics).unwrap()[0]["activity_at_us"], 40);
+        assert_eq!(serde_json::to_value(&topics).unwrap()[2]["activity_at_us"], 10);
         assert_eq!(topics.iter().map(|t| t.item_count).collect::<Vec<_>>(), [0, 0, 1]);
     }
 
