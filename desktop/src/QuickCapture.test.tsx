@@ -7,7 +7,7 @@ import Composer from "./Composer";
 import QuickCapture from "./QuickCapture";
 import type { Staged, Topic } from "./api";
 
-const topic = (id: string, name: string): Topic => ({ id, name, item_count: 0 });
+const topic = (id: string, name: string): Topic => ({ id, name, activity_at_us: 1794629106000000, item_count: 0 });
 const staged: Staged = { id: "s1", filename: "receipt.png", size_bytes: 10, mime_type: "image/png" };
 
 type Call = { cmd: string; args: any };
@@ -52,7 +52,7 @@ const count = (calls: Call[], cmd: string) => calls.filter((c) => c.cmd === cmd)
 
 async function pasteReceipt() {
   fireEvent.paste(box(), { clipboardData: { files: [new File(["x"], "receipt.png", { type: "image/png" })], getData: () => "" } });
-  await screen.findByText("receipt.png");
+  await screen.findByRole("button", { name: "receipt.png" });
 }
 
 async function choose(name: string) {
@@ -68,6 +68,22 @@ test("the composer hears only drops on its own window", async () => {
   });
   render(<Composer acceptsDrops target={{ kind: "inbox" }} placeholder="" onCaptured={() => {}} />);
   await waitFor(() => expect(targets).toEqual([{ kind: "WebviewWindow", label: "quick-capture" }]));
+});
+
+test("dropped files attach in Quick Capture and are sent with the Item", async () => {
+  const calls = quickBackend();
+  render(<QuickCapture />);
+  await screen.findByRole("textbox", { name: "New Item" });
+  await act(() => emit("attachments-staging", "quick-drop"));
+  await act(() => emit("attachments-staged", {
+    staged: [{ id: "drop", filename: "dropped.png", mime_type: "image/png", size_bytes: 1 }],
+    errors: [], drop_id: "quick-drop",
+  }));
+  expect(await screen.findByRole("button", { name: "dropped.png" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(calls.find(c => c.cmd === "capture")?.args).toEqual({
+    text: "", attachmentIds: ["drop"], draft: null, target: { kind: "inbox" },
+  }));
 });
 
 test("Enter captures into the Inbox and dismisses, leaving the text until the box is hidden", async () => {
@@ -237,11 +253,11 @@ test("Escape dismisses without clearing; hiding then unstages, clears and goes b
   await userEvent.type(box(), "{Escape}");
   await waitFor(() => expect(count(calls, "dismiss_quick_capture")).toBe(1));
   expect(box()).toHaveValue("draft");
-  expect(screen.getByText("receipt.png")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "receipt.png" })).toBeInTheDocument();
 
   await act(() => emit("quick-capture-hidden"));
   expect(box()).toHaveValue("");
-  expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "receipt.png" })).not.toBeInTheDocument();
   expect(calls.filter((c) => c.cmd === "unstage_attachment").map((c) => c.args)).toEqual([{ id: "s1" }]);
   expect(picker()).toHaveTextContent("Inbox");
 });
@@ -256,7 +272,7 @@ test("hiding while a capture is saving doesn't unstage its files", async () => {
   await act(() => emit("quick-capture-hidden"));
   await act(async () => release());
   expect(count(calls, "unstage_attachment")).toBe(0);
-  expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "receipt.png" })).not.toBeInTheDocument();
 });
 
 test("a box hidden while saving still unstages a file pasted during the save", async () => {
@@ -268,7 +284,7 @@ test("a box hidden while saving still unstages a file pasted during the save", a
   await act(() => emit("quick-capture-hidden"));
   await act(async () => release());
   await waitFor(() => expect(calls.filter((c) => c.cmd === "unstage_attachment").map((c) => c.args)).toEqual([{ id: "s1" }]));
-  expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "receipt.png" })).not.toBeInTheDocument();
 });
 
 test("a paste still staging when the box hides doesn't turn up next time", async () => {
@@ -280,7 +296,7 @@ test("a paste still staging when the box hides doesn't turn up next time", async
   await act(() => emit("quick-capture-hidden"));
   await act(async () => release());
   await waitFor(() => expect(calls.filter((c) => c.cmd === "unstage_attachment").map((c) => c.args)).toEqual([{ id: "s1" }]));
-  expect(screen.queryByText("receipt.png")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "receipt.png" })).not.toBeInTheDocument();
 });
 
 test("after the file dialog closes, the text has focus again so Escape still dismisses", async () => {

@@ -47,7 +47,7 @@ fn place(dir: &Path, name: &str, size_bytes: u64, write: impl FnOnce(&Path) -> s
     let target = dir.join("files").join(&id);
     if std::fs::create_dir_all(&target).and_then(|()| write(&target.join(&filename))).is_err() {
         let _ = std::fs::remove_dir_all(&target);
-        return Err(format!("Couldn't save {filename}"));
+        return Err(format!("{filename} failed to attach."));
     }
     Ok(Staged { mime_type: mime_type(&filename), id, filename, size_bytes })
 }
@@ -83,9 +83,9 @@ pub fn runnable(filename: &str) -> bool {
 
 fn stage_path(dir: &Path, src: &Path) -> Result<Staged, String> {
     let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let meta = std::fs::metadata(src).map_err(|_| format!("Couldn't read {name}"))?;
+    let meta = std::fs::metadata(src).map_err(|_| format!("{name} failed to attach."))?;
     if !meta.is_file() {
-        return Err(format!("{name} isn't a file"));
+        return Err(format!("{name} failed to attach."));
     }
     let size = meta.len();
     if size > MAX_ATTACHMENT_BYTES {
@@ -101,11 +101,20 @@ pub fn stage_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<Staged, Strin
     place(dir, name, bytes.len() as u64, |to| std::fs::write(to, bytes))
 }
 
+pub fn require_unowned(conn: &Connection, id: &str, source: Option<&str>) -> Result<(), String> {
+    let parsed = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?;
+    if parsed.to_string() != id { return Err("Unknown attachment".into()); }
+    let denied: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE id = ?1 UNION ALL SELECT 1 FROM draft_attachments WHERE attachment_id = ?1 AND (?2 IS NULL OR place <> ?2))", (id, source), |r| r.get(0)).map_err(crate::error_message::message)?;
+    if denied { return Err("Attachment belongs to another saved Item or draft".into()); }
+    Ok(())
+}
+
 pub fn unstage(conn: &Connection, dir: &Path, id: &str) -> Result<(), String> {
     let id = uuid::Uuid::parse_str(id).map_err(|_| "Unknown attachment")?.to_string();
     let captured: bool = conn
         .query_row("SELECT EXISTS (SELECT 1 FROM attachments WHERE id = ?1)", [&id], |r| r.get(0))
         .map_err(crate::error_message::message)?;
+    if !captured { require_unowned(conn, &id, None)?; }
     if !captured {
         let _ = std::fs::remove_dir_all(dir.join("files").join(&id));
     }
@@ -117,7 +126,7 @@ pub fn sweep_staged(conn: &Connection, dir: &Path) -> Result<(), String> {
     for entry in entries.flatten() {
         let known: bool = conn
             .query_row(
-                "SELECT EXISTS (SELECT 1 FROM attachments WHERE id = ?1)",
+                "SELECT EXISTS (SELECT 1 FROM attachments WHERE id = ?1 UNION ALL SELECT 1 FROM draft_attachments WHERE attachment_id = ?1)",
                 [entry.file_name().to_string_lossy()],
                 |r| r.get(0),
             )
@@ -131,9 +140,31 @@ pub fn sweep_staged(conn: &Connection, dir: &Path) -> Result<(), String> {
 
 pub fn staged_file(dir: &Path, id: &str) -> Result<(String, u64), String> {
     let gone = || "An attachment is missing; add it again".to_string();
-    let entry = std::fs::read_dir(dir.join("files").join(id)).map_err(|_| gone())?.flatten().next().ok_or_else(gone)?;
-    let size = entry.metadata().map_err(|_| gone())?.len();
+    let parsed = uuid::Uuid::parse_str(id).map_err(|_| gone())?;
+    if parsed.to_string() != id { return Err(gone()); }
+    let folder = dir.join("files").join(id);
+    if !std::fs::symlink_metadata(&folder).map_err(|_| gone())?.file_type().is_dir() { return Err(gone()); }
+    let entry = std::fs::read_dir(folder).map_err(|_| gone())?.flatten().next().ok_or_else(gone)?;
+    let metadata = std::fs::symlink_metadata(entry.path()).map_err(|_| gone())?;
+    if !metadata.is_file() { return Err(gone()); }
+    let size = metadata.len();
     Ok((entry.file_name().to_string_lossy().into_owned(), size))
+}
+
+pub fn staged_open_path(dir: &Path, id: &str) -> Result<std::path::PathBuf, String> {
+    let gone = || "An attachment is missing; add it again".to_string();
+    let parsed = uuid::Uuid::parse_str(id).map_err(|_| gone())?;
+    if parsed.to_string() != id.to_ascii_lowercase() { return Err(gone()); }
+    let folder = dir.join("files").join(parsed.to_string());
+    if !std::fs::symlink_metadata(&folder).map_err(|_| gone())?.file_type().is_dir() { return Err(gone()); }
+    let (name, _) = staged_file(dir, &parsed.to_string())?;
+    let path = folder.join(&name);
+    if !std::fs::symlink_metadata(&path).map_err(|_| gone())?.file_type().is_file() { return Err(gone()); }
+    if runnable(&name) { return Err(format!("NoteBank won't open {name} because it can run code")); }
+    let path = path.canonicalize().map_err(|_| gone())?;
+    let root = dir.join("files").canonicalize().map_err(|_| gone())?;
+    if !path.starts_with(root) { return Err(gone()); }
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -148,6 +179,32 @@ mod tests {
 
     fn staged_dirs(dir: &Path) -> usize {
         std::fs::read_dir(dir.join("files")).map(|d| d.count()).unwrap_or(0)
+    }
+
+    #[test]
+    fn staged_open_only_resolves_safe_existing_non_runnable_files() {
+        let (d, _) = fresh();
+        let video = stage_bytes(d.path(), "clip.mov", b"video").unwrap();
+        assert_eq!(staged_open_path(d.path(), &video.id).unwrap(), d.path().join("files").join(&video.id).join("clip.mov").canonicalize().unwrap());
+        let outside = d.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("clip.mov"), b"outside").unwrap();
+        for id in ["../outside", outside.to_str().unwrap(), "C:\\tmp\\x", "", "not-an-id", "00000000-0000-0000-0000-000000000000"] {
+            assert_eq!(staged_open_path(d.path(), id).unwrap_err(), "An attachment is missing; add it again");
+        }
+        let executable = stage_bytes(d.path(), "run.exe", b"code").unwrap();
+        assert_eq!(staged_open_path(d.path(), &executable.id).unwrap_err(), "NoteBank won't open run.exe because it can run code");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_open_refuses_symlinks_outside_the_staging_folder() {
+        let (d, _) = fresh();
+        let video = stage_bytes(d.path(), "clip.mov", b"video").unwrap();
+        let target = d.path().join("files").join(&video.id).join("clip.mov");
+        std::fs::remove_file(&target).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", target).unwrap();
+        assert!(staged_open_path(d.path(), &video.id).is_err());
     }
 
     #[test]
@@ -273,7 +330,7 @@ mod tests {
 
         let out = stage_paths(d.path(), &[good, folder, d.path().join("gone.txt")]);
         assert_eq!(out.staged.iter().map(|s| s.filename.as_str()).collect::<Vec<_>>(), ["notes.txt"]);
-        assert_eq!(out.errors, ["Photos isn't a file", "Couldn't read gone.txt"]);
+        assert_eq!(out.errors, ["Photos failed to attach.", "gone.txt failed to attach."]);
         assert_eq!(staged_dirs(d.path()), 1);
     }
 

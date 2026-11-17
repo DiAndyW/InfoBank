@@ -4,6 +4,19 @@ import Testing
 @testable import NoteBankKit
 
 struct TopicActivityTests {
+    @Test func searchActivityExposesStoredInstant() throws {
+        let rule = try Behaviour.rule("search.activity")
+        let store = try tempStore().store
+        let empty = try store.createTopic(name: "Empty", nowUs: 40)
+        let other = try store.createTopic(name: "Other", nowUs: 10)
+        _ = try store.capture(text: "older visible Item", to: .topic(other), nowUs: 5)
+        let topics = try store.places().topics
+        #expect(topics.map(\.id) == [empty, other])
+        #expect(topics.map(\.count) == [0, 1])
+        #expect((topics[0].activityAtUs == 40) == rule.offered!)
+        #expect(try store.topic(other)!.activityAtUs == 10)
+    }
+
     private func activity(_ store: Store, _ id: String) throws -> Int64 {
         try store.quickPlace(.topic(id))!.lastUsedUs ?? -1
     }

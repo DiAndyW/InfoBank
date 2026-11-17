@@ -2,6 +2,16 @@ import Foundation
 import GRDB
 import UniformTypeIdentifiers
 
+public enum AttachmentPresentation: String, Sendable {
+    case image, video, file
+    public var opensInViewer: Bool { self != .file }
+    public var needsLocalVideoFrame: Bool { self == .video }
+    public func previewLabel(filename: String) -> String { self == .video ? "Play \(filename)" : filename }
+    public init(mimeType: String) {
+        self = mimeType.hasPrefix("image/") ? .image : mimeType.hasPrefix("video/") ? .video : .file
+    }
+}
+
 public struct StagedAttachment: Codable, Hashable, Identifiable, Sendable {
     public let id: String
     public let filename: String
@@ -10,6 +20,7 @@ public struct StagedAttachment: Codable, Hashable, Identifiable, Sendable {
 }
 
 public struct FeedAttachment: Hashable, Identifiable, Sendable {
+    public static let pendingLabel = "Not uploaded yet"
     public let id: String
     public let filename: String
     public let mimeType: String
@@ -49,8 +60,8 @@ extension Store {
 
     func recoverAttachmentFiles(_ db: Database) throws {
         // A second live Store may be importing files; startup recovery runs only without one.
-        try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM staged_files)")
-        try db.execute(sql: "DELETE FROM staged_files")
+        try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id IN (SELECT id FROM staged_files WHERE id NOT IN (SELECT attachment_id FROM draft_attachments))")
+        try db.execute(sql: "DELETE FROM staged_files WHERE id NOT IN (SELECT attachment_id FROM draft_attachments)")
         let kept = Set(try String.fetchAll(db, sql: "SELECT path FROM cached_files"))
         let files = directory.appending(path: "files")
         for folder in (try? FileManager.default.contentsOfDirectory(at: files, includingPropertiesForKeys: nil)) ?? [] {
@@ -99,15 +110,27 @@ extension Store {
         }
     }
 
+    static func requireUnowned(_ db: Database, id: String, source: String?) throws {
+        guard UUID(uuidString: id)?.uuidString.lowercased() == id else { throw AttachmentError("Unknown attachment") }
+        if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM draft_attachments WHERE attachment_id = ? AND (? IS NULL OR place <> ?))", arguments: [id, source, source]) == true {
+            throw AttachmentError("Attachment belongs to another saved Item or draft")
+        }
+    }
+
     public func discardStaged(_ id: String) throws {
         let path = try pool.write { db -> String? in
-            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM staged_files WHERE id = ?)", arguments: [id]) == true else { return nil }
-            let path = try String.fetchOne(db, sql: "SELECT path FROM cached_files WHERE attachment_id = ? AND kind = 'file'", arguments: [id])
-            try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [id])
-            try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id = ?", arguments: [id])
-            return path
+            try Self.discardStaged(db, id: id)
         }
         if let path { try? FileManager.default.removeItem(at: directory.appending(path: path).deletingLastPathComponent()) }
+    }
+
+    static func discardStaged(_ db: Database, id: String) throws -> String? {
+        try Self.requireUnowned(db, id: id, source: nil)
+        guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM staged_files WHERE id = ?)", arguments: [id]) == true else { return nil }
+        let path = try String.fetchOne(db, sql: "SELECT path FROM cached_files WHERE attachment_id = ? AND kind = 'file'", arguments: [id])
+        try db.execute(sql: "DELETE FROM staged_files WHERE id = ?", arguments: [id])
+        try db.execute(sql: "DELETE FROM cached_files WHERE attachment_id = ?", arguments: [id])
+        return path
     }
 
     public func localFile(_ id: String, kind: String = "file") throws -> URL? {

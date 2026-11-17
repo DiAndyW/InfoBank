@@ -6,6 +6,8 @@ public struct CopyActions {
         public let label: String
     }
 
+    public var itemCommands: [String] { ["edit", "move"] + menu.map { "copy_\($0.kind.rawValue)" } + ["trash"] }
+
     public let menu: [Action]
     public let row: Bool
     public let batch: [Action]

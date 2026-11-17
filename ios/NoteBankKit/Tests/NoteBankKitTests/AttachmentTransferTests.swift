@@ -434,3 +434,28 @@ extension AttachmentTransferTests {
         #expect(server.requests(to: "/attachments/\(id)/thumbnail") == 1)
     }
 }
+
+extension AttachmentTransferTests {
+    @Test func pendingRule() async throws {
+        let rule = try Behaviour.rule("feed.attachment_pending")
+        let (store, _) = try tempStore()
+        let item = try store.capture(text: "file", to: .inbox, nowUs: Time.nowUs())
+        let id = UUID().uuidString.lowercased()
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'report.pdf', 'application/pdf', 10, 0, 0)", arguments: [id, item])
+        }
+        let transfers = AttachmentTransfers(store: store, secrets: .memory(), background: false)
+        #expect(rule.offered == true)
+        #expect(FeedAttachment.pendingLabel == rule.label)
+        #expect(try !transfers.canOpen(id))
+        do {
+            _ = try await transfers.open(id)
+            Issue.record("opened a file that isn't on the Server")
+        } catch { #expect((error as? AttachmentError)?.message == FeedAttachment.pendingLabel) }
+        let own = try store.stageFile(at: AttachmentTests().source())
+        try await store.pool.write { db in
+            try db.execute(sql: "INSERT INTO attachments VALUES (?, ?, 'own.txt', 'text/plain', 1, 0, 0)", arguments: [own.id, item])
+        }
+        #expect(try transfers.canOpen(own.id))
+    }
+}

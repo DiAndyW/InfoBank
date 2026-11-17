@@ -6,14 +6,18 @@ struct Behaviour {
         let label: String
     }
     struct Expectation: Decodable {
+        var initial_items: Int?
+        var older_items: Int?
         var message: String?
         var buttons: [String]?
         var duration_seconds: Double?
         var menu: [Action]?
         var row: Bool?
         var batch: [Action]?
+        var order: String?
         var offered: Bool?
         var label: String?
+        var actions: [String]?
 
         func message(_ values: [String: String] = [:]) -> String {
             values.reduce(message!) { $0.replacingOccurrences(of: "{\($1.key)}", with: $1.value) }

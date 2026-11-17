@@ -16,13 +16,43 @@ struct ModelTests {
         }
     }
 
+    @Test func boundedOpeningEqualTimesOlderRefreshAndReveal() throws {
+        let expected = try Behaviour.rule("feed.opening")
+        let (store, _) = try tempStore()
+        try store.pool.write { db in
+            for i in 0..<231 {
+                try db.execute(sql: "INSERT INTO items(id,text,capture_time) VALUES (?,?,7)", arguments: [String(format: "i%04d", i), "text \(i)"])
+            }
+        }
+        let feed = FeedModel(store: store, place: .inbox)
+        #expect(feed.items.count == expected.initial_items!)
+        #expect(feed.items.first?.id == "i0201")
+        feed.loadOlder()
+        #expect(feed.items.count == expected.initial_items! + expected.older_items!)
+        #expect(feed.items.first?.id == "i0171")
+        try store.pool.write { try $0.execute(sql: "INSERT INTO items(id,text,capture_time) VALUES ('z','new',8)") }
+        feed.reload()
+        #expect(feed.items.count == 61)
+        #expect(feed.items.first?.id == "i0171")
+        for _ in 0..<6 { feed.loadOlder() }
+        #expect(feed.items.count == 232)
+        #expect(Set(feed.items.map(\.id)).count == 232)
+        #expect(!feed.hasOlder)
+        let revealing = FeedModel(store: store, place: .inbox)
+        #expect(revealing.reveal("i0001"))
+        #expect(revealing.items.count == 232)
+        #expect(revealing.items.last?.id == "z")
+    }
+
     @Test func feedLoadsTheNewestPageOldestFirstAndOlderPagesPrepend() throws {
         let (store, _) = try tempStore()
         try seed(store, count: 150)
         let feed = FeedModel(store: store, place: .all)
-        #expect(feed.items.map(\.id) == (51...150).map { "i\($0)" })
+        #expect(feed.items.map(\.id) == (121...150).map { "i\($0)" })
         #expect(feed.hasOlder)
         feed.loadOlder()
+        #expect(feed.items.map(\.id) == (91...150).map { "i\($0)" })
+        for _ in 0..<4 { feed.loadOlder() }
         #expect(feed.items.map(\.id) == (1...150).map { "i\($0)" })
         #expect(!feed.hasOlder)
         #expect(feed.loadError == nil)
@@ -30,12 +60,14 @@ struct ModelTests {
 
     @Test func aFullLastPageLeavesHasOlderUntilAnEmptyOneClearsIt() throws {
         let (store, _) = try tempStore()
-        try seed(store, count: 100)
+        try seed(store, count: 60)
         let feed = FeedModel(store: store, place: .all)
         #expect(feed.hasOlder)
         feed.loadOlder()
+        #expect(feed.hasOlder)
+        feed.loadOlder()
         #expect(!feed.hasOlder)
-        #expect(feed.items.count == 100)
+        #expect(feed.items.count == 60)
     }
 
     @Test func aPullOrCaptureRefreshesTheLoadedRange() async throws {
@@ -45,12 +77,12 @@ struct ModelTests {
 
         let captured = try store.capture(text: "fresh", to: .inbox, nowUs: 5_000)
         #expect(await waitUntil { feed.items.last?.id == captured })
-        #expect(feed.items.count == 101)
+        #expect(feed.items.count == 31)
         #expect(feed.items.last?.pending == true)
 
-        try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('mid', 'pulled', 755)") }
+        try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('mid', 'pulled', 1255)") }
         #expect(await waitUntil { feed.items.contains { $0.id == "mid" } })
-        #expect(feed.items.map(\.id).firstIndex(of: "mid")! == feed.items.map(\.id).firstIndex(of: "i75")! + 1)
+        #expect(feed.items.map(\.id).firstIndex(of: "mid")! == feed.items.map(\.id).firstIndex(of: "i125")! + 1)
 
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, text, capture_time) VALUES ('old', 'pulled', 5)") }
         try await store.pool.write { try $0.execute(sql: "UPDATE items SET text = 'edited' WHERE id = 'i150'") }
@@ -64,7 +96,7 @@ struct ModelTests {
         let feed = FeedModel(store: store, place: .inbox)
         #expect(!feed.items.contains { $0.id == "i150" })
         #expect(feed.reveal("i150"))
-        #expect(feed.items.map(\.id) == (50...300).map { "i\($0)" })
+        #expect(feed.items.map(\.id) == (120...300).map { "i\($0)" })
         #expect(feed.hasOlder)
         #expect(feed.reveal("i10"))
         #expect(feed.items.map(\.id) == (1...300).map { "i\($0)" })
@@ -91,7 +123,7 @@ struct ModelTests {
         try store.pool.write { try $0.execute(sql: "UPDATE items SET deleted_at = 1, purge_at = ?", arguments: [Time.nowUs() + 1_000_000_000_000]) }
         let feed = FeedModel(store: store, place: .trash)
         let before = feed.items.map(\.id)
-        #expect(before.count == 100)
+        #expect(before.count == 30)
         #expect(!feed.reveal("i1"))
         #expect(feed.items.map(\.id) == before)
     }
@@ -157,7 +189,7 @@ struct ModelTests {
         composer.text = String(repeating: "a", count: (1 << 20) + 1)
         #expect(composer.canSend)
         #expect(!composer.send())
-        #expect(composer.error == "That's too long to save (1 MB max)")
+        #expect(composer.error == "Item failed to send. That's too long to save (1 MB max)")
         #expect(composer.text.utf8.count == (1 << 20) + 1)
         #expect(captured.withLock { $0 } == 0)
 
@@ -176,9 +208,9 @@ struct ModelTests {
     @Test func aClosedTopicFallsBackToTheInbox() throws {
         let (store, _) = try tempStore()
         let composer = ComposerModel(store: store, destination: .topic("t1"), placeholder: "", onCaptured: {})
-        composer.dropMissingTopic(open: [TopicPlace(id: "t1", name: "Mosaic", count: 0)])
+        composer.dropMissingTopic(open: [TopicPlace(id: "t1", name: "Mosaic", count: 0, activityAtUs: 1)])
         #expect(composer.destination == .topic("t1"))
-        composer.dropMissingTopic(open: [TopicPlace(id: "t2", name: "Other", count: 0)])
+        composer.dropMissingTopic(open: [TopicPlace(id: "t2", name: "Other", count: 0, activityAtUs: 1)])
         #expect(composer.destination == .inbox)
         composer.destination = .tunnel
         composer.dropMissingTopic(open: [])
@@ -420,4 +452,27 @@ extension ModelTests {
         #expect(await settings.save())
         #expect(calls.withLock { $0 } == 1)
     }
+}
+
+@MainActor struct FeedBatchTests {
+ @Test func trashPagesThirtyAndRefreshRetainsFullBoundary() throws {
+ let (store, _) = try tempStore()
+ try store.pool.write { db in
+ for i in 0..<95 {
+ try db.execute(sql: "INSERT INTO items(id,text,capture_time,deleted_at,purge_at) VALUES (?,?,7,1,9000000000000000)", arguments:[String(format:"i%04d",i),"synthetic"])
+ }
+ }
+ let feed=FeedModel(store:store,place:.trash)
+ #expect(feed.items.count == 30)
+ feed.loadOlder(); #expect(feed.items.count == 60)
+ let boundary=feed.items.last!.id
+ try store.pool.write {try $0.execute(sql:"DELETE FROM items WHERE id = ?",arguments:[feed.items.first!.id])}
+ feed.reload()
+ #expect(feed.items.count == 59)
+ #expect(feed.items.last?.id == boundary)
+ feed.loadOlder(); #expect(feed.items.count == 89)
+ feed.loadOlder(); #expect(feed.items.count == 94)
+ #expect(Set(feed.items.map(\.id)).count == 94)
+ #expect(!feed.hasOlder)
+ }
 }

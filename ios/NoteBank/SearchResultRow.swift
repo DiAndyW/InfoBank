@@ -8,8 +8,7 @@ struct SearchResultRow: View {
 
     private var place: String { result.item.placeName ?? "" }
 
-    private var time: String {
-        let date = result.item.date
+    static func time(_ date: Date) -> String {
         let day = Calendar.current.isDate(date, equalTo: .now, toGranularity: .year)
             ? date.formatted(.dateTime.month(.abbreviated).day())
             : date.formatted(.dateTime.month(.abbreviated).day().year())
@@ -53,7 +52,7 @@ struct SearchResultRow: View {
                 }
                 HStack(spacing: 8) {
                     Text(place).frame(maxWidth: .infinity, alignment: .leading)
-                    Text(time).font(.plex(.mono, 13, relativeTo: .footnote))
+                    Text(Self.time(result.item.date)).font(.plex(.mono, 13, relativeTo: .footnote))
                 }
                 .font(.plex(.sans, 13, relativeTo: .footnote))
                 .foregroundStyle(palette.inkMuted)

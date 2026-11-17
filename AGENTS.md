@@ -14,7 +14,7 @@ Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/age
 
 ### Shared behaviour
 
-Edit `behaviour/behaviour.json` before changing shared notices or copy actions. Make each platform's tests fail, design the changes together, then build until green. Platform differences need a reason. See `docs/agents/behaviour.md`.
+Edit `behaviour/behaviour.json` before changing shared notices, copy actions, capture/edit interactions, error wording or theme colours. Make each platform's tests fail, design the changes together, then build until green. Platform differences need a reason. See `docs/agents/behaviour.md`.
 
 ## Memory
 

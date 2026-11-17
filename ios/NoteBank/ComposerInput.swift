@@ -8,6 +8,7 @@ struct ComposerInput: UIViewRepresentable {
     var minimumLines = 1
     var lineSpacing: CGFloat = 0
     var focusRequest = 0
+    var accessibilityName: String?
     let onAttachment: (NSItemProvider, UTType) -> Void
     @Environment(\.palette) private var palette
 
@@ -28,7 +29,7 @@ struct ComposerInput: UIViewRepresentable {
         // An empty model means Clear or Send: drop any in-progress IME composition with it.
         if view.text != text && (view.markedTextRange == nil || text.isEmpty) { view.text = text }
         view.placeholder = placeholder
-        view.accessibilityLabel = minimumLines > 1 ? "Capture" : placeholder
+        view.accessibilityLabel = accessibilityName ?? (minimumLines > 1 ? "Capture" : placeholder)
         let font = UIFontMetrics(forTextStyle: .body).scaledFont(for: UIFont(name: PlexFont.serif.rawValue, size: 17) ?? UIFont.systemFont(ofSize: 17))
         let color = UIColor(palette.ink)
         view.font = font
@@ -41,6 +42,7 @@ struct ComposerInput: UIViewRepresentable {
         view.setNeedsLayout()
         if focusRequest != context.coordinator.focusHandled {
             context.coordinator.focusHandled = focusRequest
+            view.selectedRange = NSRange(location: view.text.utf16.count, length: 0)
             view.focusWhenInWindow()
         }
     }

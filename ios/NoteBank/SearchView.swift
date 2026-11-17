@@ -22,8 +22,8 @@ struct SearchView: View {
     @State private var fieldFocused = false
     @Environment(\.palette) private var palette
 
-    init(services: Services, onUndoClear: @escaping (DraftPlace) -> Void, place: SearchPlace, topics: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        _model = State(wrappedValue: SearchModel(store: services.store, place: place))
+    init(services: Services, onUndoClear: @escaping (DraftPlace) -> Void, topics: [TopicPlace], onOpen: @escaping (String) -> Void, onOpenTopic: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        _model = State(wrappedValue: SearchModel(store: services.store))
         self.onUndoClear = onUndoClear
         store = services.store
         notices = services.notices
@@ -33,6 +33,28 @@ struct SearchView: View {
         self.onOpen = onOpen
         self.onOpenTopic = onOpenTopic
         self.onCancel = onCancel
+    }
+
+    private func topicSummary(_ topic: TopicPlace) -> some View {
+        let activity = Date(timeIntervalSince1970: Double(topic.activityAtUs) / 1_000_000)
+        return VStack(alignment: .trailing, spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    topicNameAndCount(topic)
+                }.fixedSize(horizontal: true, vertical: true)
+                VStack(alignment: .leading, spacing: 4) { topicNameAndCount(topic) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Text(SearchResultRow.time(activity))
+                .font(.plex(.mono, 13, relativeTo: .footnote)).foregroundStyle(palette.inkMuted)
+                .multilineTextAlignment(.trailing)
+                .accessibilityLabel("Last active \(activity.formatted(date: .complete, time: .complete))")
+        }
+    }
+
+    @ViewBuilder private func topicNameAndCount(_ topic: TopicPlace) -> some View {
+        Text(topic.name).font(.plex(.sans, 17, relativeTo: .body)).foregroundStyle(palette.ink)
+        Text("\(topic.count) \(topic.count == 1 ? "item" : "items")")
+            .font(.plex(.mono, 13, relativeTo: .footnote)).foregroundStyle(palette.inkMuted)
     }
 
     private var matchingTopics: [TopicPlace] { TopicPlace.matching(topics, text: model.text) }
@@ -184,18 +206,14 @@ struct SearchView: View {
             }
             ScrollView {
                 VStack(spacing: 0) {
-                    if !matchingTopics.isEmpty {
+                    if model.showsTopics && !matchingTopics.isEmpty {
                         resultHeading("Topics")
                         VStack(spacing: 0) {
                             ForEach(matchingTopics) { topic in
                                 if topic.id != matchingTopics.first?.id { Divider().overlay(palette.line) }
                                 Button { onOpenTopic(topic.id) } label: {
-                                    HStack(spacing: 8) {
-                                        Text(topic.name).font(.plex(.sans, 17)).foregroundStyle(palette.ink)
-                                        Spacer(minLength: 0)
-                                        Text(String(topic.count)).font(.plex(.mono, 13)).foregroundStyle(palette.inkMuted)
-                                        Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.lineStrong)
-                                    }.padding(.horizontal, 16).frame(minHeight: 48).contentShape(Rectangle())
+                                    topicSummary(topic)
+                                    .padding(.horizontal, 16).padding(.vertical, 8).frame(maxWidth: .infinity, minHeight: 48, alignment: .leading).contentShape(Rectangle())
                                 }.buttonStyle(.plain)
                             }
                         }.card().padding(.horizontal, 16)
@@ -270,7 +288,7 @@ struct SearchView: View {
                     .padding(.horizontal, 8)
                 Spacer(minLength: 0)
             }
-            .background(palette.surface)
+            .themedSheet()
             .presentationDetents([.medium])
         }
     }

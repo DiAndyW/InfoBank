@@ -80,9 +80,9 @@ extension Store {
         }
     }
 
-    public func topic(_ id: String) throws -> (name: String, count: Int)? {
+    public func topic(_ id: String) throws -> TopicPlace? {
         try pool.read { db in
-            try Row.fetchOne(db, sql: "SELECT name, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { ($0["name"], $0["count"]) }
+            try Row.fetchOne(db, sql: "SELECT name, activity_at, (SELECT count(*) FROM items WHERE topic_id = topics.id AND deleted_at IS NULL) AS count FROM topics WHERE id = ? AND deleted_at IS NULL", arguments: [id]).map { TopicPlace(id: id, name: $0["name"], count: $0["count"], activityAtUs: $0["activity_at"]) }
         }
     }
 

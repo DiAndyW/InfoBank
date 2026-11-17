@@ -205,8 +205,15 @@ pub async fn list_items(
     state: State<'_, AppState>,
     view: feed::View,
     before: Option<feed::Before>,
+    limit: Option<u32>,
 ) -> Result<Vec<feed::FeedItem>, String> {
-    feed::list_items(&state.db.lock().unwrap(), &view, before.as_ref(), now_us()).map_err(crate::error_message::message)
+    let db = state.db.lock().unwrap();
+    match limit {
+        None => feed::list_items(&db, &view, before.as_ref(), now_us()),
+        Some(limit) if limit > 0 && i64::from(limit) <= feed::PAGE_SIZE =>
+            feed::list_items_limited(&db, &view, before.as_ref(), now_us(), i64::from(limit)),
+        Some(_) => return Err("Couldn't load the Items".into()),
+    }.map_err(crate::error_message::message)
 }
 
 #[tauri::command]
@@ -256,13 +263,15 @@ pub async fn unstage_attachment(state: State<'_, AppState>, id: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn list_drafts(state: State<'_, AppState>) -> Result<Vec<drafts::Draft>, String> {
+pub async fn list_drafts<R: Runtime>(window: tauri::WebviewWindow<R>, state: State<'_, AppState>) -> Result<Vec<drafts::Draft>, String> {
+    if window.label() != "main" { return Err("Only the main window has drafts".into()); }
     drafts::list(&state.db.lock().unwrap())
 }
 
 #[tauri::command]
-pub async fn save_draft(state: State<'_, AppState>, place: String, text: String, home_topic_id: Option<String>) -> Result<(), String> {
-    drafts::save(&state.db.lock().unwrap(), &place, &text, home_topic_id.as_deref())
+pub async fn save_draft<R: Runtime>(window: tauri::WebviewWindow<R>, state: State<'_, AppState>, place: String, text: String, home_topic_id: Option<String>, attachment_ids: Vec<String>) -> Result<(), String> {
+    if window.label() != "main" { return Err("Only the main window has drafts".into()); }
+    drafts::save_with_attachments(&state.db.lock().unwrap(), &state.dir, &place, &text, home_topic_id.as_deref(), &attachment_ids)
 }
 
 #[tauri::command]
@@ -340,6 +349,13 @@ pub async fn open_attachment(app: AppHandle, state: State<'_, AppState>, id: Str
     if files::runnable(&name) {
         return Err(format!("NoteBank won't open {name} because it can run code"));
     }
+    app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(crate::error_message::message)
+}
+
+#[tauri::command]
+pub async fn open_staged_attachment<R: Runtime>(app: AppHandle<R>, window: tauri::WebviewWindow<R>, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    if window.label() != "main" { files::require_unowned(&state.db.lock().unwrap(), &id, None)?; }
+    let path = files::staged_open_path(&state.dir, &id)?;
     app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(crate::error_message::message)
 }
 
@@ -499,17 +515,58 @@ mod tests {
     }
 
     #[test]
+    fn draft_commands_persist_ids_and_deny_quick_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let owned = files::stage_bytes(dir.path(), "owned.txt", b"private").unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![list_drafts, save_draft, unstage_attachment, open_staged_attachment, capture])
+            .build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let send = |label: &str, cmd: &str, body: serde_json::Value| {
+            let window = app.get_webview_window(label).unwrap_or_else(|| WebviewWindowBuilder::new(&app, label, WebviewUrl::default()).build().unwrap());
+            get_ipc_response(&window, tauri::webview::InvokeRequest {
+                cmd: cmd.into(), callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
+                url: window.url().unwrap(), body: body.into(), headers: Default::default(), invoke_key: INVOKE_KEY.to_string(),
+            })
+        };
+        app.add_capability(r#"{"identifier":"draft-command-test","windows":["quick-capture"],"permissions":["allow-list-drafts","allow-save-draft"]}"#).unwrap();
+        let body = serde_json::json!({"place":"home", "text":"", "homeTopicId":null, "attachmentIds":[owned.id]});
+        send("main", "save_draft", body.clone()).unwrap();
+        assert_eq!(drafts::list(&app.state::<AppState>().db.lock().unwrap()).unwrap().len(), 1);
+        for cmd in ["list_drafts", "save_draft", "open_staged_attachment", "unstage_attachment", "capture"] {
+            let args = match cmd {
+                "list_drafts" => serde_json::json!({}),
+                "save_draft" => body.clone(),
+                "capture" => serde_json::json!({"text":"", "attachmentIds":[owned.id], "target":{"kind":"inbox"}, "draft":null}),
+                _ => serde_json::json!({"id":owned.id}),
+            };
+            let error = send("quick-capture", cmd, args).unwrap_err();
+            if cmd == "list_drafts" || cmd == "save_draft" {
+                assert_eq!(error, serde_json::json!("Only the main window has drafts"));
+            }
+
+            assert_eq!(drafts::list(&app.state::<AppState>().db.lock().unwrap()).unwrap().len(), 1);
+            assert!(files::staged_open_path(dir.path(), &owned.id).is_ok());
+        }
+        assert!(send("main", "list_drafts", serde_json::json!({})).is_ok());
+    }
+
+    #[test]
     fn only_the_main_window_can_clear_a_draft() {
         let dir = tempfile::tempdir().unwrap();
         let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
         drafts::save(&conn, "home", "keep me", None).unwrap();
+        let owned = files::stage_bytes(dir.path(), "owned.txt", b"private").unwrap();
+        drafts::save_with_attachments(&conn, dir.path(), "home", "keep me", None, &[owned.id.clone()]).unwrap();
         let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         let app = mock_builder()
             .invoke_handler(tauri::generate_handler![capture])
             .build(tauri::generate_context!(test = true))
             .unwrap();
         app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
-        let send = |label: &str, draft: Option<&str>| {
+        let send = |label: &str, draft: Option<&str>, ids: &[String]| {
             let window = app.get_webview_window(label).unwrap_or_else(|| WebviewWindowBuilder::new(&app, label, WebviewUrl::default()).build().unwrap());
             get_ipc_response(
                 &window,
@@ -518,7 +575,7 @@ mod tests {
                     callback: tauri::ipc::CallbackFn(0),
                     error: tauri::ipc::CallbackFn(1),
                     url: window.url().unwrap(),
-                    body: serde_json::json!({ "text": "note", "attachmentIds": [], "target": { "kind": "inbox" }, "draft": draft }).into(),
+                    body: serde_json::json!({ "text": "note", "attachmentIds": ids, "target": { "kind": "inbox" }, "draft": draft }).into(),
                     headers: Default::default(),
                     invoke_key: INVOKE_KEY.to_string(),
                 },
@@ -526,10 +583,11 @@ mod tests {
         };
         let stored = || drafts::list(&app.state::<AppState>().db.lock().unwrap()).unwrap().len();
 
-        send("quick-capture", None).unwrap();
-        assert!(send("quick-capture", Some("home")).is_err());
+        send("quick-capture", None, &[]).unwrap();
+        assert!(send("quick-capture", None, &[owned.id.clone()]).is_err());
+        assert!(send("quick-capture", Some("home"), &[owned.id.clone()]).is_err());
         assert_eq!(stored(), 1);
-        assert!(send("main", Some("home")).is_ok());
+        assert!(send("main", Some("home"), &[owned.id.clone()]).is_ok());
         assert_eq!(stored(), 0);
     }
 }

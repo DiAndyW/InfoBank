@@ -49,6 +49,18 @@ test("notice expires after four seconds while the window is blurred", async () =
   } finally { focus.mockRestore(); vi.useRealTimers(); }
 });
 
+test("switching to another app releases a hover, so the notice still expires", async () => {
+  vi.useFakeTimers();
+  const close = vi.fn();
+  try {
+    const { getByRole } = render(<Notice message="Copied clip.mp4" onClose={close} />);
+    fireEvent.mouseEnter(getByRole("status"));
+    fireEvent.blur(window);
+    await act(async () => vi.advanceTimersByTime(4000));
+    expect(close).toHaveBeenCalledOnce();
+  } finally { vi.useRealTimers(); }
+});
+
 behaviourTest("notice.duration", async expected => {
   vi.useFakeTimers();
   const close = vi.fn();

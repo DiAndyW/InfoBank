@@ -43,8 +43,9 @@ public struct TopicPlace: Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let count: Int
+    public let activityAtUs: Int64
 
-    public init(id: String, name: String, count: Int) { self.id = id; self.name = name; self.count = count }
+    public init(id: String, name: String, count: Int, activityAtUs: Int64) { self.id = id; self.name = name; self.count = count; self.activityAtUs = activityAtUs }
 }
 
 extension TopicPlace {
@@ -168,7 +169,7 @@ extension Store {
                 activity_at AS last_used
             FROM topics WHERE deleted_at IS NULL
             """)
-            .map { (place: TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"]), lastUsedUs: $0["last_used"] as Int64) }
+            .map { (place: TopicPlace(id: $0["id"], name: $0["name"], count: $0["count"], activityAtUs: $0["last_used"]), lastUsedUs: $0["last_used"] as Int64) }
             .sorted {
                 if $0.lastUsedUs != $1.lastUsedUs { return $0.lastUsedUs > $1.lastUsedUs }
                 let order = $0.place.name.localizedStandardCompare($1.place.name)

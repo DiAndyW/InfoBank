@@ -200,6 +200,10 @@ public actor AttachmentTransfers {
         }
     }
 
+    public nonisolated func canOpen(_ id: String) throws -> Bool {
+        try store.localFile(id) != nil || store.attachment(id)?.uploaded == true
+    }
+
     public func open(_ id: String) async throws -> URL {
         pins[id, default: 0] += 1
         do {
@@ -309,7 +313,7 @@ public actor AttachmentTransfers {
         guard UUID(uuidString: id) != nil else { throw AttachmentError("Unknown attachment") }
         let kind = thumbnail ? "thumbnail" : "file"
         if let local = try store.localFile(id, kind: kind) { return local }
-        guard let attachment = try store.attachment(id), attachment.uploaded else { throw AttachmentError("This file isn't on the Server yet") }
+        guard let attachment = try store.attachment(id), attachment.uploaded else { throw AttachmentError(FeedAttachment.pendingLabel) }
         guard let serverURL = try store.serverURL(), let secret = try secrets.read() else { throw AttachmentError("Set up sync to download this file") }
         guard attachment.sizeBytes <= Store.maxAttachmentBytes else { throw AttachmentError("This file is over 100 MB") }
         let generation = try store.transferGeneration()

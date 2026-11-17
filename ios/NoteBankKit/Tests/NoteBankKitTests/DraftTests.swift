@@ -5,19 +5,256 @@ import Testing
 
 @MainActor
 struct DraftTests {
+    @Test func composerOwnershipRecoversAfterRealRestartAndMissingSendKeepsIt() throws {
+        let path: URL
+        let file: StagedAttachment
+        do {
+            let (store, url) = try tempStore()
+            path = url
+            file = try store.stageFile(at: AttachmentTests().source())
+            let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+            model.addAttachments([file])
+        }
+        let store = try Store(at: path, observesSuspension: false)
+        let composers = Composers(store: store, onCaptured: {})
+        let model = composers.model(for: .inbox, destination: .inbox, placeholder: "")
+        #expect(model.attachments == [file])
+        let original = try #require(try store.localFile(file.id))
+        try FileManager.default.removeItem(at: original)
+        #expect(!model.send())
+        #expect(model.attachments == [file])
+        #expect(model.error == "Item failed to send. An attachment is missing; add it again")
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        model.removeAttachment(file.id)
+        #expect(model.attachments.isEmpty)
+        #expect(try store.drafts()[.inbox] == nil)
+    }
+
+    @Test func composerStagedDeleteFailurePreservesOwnershipAcrossRestart() throws {
+        let path: URL
+        let file: StagedAttachment
+        let original: URL
+        do {
+            let (store, url) = try tempStore()
+            path = url
+            file = try store.stageFile(at: AttachmentTests().source())
+            original = try #require(try store.localFile(file.id))
+            let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+            model.addAttachments([file])
+            try store.pool.write { try $0.execute(sql: "CREATE TRIGGER refuse BEFORE DELETE ON staged_files BEGIN SELECT RAISE(ABORT, 'fail'); END") }
+            model.removeAttachment(file.id)
+            #expect(model.error != nil)
+            #expect(model.attachments == [file])
+            #expect(try store.drafts()[.inbox]?.attachments == [file])
+            #expect(FileManager.default.fileExists(atPath: original.path))
+        }
+        let store = try Store(at: path, observesSuspension: false)
+        let model = Composers(store: store, onCaptured: {}).model(for: .inbox, destination: .inbox, placeholder: "")
+        #expect(model.attachments == [file])
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        #expect(FileManager.default.fileExists(atPath: original.path))
+        #expect(throws: (any Error).self) { try store.discardStaged(file.id) }
+        try store.pool.write { try $0.execute(sql: "DROP TRIGGER refuse") }
+        model.removeAttachment(file.id)
+        #expect(model.attachments.isEmpty)
+        #expect(try store.drafts()[.inbox] == nil)
+        #expect(try store.localFile(file.id) == nil)
+        #expect(!FileManager.default.fileExists(atPath: original.path))
+    }
+
+    @Test func composerAtomicRemovalKeepsCurrentHomeTextAndDestination() throws {
+        let (store, _) = try tempStore()
+        try store.pool.write { try $0.execute(sql: "INSERT INTO topics(id,name) VALUES ('t','Topic')") }
+        let file = try store.stageFile(at: AttachmentTests().source())
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .home, onCaptured: {})
+        model.addAttachments([file])
+        model.text = "latest"
+        model.homeTopicID = "t"
+        model.removeAttachment(file.id)
+        #expect(try store.drafts()[.home] == Draft(text: "latest", homeTopicID: "t"))
+        #expect(try store.localFile(file.id) == nil)
+    }
+
+    @Test func editorCancelAndSaveLeaveComposerOwnershipAlone() throws {
+        let (store, _) = try tempStore()
+        let file = try store.stageFile(at: AttachmentTests().source())
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .home, onCaptured: {})
+        model.addAttachments([file])
+        let id = try store.capture(text: "edit me", to: .inbox, nowUs: 1)
+        let item = try #require(store.items(in: .inbox, before: nil, limit: 10).first { $0.id == id })
+        let editor = ItemEditorModel(store: store, item: item, text: "edit me")
+        let editFile = try store.stageFile(at: AttachmentTests().source())
+        editor.staging.addAttachments([editFile])
+        editor.discard()
+        #expect(try store.localFile(editFile.id) == nil)
+        editor.text = "saved edit"
+        #expect(editor.save(nowUs: 2) == .saved)
+        #expect(try store.drafts()[.home]?.attachments == [file])
+        #expect(try store.localFile(file.id) != nil)
+    }
+
+    @Test func composerOwnsImmediatelyRestoresAndDetaches() throws {
+        let (store, _) = try tempStore()
+        let file = try store.stageFile(at: AttachmentTests().source())
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+        model.addAttachments([file])
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        let restored = Composers(store: store, onCaptured: {}).model(for: .inbox, destination: .inbox, placeholder: "")
+        #expect(restored.attachments == [file])
+        model.text = "latest"
+        model.flushDraft()
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        model.clear()
+        #expect(try store.drafts()[.inbox] == nil)
+        #expect(try store.localFile(file.id) != nil)
+        model.undoClear()
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        model.removeAttachment(file.id)
+        #expect(model.attachments.isEmpty)
+        #expect(try store.localFile(file.id) == nil)
+    }
+
+    @Test func composerFailedOwnershipAndDetachRetainContent() throws {
+        let (store, _) = try tempStore()
+        let file = try store.stageFile(at: AttachmentTests().source())
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+        try store.pool.write { try $0.execute(sql: "CREATE TRIGGER refuse BEFORE INSERT ON drafts BEGIN SELECT RAISE(ABORT, 'fail'); END") }
+        model.addAttachments([file])
+        #expect(model.error != nil)
+        #expect(model.attachments == [file])
+        try store.pool.write { try $0.execute(sql: "DROP TRIGGER refuse") }
+        model.flushDraft()
+        #expect(try store.drafts()[.inbox]?.attachments == [file])
+        try store.pool.write { try $0.execute(sql: "CREATE TRIGGER refuse BEFORE DELETE ON draft_attachments BEGIN SELECT RAISE(ABORT, 'fail'); END") }
+        model.clear()
+        #expect(model.attachments == [file])
+        model.removeAttachment(file.id)
+        #expect(model.attachments == [file])
+        #expect(try store.localFile(file.id) != nil)
+        try store.pool.write { try $0.execute(sql: "DROP TRIGGER refuse") }
+    }
+
+    @Test func draftEachPlaceDetachCommitsBeforeBytesAndFailureKeepsOwner() throws {
+        let path: URL
+        var expected: [DraftPlace: StagedAttachment] = [:]
+        do {
+            let (store, file) = try tempStore()
+            path = file
+            try store.pool.write { try $0.execute(sql: "INSERT INTO topics(id,name) VALUES ('t','Topic')") }
+            let source = store.directory.appending(path: "source.txt")
+            try Data("bytes".utf8).write(to: source)
+            for place: DraftPlace in [.home, .inbox, .tunnel, .topic("t")] {
+                let a = try store.stageFile(at: source)
+                try store.saveDraft(place, text: "", attachmentIDs: [a.id])
+                expected[place] = a
+            }
+        }
+        let store = try Store(at: path, observesSuspension: false)
+        for (place, a) in expected {
+            #expect(try store.drafts()[place]?.attachments == [a])
+            try store.pool.write { try $0.execute(sql: "CREATE TRIGGER refuse BEFORE DELETE ON draft_attachments BEGIN SELECT RAISE(ABORT, 'fail'); END") }
+            #expect(throws: (any Error).self) { try store.saveDraft(place, text: "", attachmentIDs: []) }
+            #expect(throws: (any Error).self) { try store.discardStaged(a.id) }
+            #expect(try store.localFile(a.id) != nil)
+            try store.pool.write { try $0.execute(sql: "DROP TRIGGER refuse") }
+            try store.saveDraft(place, text: "", attachmentIDs: [])
+            #expect(try store.localFile(a.id) != nil)
+            try store.discardStaged(a.id)
+            #expect(try store.localFile(a.id) == nil)
+        }
+    }
+
+    @Test func draftAttachmentMigrationPreservesTextAndHomeDestination() throws {
+        let (_, path) = try tempStore()
+        do {
+            let pool = try DatabasePool(path: path.path)
+            try pool.write { db in
+                try db.execute(sql: "DROP TABLE draft_attachments; DROP TABLE drafts; CREATE TABLE drafts(place TEXT PRIMARY KEY, text TEXT NOT NULL CHECK(trim(text) <> ''), home_topic_id TEXT); INSERT INTO topics(id,name) VALUES ('t','Topic'); INSERT INTO drafts VALUES ('home','keep','t'); DELETE FROM grdb_migrations WHERE identifier = 'v12';")
+            }
+        }
+        let store = try Store(at: path, observesSuspension: false)
+        #expect(try store.drafts()[.home] == Draft(text: "keep", homeTopicID: "t"))
+    }
+
+    @Test func draftOwnedFilesRecoverInOrderAndDenyOtherConsumers() throws {
+        let path: URL
+        let a: StagedAttachment
+        let b: StagedAttachment
+        let transient: StagedAttachment
+        do {
+            let (store, file) = try tempStore()
+            path = file
+            let source = store.directory.appending(path: "source.txt")
+            try Data("bytes".utf8).write(to: source)
+            a = try store.stageFile(at: source, filename: "a.txt")
+            b = try store.stageFile(at: source, filename: "b.txt")
+            transient = try store.stageFile(at: source, filename: "edit.txt")
+            try store.saveDraft(.home, text: "", attachmentIDs: [b.id, a.id])
+            try store.saveDraft(.home, text: "")
+            #expect(throws: (any Error).self) { try store.saveDraft(.inbox, text: "", attachmentIDs: [a.id]) }
+            #expect(throws: (any Error).self) { try store.discardStaged(a.id) }
+            for draft: DraftPlace? in [nil, .inbox] {
+                #expect(throws: (any Error).self) { try store.capture(text: "", attachmentIDs: [a.id], to: .inbox, draft: draft, nowUs: 1) }
+            }
+            let item = try store.capture(text: "edit", to: .inbox, nowUs: 1)
+            #expect(throws: (any Error).self) { try store.editItem(itemID: item, text: "edit", baseRev: 0, adding: [a.id], removing: [], nowUs: 2) }
+        }
+        let store = try Store(at: path, observesSuspension: false)
+        let expected = try Behaviour.rule("composer.draft_attachments")
+        #expect((try store.drafts()[.home]?.attachments == [b, a]) == expected.offered)
+        #expect(try store.localFile(transient.id) == nil)
+        try store.evictCache(nowUs: 100, maxFileBytes: 0)
+        #expect(try store.localFile(a.id) != nil)
+        try store.pool.write { try $0.execute(sql: "CREATE TRIGGER refuse BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT, 'fail'); END") }
+        #expect(throws: (any Error).self) { try store.capture(text: "", attachmentIDs: [b.id, a.id], to: .inbox, draft: .home, nowUs: 3) }
+        #expect(try store.drafts()[.home]?.attachments == [b, a])
+        #expect(try store.localFile(a.id) != nil)
+        try store.pool.write { try $0.execute(sql: "DROP TRIGGER refuse") }
+        let original = try #require(try store.localFile(a.id))
+        try FileManager.default.removeItem(at: original)
+        #expect(try store.drafts()[.home]?.attachments == [b, a])
+        do {
+            _ = try store.capture(text: "", attachmentIDs: [a.id], to: .inbox, draft: .home, nowUs: 4)
+            Issue.record("Missing original must prevent Send")
+        } catch {
+            #expect(error.localizedDescription == "An attachment is missing; add it again")
+        }
+        try store.saveDraft(.home, text: "", attachmentIDs: [b.id])
+        _ = try store.capture(text: "", attachmentIDs: [b.id], to: .inbox, draft: .home, nowUs: 5)
+        #expect(try store.drafts().isEmpty)
+        #expect(try store.localFile(b.id) != nil)
+        #expect(throws: (any Error).self) { try store.saveDraft(.home, text: "", attachmentIDs: [b.id]) }
+        try store.saveDraft(.home, text: "", attachmentIDs: [])
+        #expect(try store.drafts().isEmpty)
+    }
+
+    @Test func draftMigrationSupportsAttachmentOnlyRows() throws {
+        let (store, _) = try tempStore()
+        try store.pool.write { db in
+            #expect(throws: Never.self) { try db.execute(sql: "INSERT INTO drafts(place,text) VALUES ('inbox','')") }
+            #expect(throws: Never.self) { _ = try Row.fetchAll(db, sql: "SELECT attachment_id, place, position FROM draft_attachments") }
+        }
+    }
+
     @Test func successfulDraftSavePreservesSendAndImportErrors() throws {
         let store = try tempStore().store
         try store.pool.write { try $0.execute(sql: "INSERT INTO topics (id, name, deleted_at) VALUES ('closed', 'Closed', 1)") }
         let model = ComposerModel(store: store, destination: .topic("closed"), placeholder: "", draft: .inbox, onCaptured: {})
         model.text = "Keep this draft"
         #expect(!model.send())
-        #expect(model.error == ItemActionError.topicUnavailable.localizedDescription)
+        #expect(model.error == "Item failed to send. " + ItemActionError.topicUnavailable.localizedDescription)
         model.flushDraft()
-        #expect(model.error == ItemActionError.topicUnavailable.localizedDescription)
+        #expect(model.error == "Item failed to send. " + ItemActionError.topicUnavailable.localizedDescription)
         #expect(try store.drafts()[.inbox]?.text == "Keep this draft")
+        let sendError = "Item failed to send. " + ItemActionError.topicUnavailable.localizedDescription
+        model.beginImport()
+        #expect(model.error == sendError)
         model.reportImportError("Import failed")
+        model.endImport()
         model.flushDraft()
-        #expect(model.error == "Import failed")
+        #expect(model.error == sendError + "\nImport failed")
+        model.beginImport()
+        #expect(model.error == sendError)
     }
 
     @Test func saveAndLoadEachPlace() throws {

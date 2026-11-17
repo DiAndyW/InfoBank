@@ -35,7 +35,7 @@ struct Services {
 }
 
 enum Route: Hashable {
-    case place(FeedPlace), search(SearchPlace)
+    case place(FeedPlace), search
 }
 
 @main
@@ -60,6 +60,7 @@ struct RootView: View {
     @SceneStorage("place") private var savedPlace = ""
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [Route] = []
+    @State private var editorNavigation = EditorNavigation()
     @State private var places: PlacesModel
     @State private var composers: Composers
     @State private var setup: SettingsModel
@@ -105,10 +106,12 @@ struct RootView: View {
     }
 
     private func show(_ itemID: String) {
-        services.notices.dismiss()
-        let place = itemPlace(itemID)
-        path = [.place(place)]
-        target = ShowTarget(place: place, itemID: itemID)
+        editorNavigation.requestLeave {
+            services.notices.dismiss()
+            let place = itemPlace(itemID)
+            path = [.place(place)]
+            target = ShowTarget(place: place, itemID: itemID)
+        }
     }
 
     private func openResult(_ itemID: String) {
@@ -125,8 +128,8 @@ struct RootView: View {
         }
     }
 
-    private func openSearch(_ place: SearchPlace) {
-        fadeThrough { path.append(.search(place)) }
+    private func openSearch() {
+        fadeThrough { path.append(.search) }
     }
 
     private func closeSearch() {
@@ -166,7 +169,7 @@ struct RootView: View {
                 SetupView(model: setup)
             } else {
                 NavigationStack(path: $path) {
-                    PlacesView(store: services.store, wake: services.wake, places: places.places, composer: composers.home, status: status, notices: services.notices, onUndoClear: undoClear, onShow: show, onSearch: { openSearch(.all) }) { showingSettings = true }
+                    PlacesView(store: services.store, wake: services.wake, places: places.places, composer: composers.home, status: status, notices: services.notices, onUndoClear: undoClear, onShow: show, onSearch: openSearch) { showingSettings = true }
                         .toolbar(.hidden, for: .navigationBar)
                         .navigationDestination(for: Route.self) { route in
                             switch route {
@@ -182,9 +185,9 @@ struct RootView: View {
                                     onShow: show,
                                     onSearch: openSearch,
                                     foregrounds: foregrounds,
-                                    target: $target)
-                            case .search(let place):
-                                SearchView(services: services, onUndoClear: undoClear, place: place, topics: places.places.topics, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
+                                    target: $target, editorNavigation: editorNavigation)
+                            case .search:
+                                SearchView(services: services, onUndoClear: undoClear, topics: places.places.topics, onOpen: openResult, onOpenTopic: { path.append(.place(.topic($0))) }, onCancel: closeSearch)
                             }
                         }
                 }
@@ -221,8 +224,10 @@ struct RootView: View {
         }
         .onChange(of: composeRequests.latest, initial: true) { _, request in
             guard request != nil else { return }
-            path = []
-            showingSettings = false
+            editorNavigation.requestLeave {
+                path = []
+                showingSettings = false
+            }
         }
         .onChange(of: places.places.topics) { _, topics in
             if let id = composers.home.homeTopicID, !topics.contains(where: { $0.id == id }) {
@@ -234,9 +239,12 @@ struct RootView: View {
             if path.contains(where: { route in
                 if case .place(.topic(let id)) = route { return !topics.contains { $0.id == id } }
                 return false
-            }) { path = [] }
+            }) { editorNavigation.requestLeave { path = [] } }
         }
-        .onChange(of: path) { _, path in
+        .onChange(of: path) { previous, path in
+            if path.count < previous.count, editorNavigation.editor?.hasChanges == false {
+                editorNavigation.end()
+            }
             composers.flush()
             if case .place = path.last { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) }
             let trail = path.compactMap { if case .place(let place) = $0 { place } else { nil } }

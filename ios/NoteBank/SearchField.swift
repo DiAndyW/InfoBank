@@ -22,6 +22,7 @@ struct SearchField: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UITextField {
         let field = FocusingField()
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         field.autofocus = autofocus
         field.delegate = context.coordinator
         field.addTarget(context.coordinator, action: #selector(Coordinator.changed), for: .editingChanged)

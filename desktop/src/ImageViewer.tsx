@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { attachmentOriginal, attachmentStored, openAttachment, thumbnail, type FeedAttachment } from "./api";
+import { attachmentOriginal, attachmentStored, openAttachment, thumbnail } from "./api";
 import { Icon } from "./icons";
 
+export type ViewerImage = { id: string; filename: string; localSource?: () => Promise<string> };
+
 type Props = {
-  images: FeedAttachment[];
+  images: ViewerImage[];
   selected: string;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -42,6 +44,7 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
   const current = display?.id === selected ? display : null;
   const index = images.findIndex(a => a.id === selected);
   const filename = images[index].filename;
+  const localSource = images[index].localSource;
 
   useEffect(() => {
     panel.current!.focus();
@@ -83,6 +86,14 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
     setDisplay(d => ({ id: selected, thumbSrc: d?.id === selected ? d.thumbSrc : null,
       thumbSmall: d?.id === selected ? d.thumbSmall : false, originalSrc: null, loaded: false,
       loading: false, note: null, retry: false, originalSmall: false }));
+    if (localSource) {
+      localSource().then(src => {
+        if (live) setDisplay(d => d && { ...d, originalSrc: src });
+      }, () => {
+        if (live) setDisplay(d => d && { ...d, note: "This image can't be shown here." });
+      });
+      return () => { live = false; generation.current++; };
+    }
     thumbnail(selected).then(path => {
       if (live) setDisplay(d => d && { ...d, thumbSrc: convertFileSrc(path) });
     }, () => {});
@@ -175,6 +186,10 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
 
   async function failedDisplay() {
     const version = generation.current;
+    if (localSource) {
+      setDisplay(d => d && { ...d, originalSrc: null, loaded: false, note: "This image can't be shown here.", retry: false });
+      return;
+    }
     try {
       const stored = await attachmentStored(selected);
       if (version === generation.current) setDisplay(d => d && { ...d, originalSrc: null, loaded: false,
@@ -213,9 +228,9 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
   return (
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label={filename} className="nb-viewer">
       <div className="nb-viewer-bar">
-        <button type="button" aria-label="Close image" onClick={onClose}><Icon name="x" /></button>
-        <span>{filename}</span>
-        <button type="button" onClick={openOriginal}>Open original</button>
+        <div className="nb-viewer-actions-start"><button type="button" aria-label="Close image" onClick={onClose}><Icon name="x" /></button></div>
+        <span className="nb-viewer-title">{filename}</span>
+        <div className="nb-viewer-actions-end">{!localSource && <button type="button" onClick={openOriginal}>Open original</button>}</div>
       </div>
       <div ref={stage} className="nb-viewer-stage"
         onClick={event => { if (event.detail === 1) clickedStage.current = true; }}

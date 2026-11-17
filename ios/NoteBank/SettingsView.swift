@@ -164,6 +164,7 @@ struct SettingsView: View {
                 .padding(.horizontal, 16)
             }
             .background(palette.surfaceSidebar)
+            .themedSheet()
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -181,6 +182,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .themedSheet()
         .discardAlert(model) {
             saved = true
             dismiss()

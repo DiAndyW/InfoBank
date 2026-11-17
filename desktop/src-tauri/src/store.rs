@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_remove_archive.sql"),
     include_str!("../migrations/0011_topic_activity.sql"),
     include_str!("../migrations/0012_repull_topic_activity.sql"),
+    include_str!("../migrations/0013_draft_attachments.sql"),
 ];
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -41,6 +42,21 @@ mod tests {
 
     fn device_id(conn: &Connection) -> rusqlite::Result<String> {
         conn.query_row("SELECT device_id FROM device", [], |r| r.get(0))
+    }
+
+    #[test]
+    fn draft_attachment_migration_preserves_text_and_home_destination() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("notebank.db");
+        let conn = Connection::open(&path).unwrap();
+        for sql in MIGRATIONS.iter().take(12) { conn.execute_batch(sql).unwrap(); }
+        conn.pragma_update(None, "user_version", 12).unwrap();
+        conn.execute_batch("INSERT INTO topics(id,name) VALUES ('t','Topic'); INSERT INTO drafts VALUES ('home','keep','t');").unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let draft = crate::drafts::list(&conn).unwrap().remove(0);
+        assert_eq!((draft.text.as_str(), draft.home_topic_id.as_deref()), ("keep", Some("t")));
+        assert!(draft.attachments.is_empty());
     }
 
     #[test]

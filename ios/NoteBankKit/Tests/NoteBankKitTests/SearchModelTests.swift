@@ -19,8 +19,8 @@ struct SearchModelTests {
 
     private func utcUs(_ rfc3339: String) -> Int64 { Time.micros(rfc3339: rfc3339)! }
 
-    private func model(_ store: Store, place: SearchPlace = .all, now: Date = Date(timeIntervalSince1970: 1_800_000_000)) -> SearchModel {
-        SearchModel(store: store, place: place, calendar: calendar(), now: { now }, debounce: .milliseconds(20))
+    private func model(_ store: Store, now: Date = Date(timeIntervalSince1970: 1_800_000_000)) -> SearchModel {
+        SearchModel(store: store, calendar: calendar(), now: { now }, debounce: .milliseconds(20))
     }
 
     private func put(_ store: Store, _ id: String, _ text: String, at captureTimeUs: Int64 = 1, files: Bool = false) throws {
@@ -31,6 +31,35 @@ struct SearchModelTests {
                     sql: "INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES (?, ?, 'a.pdf', 'application/pdf', 1, 1, 0)",
                     arguments: ["\(id)-f", id])
             }
+        }
+    }
+
+    @Test func searchStartsGlobally() throws {
+        let expected = try Behaviour.rule("search.start")
+        let (store, _) = try tempStore()
+        let search = model(store)
+        search.text = "invoice"
+        #expect((search.place == .all) == expected.offered!)
+        #expect(search.query?.place == .all)
+    }
+
+    @Test func topicsOnlyShowAtAllPlaces() throws {
+        let expected = try Behaviour.rule("search.topics")
+        let (store, _) = try tempStore()
+        let topic = try store.createTopic(name: "Taxes", nowUs: 1)
+        let search = model(store)
+        #expect(search.showsTopics == expected.offered!)
+        for dates in [SearchDates.pastWeek, .pastMonth, .pastYear, .custom(from: date(2026, 10, 1), to: date(2026, 10, 31)), .any] {
+            search.dates = dates
+            #expect(search.showsTopics == expected.offered!)
+        }
+        search.hasFiles = true
+        #expect(search.showsTopics == expected.offered!)
+        for place in [SearchPlace.topic(topic), .inbox, .tunnel] {
+            search.place = place
+            #expect(!search.showsTopics)
+            search.place = .all
+            #expect(search.showsTopics == expected.offered!)
         }
     }
 
@@ -100,25 +129,27 @@ struct SearchModelTests {
         #expect(await waitUntil { search.results.map(\.id) == [first] })
     }
 
-    @Test func deletedPresetTopicFallsBackToAnywhere() async throws {
+    @Test func deletedFilteredTopicFallsBackToAnywhere() async throws {
         let (store, _) = try tempStore()
         let topic = try store.createTopic(name: "Taxes", nowUs: 1)
-        let search = model(store, place: .topic(topic))
+        let search = model(store)
+        search.place = .topic(topic)
         try store.deleteTopic(topic, keeping: .all, nowUs: 2)
         #expect(await waitUntil { search.place == .all })
     }
 
-    @Test func presetTopicThatIsAlreadyGoneStartsAtAnywhere() throws {
+    @Test func searchStartsGloballyAfterTopicWasDeleted() throws {
         let (store, _) = try tempStore()
         let topic = try store.createTopic(name: "Taxes", nowUs: 1)
         try store.deleteTopic(topic, keeping: .all, nowUs: 2)
-        #expect(model(store, place: .topic(topic)).place == .all)
+        #expect(model(store).place == .all)
     }
 
-    @Test func livePresetTopicStays() async throws {
+    @Test func selectedTopicFilterStays() async throws {
         let (store, _) = try tempStore()
         let topic = try store.createTopic(name: "Taxes", nowUs: 1)
-        let search = model(store, place: .topic(topic))
+        let search = model(store)
+        search.place = .topic(topic)
         search.text = "invoice"
         try await store.pool.write { try $0.execute(sql: "INSERT INTO items (id, topic_id, text, capture_time) VALUES ('a', ?, 'invoice', 3)", arguments: [topic]) }
         #expect(await waitUntil { search.results.map(\.id) == ["a"] })

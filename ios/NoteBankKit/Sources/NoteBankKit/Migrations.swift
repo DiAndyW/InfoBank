@@ -168,6 +168,24 @@ extension DatabaseMigrator {
         migrator.registerMigration("v11") { db in
             try db.execute(sql: "UPDATE device SET pull_cursor = 0;")
         }
+        migrator.registerMigration("v12") { db in
+            try db.execute(sql: """
+                ALTER TABLE drafts RENAME TO old_drafts;
+                CREATE TABLE drafts (
+                    place TEXT NOT NULL PRIMARY KEY CHECK (place IN ('home', 'inbox', 'tunnel') OR place LIKE 'topic:_%'),
+                    text TEXT NOT NULL,
+                    home_topic_id TEXT CHECK (home_topic_id IS NULL OR place = 'home')
+                ) STRICT;
+                INSERT INTO drafts SELECT * FROM old_drafts;
+                DROP TABLE old_drafts;
+                CREATE TABLE draft_attachments (
+                    attachment_id TEXT NOT NULL PRIMARY KEY REFERENCES staged_files(id),
+                    place TEXT NOT NULL REFERENCES drafts(place) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    UNIQUE(place, position)
+                ) STRICT;
+                """)
+        }
         return migrator
     }
 }

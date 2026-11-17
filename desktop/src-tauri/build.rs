@@ -13,7 +13,7 @@ fn main() {
         "get_settings", "save_settings", "trash_after_copy", "set_trash_after_copy", "double_click_interval_ms", "list_topics", "list_drafts", "save_draft", "capture", "move_item", "edit_item", "discard_item", "resolve_conflict", "trash_item",
         "restore_item", "nav_counts", "create_topic", "picker_topic", "rename_topic",
         "delete_topic", "pick_files", "stage_attachment_bytes", "unstage_attachment", "thumbnail", "attachment_stored", "attachment_original",
-        "open_attachment", "reveal_attachment", "list_items", "search_items", "sync_status",
+        "open_staged_attachment", "open_attachment", "reveal_attachment", "list_items", "search_items", "sync_status",
         "set_quick_capture_shortcut", "set_quick_capture_on", "autostart_on", "set_autostart", "dismiss_quick_capture", "startup_error",
         "show_data_folder", "quit", "update_status", "check_for_updates", "restart_to_update", "copy_item", "copy_attachment", "prepare_copy_items", "finish_copy_items", "discard_copy_items", "set_items_trashed",
     ])))

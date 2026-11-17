@@ -37,6 +37,24 @@ import Testing
         check(center, try Behaviour.rule("notice.sync_inbox_more"), values: ["label": "note", "topic": "Gym", "count": "1"])
     }
 
+    @Test func attachmentPreview() async throws {
+        let (store, _) = try tempStore()
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", onCaptured: {})
+        await model.importFile(try AttachmentTests().source())
+        let attachment = try #require(model.attachments.first)
+        #expect(try model.stagedFile(attachment.id).lastPathComponent == attachment.filename)
+        #expect(throws: AttachmentError.self) { try model.stagedFile("../unknown") }
+        let expected = try Behaviour.rule("editor.attachment_preview")
+        #expect(AttachmentPresentation.video.previewLabel(filename: "clip.mov") == expected.label?.replacingOccurrences(of: "{filename}", with: "clip.mov"))
+        #expect(AttachmentPresentation.video.needsLocalVideoFrame)
+        #expect(!AttachmentPresentation.image.needsLocalVideoFrame)
+        #expect(!AttachmentPresentation.file.needsLocalVideoFrame)
+        #expect(AttachmentPresentation.video.opensInViewer)
+        #expect(AttachmentPresentation.image.opensInViewer)
+        #expect(!AttachmentPresentation.file.opensInViewer)
+        #expect(["image/png", "video/mp4", "text/plain"].map { AttachmentPresentation(mimeType: $0).rawValue } == expected.actions)
+    }
+
     @Test func duration() throws {
         #expect(Notice.durationSeconds == (try Behaviour.rule("notice.duration")).duration_seconds)
     }

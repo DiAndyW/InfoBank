@@ -231,6 +231,7 @@ pub fn run() {
             commands::discard_copy_items,
             commands::set_items_trashed,
             commands::open_attachment,
+            commands::open_staged_attachment,
             commands::reveal_attachment,
             commands::list_items,
             commands::search_items,
@@ -280,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_is_declared_and_allowed_for_the_main_window_and_the_quick_window_gets_seven() {
+    fn every_command_is_declared_and_each_window_has_its_expected_permissions() {
         let handler = names(include_str!("lib.rs"), "generate_handler![", "]", "");
         let declared = names(include_str!("../build.rs"), "commands(&[", "]", "");
         // The permissions array closes at two-space indent; the opener entry has an inner `]`.
@@ -296,6 +297,7 @@ mod tests {
             "dismiss_quick_capture",
             "list_topics",
             "listen",
+            "open_staged_attachment",
             "pick_files",
             "picker_topic",
             "stage_attachment_bytes",

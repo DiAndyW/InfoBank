@@ -23,7 +23,9 @@ struct SelectableItemRow<Content: View>: View {
                 content().padding(.trailing, 8).disabled(true).allowsHitTesting(false).accessibilityHidden(true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
             .background(selection.ids.contains(item.id) ? palette.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, -8)
             .contentShape(Rectangle())
             .onTapGesture { if !busy && item.syncError == nil { selection.toggle(item.id) } }
             .accessibilityRepresentation {
@@ -36,7 +38,7 @@ struct SelectableItemRow<Content: View>: View {
                 .padding(.trailing, 8)
                 .contentShape(Rectangle())
                 .highPriorityGesture(onCommands.map { commands in
-                    LongPressGesture(minimumDuration: 0.5, maximumDistance: 10).onEnded { _ in commands() }
+                    LongPressGesture(minimumDuration: 0.35, maximumDistance: 10).onEnded { _ in commands() }
                 })
         }
     }
