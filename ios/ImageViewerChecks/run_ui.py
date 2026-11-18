@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="notebank-gallery-ui-") as temporary:
         objects[key] = values
         return key
     files = []
-    for key, path in [("Viewer", "ios/NoteBank/ImageViewer.swift"), ("App", "ios/ImageViewerChecks/GalleryApp.swift"), ("Test", "ios/ImageViewerChecks/UITests.swift")]:
+    for key, path in [("Viewer", "ios/NoteBank/ImageViewer.swift"), ("Failure", "ios/NoteBankKit/Sources/NoteBankKit/AttachmentFailure.swift"), ("App", "ios/ImageViewerChecks/GalleryApp.swift"), ("Test", "ios/ImageViewerChecks/UITests.swift")]:
         add(key, isa="PBXFileReference", lastKnownFileType="sourcecode.swift", path=str(repo / path), sourceTree="<absolute>")
         files.append(key)
         add(key + "Build", isa="PBXBuildFile", fileRef=key)
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="notebank-gallery-ui-") as temporary:
             target_settings["INFOPLIST_KEY_UILaunchScreen_Generation"] = "YES"
         add(name + "Config", isa="XCBuildConfiguration", name="Debug", buildSettings=target_settings)
         add(name + "Configs", isa="XCConfigurationList", buildConfigurations=[name + "Config"], defaultConfigurationName="Debug")
-        add(name + "Sources", isa="PBXSourcesBuildPhase", buildActionMask="2147483647", files=["ViewerBuild", "AppBuild"] if name == "App" else ["TestBuild"], runOnlyForDeploymentPostprocessing="0")
+        add(name + "Sources", isa="PBXSourcesBuildPhase", buildActionMask="2147483647", files=["ViewerBuild", "FailureBuild", "AppBuild"] if name == "App" else ["TestBuild"], runOnlyForDeploymentPostprocessing="0")
         add(name + "Frameworks", isa="PBXFrameworksBuildPhase", buildActionMask="2147483647", files=[], runOnlyForDeploymentPostprocessing="0")
         add(name + "Target", isa="PBXNativeTarget", name="GalleryApp" if name == "App" else "GalleryUITests", productName="GalleryApp" if name == "App" else "GalleryUITests", productType="com.apple.product-type.application" if name == "App" else "com.apple.product-type.bundle.ui-testing", productReference=name + "Product", buildConfigurationList=name + "Configs", buildPhases=[name + "Sources", name + "Frameworks"], buildRules=[], dependencies=[] if name == "App" else ["Dependency"])
     add("Proxy", isa="PBXContainerItemProxy", containerPortal="Project", proxyType="1", remoteGlobalIDString="AppTarget", remoteInfo="GalleryApp")

@@ -5,6 +5,22 @@
     "ios"
   ],
   "rules": {
+    "failure.server_url_components": {
+      "summary": "Reject Server URLs containing credentials, a query, or a fragment before checking or saving the connection",
+      "expect": { "message": "The Server URL can't include a user name, query or fragment" }
+    },
+    "failure.attachment_preview": {
+      "summary": "An attachment preview failure shows an authored error over the dimmed note or feed while the preview is hidden",
+      "expect": { "message": "Attachment failed to open." }
+    },
+    "failure.storage_open": {
+      "summary": "A storage startup failure shows authored wording without the underlying error",
+      "expect": { "message": "NoteBank failed to open its storage." }
+    },
+    "item.move_to_current": {
+      "summary": "Choosing an Item's current destination does not move it or post a notice",
+      "expect": { "offered": false }
+    },
     "composer.draft_attachments": {
       "summary": "Composer attachments survive restart with their draft, retaining missing originals for removal or reattachment",
       "expect": {

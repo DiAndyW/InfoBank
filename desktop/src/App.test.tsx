@@ -232,11 +232,12 @@ test("multi-select Search copies results without opening or trashing them", asyn
   expect(calls.some(c => c.cmd === "set_items_trashed")).toBe(false);
 });
 
-test("a failed launch says why, and offers the data folder and Quit", async () => {
+behaviourTest("failure.storage_open", async expected => {
   const calls = backend(configured, { startup: { message: "Couldn't open the database: file is not a database", data_dir: "/Users/me/data" } });
   render(<App />);
   expect(await screen.findByText("NoteBank couldn't start")).toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("Couldn't open the database: file is not a database");
+  expect(screen.getByRole("alert")).toHaveTextContent(expected.message!);
+  expect(document.body.textContent).not.toContain("file is not a database");
   expect(screen.getByText(/\/Users\/me\/data/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Show folder" }));
   await userEvent.click(screen.getByRole("button", { name: "Quit" }));
@@ -420,7 +421,7 @@ test("a load failure is shown and can be retried", async () => {
     { shouldMockEvents: true },
   );
   render(<App />);
-  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the keychain");
+  expect(await screen.findByRole("alert")).toHaveTextContent("NoteBank failed to open its storage.");
   failing = false;
   await userEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(await screen.findByText("Nothing here yet.")).toBeInTheDocument();
@@ -834,7 +835,7 @@ test("a file chip opens the file, and says why it can't", async () => {
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Open report.pdf" }));
   expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: "a1" } });
-  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(await screen.findByText("Attachment failed to open. Can't download while offline")).toBeInTheDocument();
   expect(screen.getByText("2.3 MB")).toBeInTheDocument();
 });
 
@@ -844,11 +845,11 @@ test("a file chip can retry opening after an error", async () => {
   render(<App />);
   const chip = await screen.findByRole("button", { name: "Open report.pdf" });
   await userEvent.click(chip);
-  await screen.findByText("Can't download while offline");
+  await screen.findByText("Attachment failed to open. Can't download while offline");
   options.openError = undefined;
   await userEvent.click(chip);
   await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(2));
-  expect(screen.queryByText("Can't download while offline")).not.toBeInTheDocument();
+  expect(screen.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
 });
 
 test("an image shows its filename until the thumbnail arrives", async () => {
@@ -942,11 +943,11 @@ test("an attachment error clears after a few seconds", async () => {
     await act(async () => { render(<App />); });
     const chip = await screen.findByRole("button", { name: "Open report.pdf" });
     await user.click(chip);
-    await screen.findByText("Can't download while offline");
+    await screen.findByText("Attachment failed to open. Can't download while offline");
     await act(async () => vi.advanceTimersByTime(3000));
-    expect(screen.getByText("Can't download while offline")).toBeInTheDocument();
+    expect(screen.getByText("Attachment failed to open. Can't download while offline")).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTime(1000));
-    expect(screen.queryByText("Can't download while offline")).not.toBeInTheDocument();
+    expect(screen.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
     expect(chip).not.toHaveClass("is-error");
   } finally {
     vi.useRealTimers();
@@ -1172,13 +1173,14 @@ test("Move to filters its places as you type and keeps New Topic… below the li
   expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", target: { kind: "topic", id: "w" } } });
 });
 
-test("moving an Item to where it is does nothing", async () => {
+behaviourTest("item.move_to_current", async expected => {
   const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Inbox" }));
-  expect(calls.some((c) => c.cmd === "move_item")).toBe(false);
+  expect(calls.some((c) => c.cmd === "move_item")).toBe(expected.offered);
+  expect(screen.queryByText(/^Moved to /)).not.toBeInTheDocument();
 });
 
 const grip = (text: string) => within(screen.getByText(text).closest("article") as HTMLElement).getByTitle("Drag to a Topic");
@@ -3284,7 +3286,7 @@ test("a failed Attachment copy shows why on the file", async () => {
   render(<App />);
   await openTunnel();
   await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
-  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(await screen.findByText("Attachment failed to copy. Can't download while offline")).toBeInTheDocument();
   expect(screen.queryByText("Copied")).not.toBeInTheDocument();
 });
 
@@ -4224,29 +4226,29 @@ test("viewer stored original never shows loading text", async () => {
   expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
 });
 
-test("viewer keeps thumbnail on download failure and Retry succeeds", async () => {
+test("viewer hides the thumbnail on download failure and Retry succeeds", async () => {
   const options: Options = { original: {} };
   const { calls, ui, dialog } = await startViewer(options);
-  expect(await ui.findByText("Can't download while offline")).toBeVisible();
-  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+  expect(await ui.findByText("Attachment failed to open. Can't download while offline")).toBeVisible();
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
   const retry = ui.getByRole("button", { name: "Retry" });
-  expect(ui.getByText("Can't download while offline")).not.toContainElement(retry);
+  expect(ui.getByText("Attachment failed to open. Can't download while offline")).not.toContainElement(retry);
   expect(retry.querySelector("svg")).not.toBeNull();
   options.original!.a2 = "/data/retried.jpg";
   await userEvent.click(retry);
   await vi.waitFor(() => expect(dialog.querySelector('img[src$="retried.jpg"]')).not.toBeNull());
   fireEvent.load(dialog.querySelector('img[src$="retried.jpg"]')!);
-  expect(ui.queryByText("Can't download while offline")).not.toBeInTheDocument();
+  expect(ui.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
   expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
 });
 
 for (const stored of [true, false]) {
-  test(`viewer failed display with stored=${stored} preserves thumbnail and correct recovery`, async () => {
+  test(`viewer failed display with stored=${stored} hides the thumbnail and offers the right recovery`, async () => {
     const { ui, dialog } = await startViewer({ stored: stored ? [photo.id] : [] });
     await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
     fireEvent.error(dialog.querySelector('img[src$="original.jpg"]')!);
     expect(await ui.findByText(stored ? "This image can't be shown here." : "Couldn't load this image")).toBeVisible();
-    expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+    expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
     expect(!!ui.queryByRole("button", { name: "Retry" })).toBe(!stored);
     expect(ui.getByRole("button", { name: "Open original" })).toBeEnabled();
   });
@@ -4266,7 +4268,7 @@ test("viewer Open original awaits the existing download without fetching twice",
 test("viewer Open original after failure shares its transfer with Retry", async () => {
   const options: Options = { original: {} };
   const { calls, ui, dialog } = await startViewer(options);
-  await ui.findByText("Can't download while offline");
+  await ui.findByText("Attachment failed to open. Can't download while offline");
   let resolve!: (path: string) => void;
   options.original!.a2 = new Promise(done => { resolve = done; });
   await userEvent.click(ui.getByRole("button", { name: "Open original" }));
@@ -4282,10 +4284,18 @@ test("viewer Open original after failure shares its transfer with Retry", async 
   expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
 });
 
-test("viewer Open original reports external app errors", async () => {
-  const { ui } = await startViewer({ openError: "No application available" });
+test("viewer Open original reports external app errors and restores a loaded preview after success", async () => {
+  const failing: Record<string, string> = { open_attachment: "No application available" };
+  const { ui, dialog } = await startViewer({ failing });
+  await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
+  fireEvent.load(dialog.querySelector('img[src$="original.jpg"]')!);
   await userEvent.click(ui.getByRole("button", { name: "Open original" }));
-  expect(await ui.findByText("No application available")).toBeVisible();
+  expect(await ui.findByText("Attachment failed to open.")).toBeVisible();
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
+  delete failing.open_attachment;
+  await userEvent.click(ui.getByRole("button", { name: "Open original" }));
+  expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("original.jpg"));
+  expect(ui.queryByText("Attachment failed to open.")).not.toBeInTheDocument();
 });
 
 test("viewer arrows skip videos and runnable images and body Escape returns focus", async () => {
@@ -4445,7 +4455,7 @@ for (const outcome of ["load", "failure"]) {
       fireEvent.load(dialog.querySelector('img[src$="late.jpg"]')!);
     } else {
       await act(async () => reject("Download failed"));
-      expect(ui.getByText("Download failed")).toBeVisible();
+      expect(ui.getByText("Attachment failed to open.")).toBeVisible();
     }
     await act(async () => release());
     expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
@@ -4470,19 +4480,23 @@ for (const multiple of [false, true]) {
   });
 }
 
-test("viewer Retry preserves the thumbnail while its lookup is pending", async () => {
+test("viewer shows the cached thumbnail again while Retry loads the original", async () => {
   let retrying = false;
-  const options: Options = { original: {}, thumbnailLookup: () => retrying ? new Promise(() => {}) : "/data/thumb.jpg" };
+  let fail!: (error: Error) => void;
+  const original = new Promise<string>((_, reject) => { fail = reject; });
+  const options: Options = { original: { a2: original }, thumbnailLookup: () => retrying ? new Promise(() => {}) : "/data/thumb.jpg" };
   const { ui } = await startViewer(options);
-  await ui.findByText("Can't download while offline");
-  const thumb = ui.getByRole("img", { name: "photo.jpg" });
+  const thumb = await ui.findByRole("img", { name: "photo.jpg" });
   Object.defineProperty(thumb, "naturalWidth", { value: 300 });
   fireEvent.load(thumb);
+  await act(async () => fail(new Error("offline")));
+  await ui.findByText("Attachment failed to open.");
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
   retrying = true;
   options.original!.a2 = new Promise(() => {});
   await userEvent.click(ui.getByRole("button", { name: "Retry" }));
-  expect(ui.getByRole("img", { name: "photo.jpg" })).toBe(thumb);
-  expect(thumb).toHaveClass("is-small");
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", thumb.getAttribute("src"));
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveClass("is-small");
 });
 
 test("viewer Open original ignores repeated clicks until opening settles", async () => {

@@ -121,7 +121,7 @@ public func cycle(store: Store, secrets: SecretStore, http: SyncHTTP, queued: in
     do {
         guard let url = try store.serverURL() else { throw SyncFailure.notConfigured }
         let secret: String?
-        do { secret = try secrets.read() } catch { throw SyncFailure.keychain(error.localizedDescription) }
+        do { secret = try secrets.read() } catch { throw SyncFailure.keychain(errorMessage(error)) }
         guard let secret else { throw SyncFailure.notConfigured }
         let deviceID = try store.deviceID()
 

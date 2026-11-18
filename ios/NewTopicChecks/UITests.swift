@@ -32,7 +32,7 @@ final class NewTopicUITests: XCTestCase {
         openDialog()
         field.typeText("broken")
         create.tap()
-        XCTAssertTrue(app.staticTexts["Couldn't save the Topic"].waitForExistence(timeout: 2), "The save error isn't shown in the dialog")
+        XCTAssertTrue(app.staticTexts["NoteBank couldn't access that file."].waitForExistence(timeout: 2), "The save error isn't shown in the dialog")
         XCTAssertEqual(field.value as? String, "broken", "The typed name was lost")
         app.buttons["Cancel"].tap()
         XCTAssertTrue(field.waitForNonExistence(timeout: 5))

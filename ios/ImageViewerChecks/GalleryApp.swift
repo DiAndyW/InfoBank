@@ -21,41 +21,45 @@ struct GalleryFixture: View {
     }
 
     var body: some View {
-        Button("Open images") { showing = true }
-            .fullScreenCover(isPresented: $showing) {
-                ImageViewer(images: images, selectedID: "first", open: { id in
-                    try await Task.sleep(for: .seconds(1))
-                    if ProcessInfo.processInfo.arguments.contains("--failure"), !failedOnce {
-                        failedOnce = true
-                        throw CocoaError(.fileReadNoSuchFile)
+        VStack {
+            Button("Open images") { showing = true }
+                .fullScreenCover(isPresented: $showing) {
+                    ImageViewer(images: images, selectedID: "first", open: { id in
+                        try await Task.sleep(for: .seconds(1))
+                        if ProcessInfo.processInfo.arguments.contains("--failure"), !failedOnce {
+                            failedOnce = true
+                            throw CocoaError(.fileReadNoSuchFile)
+                        }
+                        let file = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".jpg")
+                        try images.first(where: { $0.id == id })!.thumbnail!.jpegData(compressionQuality: 0.9)!.write(to: file)
+                        return file
+                    }, thumbnail: { _ in nil }, release: { _ in })
+                    .task {
+                        guard ProcessInfo.processInfo.arguments.contains("--mid-page") else { return }
+                        try? await Task.sleep(for: .seconds(1.5))
+                        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+                        guard let pager = windows.compactMap({ pagingScrollView(in: $0) }).first else { return }
+                        pager.contentOffset.x += pager.bounds.width * 0.4
                     }
-                    let file = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".jpg")
-                    try images.first(where: { $0.id == id })!.thumbnail!.jpegData(compressionQuality: 0.9)!.write(to: file)
-                    return file
-                }, thumbnail: { _ in nil }, release: { _ in })
+                }
                 .task {
-                    guard ProcessInfo.processInfo.arguments.contains("--mid-page") else { return }
-                    try? await Task.sleep(for: .seconds(1.5))
-                    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-                    guard let pager = windows.compactMap({ pagingScrollView(in: $0) }).first else { return }
-                    pager.contentOffset.x += pager.bounds.width * 0.4
+                    if ProcessInfo.processInfo.arguments.contains("--record") {
+                        try? await Task.sleep(for: .seconds(3))
+                        showing = true
+                    }
                 }
-            }
-            .task {
-                if ProcessInfo.processInfo.arguments.contains("--record") {
-                    try? await Task.sleep(for: .seconds(3))
-                    showing = true
+            Button("Open video") { showingVideo = true }
+                .fullScreenCover(isPresented: $showingVideo) {
+                    ImageViewer(images: [ImagePreviewItem(id: "clip", filename: "clip.mp4", isVideo: true), images[0]], selectedID: "clip", open: { id in
+                        if id == "clip" { return try await makeVideo() }
+                        let file = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".jpg")
+                        try images[0].thumbnail!.jpegData(compressionQuality: 0.9)!.write(to: file)
+                        return file
+                    }, thumbnail: { _ in nil }, release: { _ in })
                 }
-            }
-        Button("Open video") { showingVideo = true }
-            .fullScreenCover(isPresented: $showingVideo) {
-                ImageViewer(images: [ImagePreviewItem(id: "clip", filename: "clip.mp4", isVideo: true), images[0]], selectedID: "clip", open: { id in
-                    if id == "clip" { return try await makeVideo() }
-                    let file = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".jpg")
-                    try images[0].thumbnail!.jpegData(compressionQuality: 0.9)!.write(to: file)
-                    return file
-                }, thumbnail: { _ in nil }, release: { _ in })
-            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.red.ignoresSafeArea())
     }
 }
 

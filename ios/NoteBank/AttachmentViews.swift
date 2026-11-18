@@ -40,7 +40,7 @@ struct AttachmentView: View {
                         pinned = true
                         error = nil
                     }
-                    catch { self.error = errorMessage(error) }
+                    catch { self.error = attachmentPreviewFailureMessage(error) }
                     loading = false
                 }
             } label: {

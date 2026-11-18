@@ -1,5 +1,8 @@
 import AVKit
 import ImageIO
+#if canImport(NoteBankKit)
+import NoteBankKit
+#endif
 import SwiftUI
 
 @MainActor @Observable
@@ -93,7 +96,7 @@ final class ImagePreviewState {
             file = url
             releaseFile = release
         } catch {
-            if generation == current, !Task.isCancelled { self.error = (error as? LocalizedError)?.errorDescription ?? "Couldn't load this \(isVideo ? "video" : "image"). Try again." }
+            if generation == current, !Task.isCancelled { self.error = attachmentPreviewFailureMessage(error) }
         }
     }
 
@@ -133,7 +136,7 @@ struct ImageViewer: View {
         let selected = images[position]
         let kind = selected.isVideo ? "video" : "image"
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+            Color.black.opacity(0.8).ignoresSafeArea()
             // The pager runs under the bar so a swipe that starts on the bar still pages.
             TabView(selection: $selectedID) {
                 ForEach(images) { image in
@@ -167,6 +170,7 @@ struct ImageViewer: View {
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
+        .presentationBackground(.clear)
         .sheet(isPresented: $sharing) {
             if let file = files[selectedID] { ImageShareSheet(file: file) }
         }
@@ -199,28 +203,26 @@ private struct ImagePreviewPage: View {
 
     var body: some View {
         ZStack {
-            if let player = state.player {
+            if state.error == nil, let player = state.player {
                 VideoPlayer(player: player)
-            } else if let image = state.image {
+            } else if state.error == nil, let image = state.image {
                 ZoomableImage(image: image, label: item.filename) { zoomed = $0 }
             }
             if state.loading { ProgressView().tint(.white).padding(12).background(.black.opacity(0.6), in: Capsule()) }
-        }
-        .offset(y: pullDown)
-        .gesture(PullDownGesture(zoomed: zoomed, onChange: { pullDown = $0 }, onEnd: { distance in
-            if distance > 100 { dismiss() }
-            else { withAnimation(.spring) { pullDown = 0 } }
-        }))
-        .safeAreaInset(edge: .bottom) {
             if let error = state.error {
                 VStack(spacing: 8) {
                     Text(error).font(.callout).multilineTextAlignment(.center)
                     Button("Retry") { retry += 1 }.frame(minHeight: 44)
                 }
-                .padding(.horizontal)
-                .background(.black)
+                .padding()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .offset(y: pullDown)
+        .gesture(PullDownGesture(zoomed: zoomed, onChange: { pullDown = $0 }, onEnd: { distance in
+            if distance > 100 { dismiss() }
+            else { withAnimation(.spring) { pullDown = 0 } }
+        }))
         .task(id: active ? retry : -1) {
             guard active else { state.close(); return }
             state.activate()
@@ -229,6 +231,9 @@ private struct ImagePreviewPage: View {
             await state.load(open: open, release: release)
         }
         .onChange(of: state.file) { onFile(state.file) }
+        .onChange(of: state.error) { _, error in
+            if error != nil { zoomed = false }
+        }
         .onDisappear {
             state.close()
             onFile(nil)
@@ -310,7 +315,7 @@ final class ZoomingImageView: UIScrollView, UIScrollViewDelegate {
         showsHorizontalScrollIndicator = false
         showsVerticalScrollIndicator = false
         contentInsetAdjustmentBehavior = .never
-        backgroundColor = .black
+        backgroundColor = .clear
         imageView.contentMode = .scaleAspectFit
         imageView.isAccessibilityElement = true
         imageView.accessibilityTraits = .image

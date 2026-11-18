@@ -14,6 +14,22 @@ struct ItemActionsTests {
         }
     }
 
+    @Test func choosingTheCurrentDestinationLeavesTheOutboxAndTopicActivityUnchanged() throws {
+        let expected = try Behaviour.rule("item.move_to_current")
+        let store = try tempStore().store
+        let topic = try store.createTopic(name: "Work", nowUs: actionTime)
+        for destination: Destination in [.inbox, .tunnel, .topic(topic)] {
+            let id = try store.capture(text: "note", to: destination, nowUs: actionTime + 1)
+            let before = try ops(store).count
+            let activity = try store.topic(topic)?.activityAtUs
+            #expect(try store.move(itemID: id, to: destination, nowUs: actionTime + 2) == expected.offered)
+            #expect((try ops(store).count > before) == expected.offered)
+            if case .topic = destination {
+                #expect((try store.topic(topic)?.activityAtUs != activity) == expected.offered)
+            }
+        }
+    }
+
     @Test func editingPreservesAttachmentsAndRevisionAcrossRepeatedOfflineEdits() throws {
         let store = try tempStore().store
         let id = try store.capture(text: "original", to: .inbox, nowUs: actionTime)
@@ -50,7 +66,7 @@ struct ItemActionsTests {
             try db.execute(sql: "INSERT INTO topics(id,name) VALUES ('g','Gym')")
             try db.execute(sql: "DELETE FROM outbox")
         }
-        try store.move(itemID: id, to: .tunnel, nowUs: actionTime + 1)
+        #expect(try store.move(itemID: id, to: .tunnel, nowUs: actionTime + 1))
         #expect(try store.places().tunnelCount == 1)
         #expect(try ops(store).last?["tunnel"] as? Bool == true)
         try store.move(itemID: id, to: .topic("g"), nowUs: actionTime + 2)

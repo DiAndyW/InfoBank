@@ -200,7 +200,7 @@ fn label(conn: &Connection, item_id: &str) -> Option<String> {
 }
 
 pub(crate) async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
-    let res = req.bearer_auth(token).send().await.map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
+    let res = req.bearer_auth(token).send().await.map_err(|e| SyncError::Failed(crate::error_message::message(e)))?;
     match res.status() {
         s if s.is_success() => Ok(res),
         reqwest::StatusCode::UNAUTHORIZED => Err(SyncError::Unauthorized),
@@ -208,18 +208,19 @@ pub(crate) async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<re
     }
 }
 
-fn failed(e: impl std::fmt::Display) -> SyncError {
-    SyncError::Failed(e.to_string())
+fn failed(e: impl std::fmt::Display + 'static) -> SyncError {
+    SyncError::Failed(crate::error_message::message(e))
 }
 
 pub fn server_access(state: &AppState) -> Result<(String, String), SyncError> {
     let url: Option<String> =
         state.db.lock().unwrap().query_row("SELECT server_url FROM device", [], |r| r.get(0)).map_err(failed)?;
     let url = url.ok_or(SyncError::NotConfigured)?;
+    crate::settings::normalize_url(&url).map_err(failed)?;
     match state.secret.get_password() {
         Ok(token) => Ok((url, token)),
         Err(keyring_core::Error::NoEntry) => Err(SyncError::NotConfigured),
-        Err(e) => Err(SyncError::Keychain(e.to_string())),
+        Err(e) => Err(SyncError::Keychain(crate::error_message::message(e))),
     }
 }
 
@@ -444,7 +445,7 @@ pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<
         let res = loop {
             let idle_until = *moved.lock().unwrap() + IDLE_TIMEOUT;
             match tokio::time::timeout_at(idle_until, &mut send).await {
-                Ok(res) => break res.map_err(|e| SyncError::Failed(e.without_url().to_string()))?,
+                Ok(res) => break res.map_err(|e| SyncError::Failed(crate::error_message::message(e)))?,
                 Err(_) if *moved.lock().unwrap() + IDLE_TIMEOUT <= tokio::time::Instant::now() => {
                     return Err(SyncError::Failed(format!("attachment {id}: the upload stalled")));
                 }
@@ -490,11 +491,11 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
             set_status(&app, "syncing");
         }
         let result = cycle(&state).await;
-        if let Err(SyncError::Keychain(e)) = &result {
-            eprintln!("sync: couldn't read the keychain: {e}");
+        if let Err(SyncError::Keychain(_)) = &result {
+            eprintln!("sync: keychain unavailable");
         }
-        failures = if let Err(SyncError::Failed(e)) = &result {
-            eprintln!("sync: {e}");
+        failures = if let Err(SyncError::Failed(_)) = &result {
+            eprintln!("sync: cycle failed");
             failures + 1
         } else {
             0
@@ -504,7 +505,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
             let now = chrono::Utc::now().timestamp_micros();
             crate::cache::start_prefetch(&app, now);
             if let Err(e) = crate::cache::evict(&state.db.lock().unwrap(), &state.dir, now, crate::cache::FILE_CACHE_BYTES) {
-                eprintln!("cache: eviction failed: {e}");
+                crate::error_message::message(e);
             }
         }
         let notices = std::mem::take(&mut *state.notices.lock().unwrap());
@@ -535,6 +536,13 @@ fn set_status<R: Runtime>(app: &AppHandle<R>, status: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_failures_classify_before_discarding_the_error_type() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "private SQL and credentials");
+        assert_eq!(failed(error), SyncError::Failed("NoteBank couldn't access that file.".into()));
+    }
+
 
     fn fresh() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();

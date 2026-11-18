@@ -36,8 +36,8 @@ struct Checks: View {
         results.append("original remains pinned until close and releases exactly once")
 
         let failed = ImagePreviewState(thumbnail: image)
-        await failed.load(open: { throw CocoaError(.fileReadNoSuchFile) }, release: { releases += 1 })
-        assert(failed.image === image && failed.error != nil && failed.file == nil && !failed.loading)
+        await failed.load(open: { throw CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "private /Users/example/token=secret"]) }, release: { releases += 1 })
+        assert(failed.image === image && failed.error == "Attachment failed to open." && failed.file == nil && !failed.loading)
         assert(releases == 1)
         await failed.load(open: { file }, release: { releases += 1 })
         assert(failed.file == file && failed.error == nil)

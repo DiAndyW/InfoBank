@@ -43,6 +43,15 @@ struct SettingsTests {
         }
     }
 
+    @Test func serverURLComponentsMatchSharedWording() throws {
+        let expected = try Behaviour.rule("failure.server_url_components")
+        for input in ["https://user:pw@example.com", "https://example.com/?key=secret", "https://example.com/#fragment", "https://example.com/?", "https://example.com/#"] {
+            #expect(throws: SettingsError(message: expected.message())) {
+                try Store.normalizedServerURL(input)
+            }
+        }
+    }
+
     @Test func aBlankSecretIsRefused() throws {
         let (store, _) = try tempStore()
         let secrets = SecretStore.memory()

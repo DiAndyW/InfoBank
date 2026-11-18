@@ -30,12 +30,6 @@ public struct FeedAttachment: Hashable, Identifiable, Sendable {
     public let uploadError: String?
 }
 
-public struct AttachmentError: LocalizedError, Sendable {
-    public let message: String
-    public var errorDescription: String? { message }
-    public init(_ message: String) { self.message = message }
-}
-
 extension Store {
     public static let maxAttachmentBytes: Int64 = 100 << 20
 
