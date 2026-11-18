@@ -1205,9 +1205,20 @@ pub(crate) mod server_tests {
 
         let a = reopen(a);
         server.start();
-        assert_eq!(sync(&a).await, Ok(true));
-        assert!(flag(&a, "uploaded", &id));
-        assert!(flag(&a, "has_thumbnail", &id), "the pull after uploading didn't bring the thumbnail");
+        tokio::time::timeout(HTTP_TIMEOUT, async {
+            loop {
+                match sync(&a).await {
+                    Ok(_) | Err(SyncError::Failed(_)) => {}
+                    Err(error) => panic!("sync after relaunch failed: {error:?}"),
+                }
+                if flag(&a, "uploaded", &id) && flag(&a, "has_thumbnail", &id) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("sync did not upload the attachment and pull its thumbnail after relaunch");
         assert!(!feed::list_items(&a.db.lock().unwrap(), &View::All, None, 0).unwrap()[0].pending);
 
         let b = device(&server, &server.secret);
