@@ -1,6 +1,6 @@
 [package]
 name = "notebank"
-version = "0.2.2"
+version = "0.3.0"
 description = "NoteBank desktop"
 authors = ["Andy Wang"]
 edition = "2024"

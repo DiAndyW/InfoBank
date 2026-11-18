@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "notebank"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "apple-native-keyring-store",
  "chrono",
