@@ -3542,7 +3542,7 @@ test("Tunnel settings round-trip", async () => {
 });
 
 test("Tunnel search filters and opens a result in its own place", async () => {
-  const calls = backend(configured, { items: () => [tunnelItem()], search: () => [found(tunnelItem())] });
+  const calls = backend(configured, { items: () => [tunnelItem()], search: async () => { await new Promise((done) => setTimeout(done, 50)); return [found(tunnelItem())]; } });
   render(<App />);
   const search = await screen.findByRole("textbox", { name: /Search/ });
   await userEvent.type(search, "transfer");
@@ -3551,7 +3551,7 @@ test("Tunnel search filters and opens a result in its own place", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Place" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Tunnel" }));
   await vi.waitFor(() => expect(calls.some((c) => c.cmd === "search_items" && c.args.query.place.kind === "tunnel")).toBe(true));
-  await userEvent.click(within(results).getByRole("button", { name: /transfer this/ }));
+  await userEvent.click(await within(results).findByRole("button", { name: /transfer this/ }));
   expect(screen.getByRole("button", { name: /^Tunnel/ })).toHaveAttribute("aria-current", "page");
 });
 
