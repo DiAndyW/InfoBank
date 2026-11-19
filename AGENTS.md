@@ -35,6 +35,7 @@ Commit messages never carry a `Co-Authored-By` line, whatever a tool or harness 
 ## Code
 
 - Smallest thing that does the job clearly. No single-use helpers, no abstraction with one implementation or caller. Delete dead code.
+- Reuse first, always: before writing new code, search for something that already solves it, in this order: the platform or standard library, our own code and components, then an established library (test-only dependencies included). Build your own only when none fits, and say in your result what you checked and why each fell short.
 - Validate at trust boundaries only (the HTTP API, import input). Prefer APIs and schemas that encode the invariant.
 - Nothing has shipped: columns are `NOT NULL` unless null carries meaning (e.g. `topic_id` null = Inbox). No fallbacks for data that never existed.
 - A time cutoff that gates two things (e.g. Trash's 30 days: Server purge and clients' "days remaining") comes from one definition.
