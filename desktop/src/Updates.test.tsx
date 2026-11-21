@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
-import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { mockWindows } from "@tauri-apps/api/mocks";
 import { expect, test, vi } from "vitest";
 import App from "./App";
+import { emitHeard, mockBackend } from "./tauri-test";
 
 type Status = { state: string; version?: string; checked_at?: string };
 const now = new Date("2026-11-07T12:00:00Z");
@@ -11,7 +12,7 @@ function backend(status: Status, configured = true, opts: { save?: Promise<void>
   localStorage.setItem("place", "inbox");
   const calls: string[] = [];
   mockWindows("main");
-  mockIPC(async (cmd, args) => {
+  mockBackend(async (cmd, args) => {
     calls.push(cmd);
     if (cmd === "get_settings") return { server_url: configured ? "https://notes.example.com" : null, has_secret: configured, quick_capture: { shortcut: "shift+super+Space", on: true } };
     if (cmd === "update_status") return { current_version: "0.1.0", status };
@@ -19,12 +20,12 @@ function backend(status: Status, configured = true, opts: { save?: Promise<void>
     if (cmd === "nav_counts") return { inbox: 0, tunnel: 0, trash: 0 };
     if (cmd === "list_topics") return [{ id: "work-id", name: "Work", activity_at_us: 1794629106000000, item_count: 0 }];
     if (["list_items", "list_drafts"].includes(cmd)) return [];
-    if (cmd === "save_draft") { await (typeof opts.save === "function" ? opts.save((args as { text: string }).text) : opts.save); localStorage.setItem("saved-draft", JSON.stringify(args)); }
+    if (cmd === "save_draft") { await (typeof opts.save === "function" ? opts.save((args as { text: string }).text) : opts.save); localStorage.setItem("saved-draft", JSON.stringify(args)); localStorage.setItem(`saved-draft:${(args as { place: string }).place}`, JSON.stringify(args)); }
     if (cmd === "restart_to_update") { await opts.install; if (opts.restartError) throw opts.restartError; }
     if (cmd === "check_for_updates" && opts.checkError) throw opts.checkError;
     if (["autostart_on", "trash_after_copy"].includes(cmd)) return false;
     return null;
-  }, { shouldMockEvents: true });
+  });
   return calls;
 }
 
@@ -169,13 +170,18 @@ test("a_failed_draft_save_does_not_restart", async () => {
 
 test.each([1, 2])("unsent_files_anywhere_are_persisted (%s)", async (count) => {
   const calls = await ready();
-  await act(() => emit("attachments-staged", { staged: [{ id: "one", filename: "one.png", size_bytes: 10, mime_type: "image/png" }], errors: [] }));
+  await emitHeard("attachments-staged", { staged: [{ id: "one", filename: "one.png", size_bytes: 10, mime_type: "image/png" }], errors: [] });
+  await screen.findByRole("button", { name: "one.png" });
   await work();
-  if (count === 2) await act(() => emit("attachments-staged", { staged: [{ id: "two", filename: "two.png", size_bytes: 10, mime_type: "image/png" }], errors: [] }));
+  if (count === 2) {
+    await emitHeard("attachments-staged", { staged: [{ id: "two", filename: "two.png", size_bytes: 10, mime_type: "image/png" }], errors: [] });
+    await screen.findByRole("button", { name: "two.png" });
+  }
   await restart();
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-  expect(calls).toContain("save_draft");
   expect(calls).toContain("restart_to_update");
+  expect(JSON.parse(localStorage.getItem("saved-draft:inbox")!)).toMatchObject({ attachmentIds: ["one"] });
+  if (count === 2) expect(JSON.parse(localStorage.getItem("saved-draft:topic:work-id")!)).toMatchObject({ attachmentIds: ["two"] });
 });
 
 test("no_files_no_question", async () => {
@@ -290,8 +296,8 @@ test("restart_freezes_new_work_through_drain_and_install", async () => {
   expect(screen.getByRole("button", { name: "Attach files" })).toBeDisabled();
   fireEvent.keyDown(screen.getByRole("textbox", { name: "New Item" }), { key: "Enter" });
   fireEvent.paste(screen.getByRole("textbox", { name: "New Item" }), { clipboardData: { files: [new File(["x"], "late.txt")], getData: () => "" } });
-  await act(() => emit("attachments-staging", "late-drop"));
-  await act(() => emit("attachments-staged", { drop_id: "late-drop", staged: [{ id: "late", filename: "late.txt", size_bytes: 1, mime_type: "text/plain" }], errors: [] }));
+  await emitHeard("attachments-staging", "late-drop");
+  await emitHeard("attachments-staged", { drop_id: "late-drop", staged: [{ id: "late", filename: "late.txt", size_bytes: 1, mime_type: "text/plain" }], errors: [] });
   expect(screen.queryByText("late.txt")).not.toBeInTheDocument();
   expect(calls).not.toContain("capture");
   expect(calls).not.toContain("stage_attachment_bytes");
@@ -320,12 +326,12 @@ test.each([true, false])("restart_waits_for_staging_and_durable_save (saveFirst=
   let save!: () => void;
   const calls = await ready({ save: new Promise<void>(r => { save = r; }) });
   typeDraft("keep");
-  await act(() => emit("attachments-staging", "pending-drop"));
+  await emitHeard("attachments-staging", "pending-drop");
   await restart();
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   if (saveFirst) await act(async () => save());
   expect(calls).not.toContain("restart_to_update");
-  await act(() => emit("attachments-staged", { drop_id: "pending-drop", staged: [{ id: "one", filename: "one.png", size_bytes: 10, mime_type: "image/png" }], errors: [] }));
+  await emitHeard("attachments-staged", { drop_id: "pending-drop", staged: [{ id: "one", filename: "one.png", size_bytes: 10, mime_type: "image/png" }], errors: [] });
   if (!saveFirst) {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(calls).not.toContain("restart_to_update");
@@ -340,11 +346,11 @@ test.each([true, false])("restart_waits_for_staging_and_durable_save (saveFirst=
 test("restart_keeps_files_arriving_during_its_wait", async () => {
   const calls = await ready();
   const file = { id: "one", filename: "one.txt", size_bytes: 1, mime_type: "text/plain" };
-  await act(() => emit("attachments-staged", { staged: [file], errors: [] }));
-  await act(() => emit("attachments-staging", "pending"));
+  await emitHeard("attachments-staged", { staged: [file], errors: [] });
+  await emitHeard("attachments-staging", "pending");
   await restart();
   expect(calls).not.toContain("restart_to_update");
-  await act(() => emit("attachments-staged", { drop_id: "pending", staged: [{ ...file, id: "two", filename: "two.txt" }], errors: [] }));
+  await emitHeard("attachments-staged", { drop_id: "pending", staged: [{ ...file, id: "two", filename: "two.txt" }], errors: [] });
   expect(JSON.parse(localStorage.getItem("saved-draft")!)).toMatchObject({ attachmentIds: ["one", "two"] });
   expect(calls.filter(c => c === "restart_to_update")).toHaveLength(1);
 });

@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
+import { emitHeard, mockBackend } from "./tauri-test";
 // @ts-expect-error Node types are not installed for the frontend.
 import { readFileSync } from "node:fs";
 import { behaviourTest, noticeMessage, type BehaviourExpectation } from "./behaviour-test";
@@ -51,7 +52,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
   mockConvertFileSrc("macos");
-  mockIPC(
+  mockBackend(
     async (cmd, args) => {
       calls.push({ cmd, args });
       await opts.gates?.[cmd];
@@ -133,7 +134,6 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (["rename_topic", "delete_topic", "move_item"].includes(cmd)) return null;
       if (cmd === "plugin:opener|open_url") return null;
     },
-    { shouldMockEvents: true },
   );
   return calls;
 }
@@ -766,12 +766,12 @@ for (const operation of ["pick", "drop"]) {
     pasteFailure("old.mov");
     await screen.findByRole("alert");
     if (operation === "pick") await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
-    else await act(() => emit("attachments-staging", "pending-drop"));
+    else await emitHeard("attachments-staging", "pending-drop");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     pasteFailure("newer.mov");
     expect(await screen.findByRole("alert")).toHaveTextContent("newer.mov is over 100 MB");
     if (operation === "pick") await act(async () => { finish(); });
-    else await act(() => emit("attachments-staged", { drop_id: "pending-drop", staged: [scan], errors: [] }));
+    else await emitHeard("attachments-staged", { drop_id: "pending-drop", staged: [scan], errors: [] });
     await screen.findByRole("button", { name: "scan.png" });
     expect(screen.getByRole("alert")).toHaveTextContent("newer.mov is over 100 MB");
   });
@@ -818,9 +818,7 @@ test("files staged from a drop become chips, and failures are named", async () =
   localStorage.setItem("place", "inbox");
   render(<App />);
   await screen.findByLabelText("New Item");
-  await act(() =>
-    emit("attachments-staged", { staged: [scan], errors: ["Photos failed to attach.", "big.bin is over 100 MB"] }),
-  );
+  await emitHeard("attachments-staged", { staged: [scan], errors: ["Photos failed to attach.", "big.bin is over 100 MB"] });
   expect(await screen.findByRole("button", { name: "scan.png" })).toBeInTheDocument();
   expect(screen.getAllByRole("alert").map(el => el.textContent)).toEqual(["Photos failed to attach.", "big.bin is over 100 MB"]);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -1893,7 +1891,7 @@ test.each(["drop", "paste", "pick"] as const)("editor refuses Save and Enter dur
   render(<App />);
   await openEdit("receipt");
   const box = screen.getByRole("textbox", { name: "Edit Item" });
-  if (source === "drop") await act(() => emit("attachments-staging", "pending"));
+  if (source === "drop") await emitHeard("attachments-staging", "pending");
   else if (source === "paste") fireEvent.paste(box, {
     clipboardData: { files: [new File(["x"], "scan.png", { type: "image/png" })], getData: () => "" },
   });
@@ -1906,7 +1904,7 @@ test.each(["drop", "paste", "pick"] as const)("editor refuses Save and Enter dur
     expect(save).toBeDisabled();
     await userEvent.click(save);
     expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
-    if (source === "drop") await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+    if (source === "drop") await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
     else await act(async () => { release(); });
     await within(editorOf()).findByRole("button", { name: scan.filename });
     expect(save).toBeEnabled();
@@ -1921,14 +1919,14 @@ test("editor cannot trash an empty Item while a drop is pending", async () => {
   await openEdit("receipt");
   const box = screen.getByRole("textbox", { name: "Edit Item" });
   await userEvent.clear(box);
-  await act(() => emit("attachments-staging", "pending"));
+  await emitHeard("attachments-staging", "pending");
   const primary = within(editorOf()).getByRole("button", { name: /^(Save|Move to Trash)$/ });
   fireEvent.keyDown(box, { key: "Enter" });
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
   expect(primary).toBeDisabled();
   await userEvent.click(primary);
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
   expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "", addIds: [scan.id], removeIds: [], baseRev: 0 } });
 });
@@ -1937,14 +1935,14 @@ test("switching Items while importing asks and discards the pending drop", async
   const calls = backend(configured, { items: () => [filed("1", "receipt", null), filed("2", "second", null)] });
   render(<App />);
   await openEdit("receipt");
-  await act(() => emit("attachments-staging", "pending"));
+  await emitHeard("attachments-staging", "pending");
   await openEdit("second");
   await userEvent.click(screen.getByRole("button", { name: "Keep Editing" }));
   expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("receipt");
   await openEdit("second");
   await userEvent.click(screen.getByRole("button", { name: "Discard" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("second"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
   expect(within(editorOf()).queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
@@ -1982,8 +1980,8 @@ test("a drop while editing goes to the editor", async () => {
   await userEvent.click(screen.getByRole("textbox", { name: "New Item" }));
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.getAllByText("Drop to attach")).toHaveLength(1);
-  await act(() => emit("attachments-staging", "d1"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" }));
+  await emitHeard("attachments-staging", "d1");
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" });
   expect(await within(editorOf()).findByRole("button", { name: scan.filename })).toBeVisible();
   expect(within(screen.getByLabelText("New Item").closest("form")!).queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls.some(c => c.cmd === "unstage_attachment")).toBe(false);
@@ -1999,8 +1997,8 @@ test("Search closes an unchanged editor and refuses drops under results", async 
   await screen.findByText("No Items match.");
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
-  await act(() => emit("attachments-staging", "d1"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" }));
+  await emitHeard("attachments-staging", "d1");
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   expect(document.querySelector(".nb-editor")).toBeNull();
 });
@@ -2009,14 +2007,14 @@ test("cancelling an editor rejects its pending drop and the next drop goes to th
   const calls = backend(configured, { items: () => [filed("1", "receipt", null)] });
   render(<App />);
   await openEdit("receipt");
-  await act(() => emit("attachments-staging", "cancelled"));
+  await emitHeard("attachments-staging", "cancelled");
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Cancel" }));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "cancelled" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "cancelled" });
   expect(screen.queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   const next = { ...scan, id: "next", filename: "next.png" };
-  await act(() => emit("attachments-staging", "next"));
-  await act(() => emit("attachments-staged", { staged: [next], errors: [], drop_id: "next" }));
+  await emitHeard("attachments-staging", "next");
+  await emitHeard("attachments-staged", { staged: [next], errors: [], drop_id: "next" });
   expect(await within(screen.getByLabelText("New Item").closest("form")!).findByRole("button", { name: next.filename })).toBeVisible();
   expect(calls).not.toContainEqual({ cmd: "unstage_attachment", args: { id: next.id } });
 });
@@ -2028,11 +2026,11 @@ test("editor drop warnings clear on start, append failures, and survive success"
   const box = screen.getByRole("textbox", { name: "Edit Item" });
   fireEvent.paste(box, { clipboardData: { files: [{ name: "old.mov", size: MAX_ATTACHMENT_BYTES + 1 }], getData: () => "" } });
   await within(editorOf()).findByRole("alert");
-  await act(() => emit("attachments-staging", "d1"));
+  await emitHeard("attachments-staging", "d1");
   expect(within(editorOf()).queryByRole("alert")).not.toBeInTheDocument();
   fireEvent.paste(box, { clipboardData: { files: [{ name: "new.mov", size: MAX_ATTACHMENT_BYTES + 1 }], getData: () => "" } });
   await within(editorOf()).findByText("new.mov is over 100 MB");
-  await act(() => emit("attachments-staged", { staged: [scan], errors: ["big.bin is over 100 MB"], drop_id: "d1" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: ["big.bin is over 100 MB"], drop_id: "d1" });
   expect(within(editorOf()).getByText("new.mov is over 100 MB")).toBeVisible();
   expect(within(editorOf()).getByText("big.bin is over 100 MB")).toBeVisible();
   expect(within(editorOf()).getByRole("button", { name: scan.filename })).toBeVisible();
@@ -2364,7 +2362,7 @@ test("a drop in Trash attaches nothing and shows no drop target", async () => {
   const calls = backend(configured);
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [] });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
   await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
   expect(screen.queryByRole("button", { name: "scan.png" })).not.toBeInTheDocument();
@@ -4532,7 +4530,7 @@ test("viewer rejects file drops and leaves the Composer empty", async () => {
   const { calls, ui } = await startViewer();
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [] });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
   await userEvent.click(ui.getByRole("button", { name: "Close image" }));
   expect(screen.queryByRole("button", { name: "scan.png" })).not.toBeInTheDocument();
@@ -5427,9 +5425,9 @@ behaviourTest("search.topics", async expected => {
   backend(configured);
   render(<App />);
   await screen.findByLabelText("New Item");
-  await act(() => emit("attachments-staging", "tile"));
+  await emitHeard("attachments-staging", "tile");
   expect(screen.getByLabelText("Attachments to send")).toContainElement(screen.getByLabelText("1 import pending"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "tile" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "tile" });
   expect(screen.queryByLabelText("1 import pending")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: scan.filename })).toBeVisible();
 });
@@ -5512,8 +5510,8 @@ for (const editing of [false, true]) {
     await act(() => emit("tauri://drag-enter", { paths: ["/tmp/other.png"], position: { x: 0, y: 0 } }));
     expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
     const other = { ...scan, id: "other", filename: "other.png" };
-    await act(() => emit("attachments-staging", "blocked"));
-    await act(() => emit("attachments-staged", { staged: [other], errors: [], drop_id: "blocked" }));
+    await emitHeard("attachments-staging", "blocked");
+    await emitHeard("attachments-staged", { staged: [other], errors: [], drop_id: "blocked" });
     expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "other" } });
     await userEvent.click(within(viewer).getByRole("button", { name: "Close image" }));
     expect(screen.queryByRole("button", { name: "other.png" })).not.toBeInTheDocument();
