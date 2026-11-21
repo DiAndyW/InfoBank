@@ -21,6 +21,8 @@ pub enum SyncError {
     Failed(String),
 }
 
+pub type Sleep = Arc<dyn Fn(Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 #[derive(Debug, PartialEq)]
 pub enum Wait {
     For(Duration),
@@ -529,7 +531,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
         set_status(&app, status);
         match wait {
             Wait::For(d) => {
-                let _ = tokio::time::timeout(d, state.wake.notified()).await;
+                futures_util::future::select((state.sleep)(d), std::pin::pin!(state.wake.notified())).await;
             }
             Wait::UntilSettingsSaved => state.settings_saved.notified().await,
             Wait::UntilWoken => state.wake.notified().await,
@@ -1124,7 +1126,7 @@ pub(crate) mod server_tests {
     }
 
     /// A stand-in Server that rejects every request; returns its URL and how many requests it got.
-    fn reject_all() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    fn reject_all(status: &'static str) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1133,23 +1135,57 @@ pub(crate) mod server_tests {
             for mut stream in listener.incoming().flatten() {
                 let _ = std::io::Read::read(&mut stream, &mut [0; 4096]);
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let _ = std::io::Write::write_all(
-                    &mut stream,
-                    b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-                );
+                let reply = format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                let _ = std::io::Write::write_all(&mut stream, reply.as_bytes());
             }
         });
         (url, requests)
     }
 
+    /// Time that moves only when the test advances it.
+    #[derive(Clone, Default)]
+    struct TestClock(Arc<Mutex<Timeline>>);
+
+    #[derive(Default)]
+    struct Timeline {
+        now: Duration,
+        sleepers: Vec<(Duration, tokio::sync::oneshot::Sender<()>)>,
+    }
+
+    impl TestClock {
+        fn sleep(&self) -> Sleep {
+            let clock = self.clone();
+            Arc::new(move |d| {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let mut timeline = clock.0.lock().unwrap();
+                let deadline = timeline.now + d;
+                timeline.sleepers.push((deadline, tx));
+                Box::pin(async move {
+                    let _ = rx.await;
+                })
+            })
+        }
+
+        fn advance(&self, by: Duration) {
+            let mut timeline = self.0.lock().unwrap();
+            timeline.now += by;
+            let now = timeline.now;
+            let (due, waiting) = std::mem::take(&mut timeline.sleepers).into_iter().partition(|(deadline, _)| *deadline <= now);
+            timeline.sleepers = waiting;
+            for (_, tx) in due {
+                let _ = tx.send(());
+            }
+        }
+    }
+
     /// The app as the sync loop sees it, set up for `url` with a stored secret.
-    fn app_for(url: &str, dir: &tempfile::TempDir) -> tauri::App<tauri::test::MockRuntime> {
+    fn app_for(url: &str, dir: &tempfile::TempDir, clock: &TestClock) -> tauri::App<tauri::test::MockRuntime> {
         let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
         conn.execute("UPDATE device SET server_url = ?1", [url]).unwrap();
         let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         secret.set_password("not-the-secret").unwrap();
         let app = tauri::test::mock_app();
-        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        app.manage(AppState { sleep: clock.sleep(), ..AppState::new(conn, secret, dir.path().to_path_buf()) });
         app
     }
 
@@ -1181,7 +1217,7 @@ pub(crate) mod server_tests {
             }
         });
         let dir = tempfile::tempdir().unwrap();
-        let app = app_for(&url, &dir);
+        let app = app_for(&url, &dir, &TestClock::default());
         app.state::<AppState>()
             .db
             .lock()
@@ -1207,31 +1243,53 @@ pub(crate) mod server_tests {
 
     #[tokio::test]
     async fn a_rejected_secret_is_tried_once_per_save() {
-        let (url, requests) = reject_all();
+        let (url, requests) = reject_all("401 Unauthorized");
         let dir = tempfile::tempdir().unwrap();
-        let app = app_for(&url, &dir);
+        let clock = TestClock::default();
+        let app = app_for(&url, &dir, &clock);
         // Settings were saved while sync was idle, so nothing was waiting for the notification.
         app.state::<AppState>().settings_saved.notify_one();
         tokio::spawn(run(app.handle().clone()));
         until("the unauthorized status", || *app.state::<AppState>().status.lock().unwrap() == "unauthorized").await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        clock.advance(MAX_BACKOFF * 2);
+        tokio::time::sleep(Duration::from_millis(300)).await;
 
         assert_eq!(seen(&requests), 1, "each failure counts toward the Server's lockout");
     }
 
     #[tokio::test]
-    async fn a_keychain_error_waits_for_the_user() {
-        let (url, requests) = reject_all();
+    async fn a_failed_sync_retries_only_once_the_backoff_has_passed() {
+        let (url, requests) = reject_all("500 Internal Server Error");
         let dir = tempfile::tempdir().unwrap();
-        let app = app_for(&url, &dir);
+        let clock = TestClock::default();
+        let app = app_for(&url, &dir, &clock);
+        tokio::spawn(run(app.handle().clone()));
+        until("the offline status", || *app.state::<AppState>().status.lock().unwrap() == "offline").await;
+        assert_eq!(seen(&requests), 1);
+
+        clock.advance(Duration::from_millis(1999));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(seen(&requests), 1, "retried before the backoff");
+
+        clock.advance(Duration::from_millis(2));
+        until("the retry", || seen(&requests) == 2).await;
+    }
+
+    #[tokio::test]
+    async fn a_keychain_error_waits_for_the_user() {
+        let (url, requests) = reject_all("401 Unauthorized");
+        let dir = tempfile::tempdir().unwrap();
+        let clock = TestClock::default();
+        let app = app_for(&url, &dir, &clock);
         let state = app.state::<AppState>();
         // Fails the next read only, as when the user denies the macOS prompt once.
         let mock: &keyring_core::mock::Cred = state.secret.as_any().downcast_ref().unwrap();
         mock.set_error(keyring_core::Error::PlatformFailure("User canceled the operation.".into()));
         tokio::spawn(run(app.handle().clone()));
 
-        // Longer than the first backoff, so a retry on a timer would have reached the Server.
-        tokio::time::sleep(Duration::from_millis(2500)).await;
+        until("the keychain status", || *state.status.lock().unwrap() == "keychain").await;
+        clock.advance(MAX_BACKOFF * 2);
+        tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(seen(&requests), 0, "retried without the user asking");
         assert_eq!(*state.status.lock().unwrap(), "keychain");
 
@@ -1370,7 +1428,7 @@ pub(crate) mod server_tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn thumbnail_authorization_failure_backs_off_without_affecting_the_original() {
-        let (url, requests) = reject_all();
+        let (url, requests) = reject_all("401 Unauthorized");
         let a = device_at(&url, "secret");
         let original = include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic");
         let staged = crate::files::stage_bytes(&a.dir, "photo.heic", original).unwrap();

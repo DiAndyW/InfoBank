@@ -3,7 +3,7 @@ import Network
 import Synchronization
 
 enum HarnessError: Error {
-    case postgres, serverExited, pushRefused(String), notReady(log: String), foreignServer(port: UInt16, status: Int)
+    case postgres, pushRefused(String), notReady(log: String), foreignServer(port: UInt16, status: Int)
 }
 
 private let adminURL = ProcessInfo.processInfo.environment["NOTEBANK_TEST_ADMIN_URL"] ?? "postgres:///postgres"
@@ -163,7 +163,6 @@ final class FakeServer: Sendable {
     private let queue = DispatchQueue(label: "FakeServer")
     private let handler: @Sendable (Request) -> Response
     private let hits = Mutex<[String: Int]>([:])
-    private let ready = Mutex(false)
 
     init(_ handler: @escaping @Sendable (Request) -> Response) async throws {
         let parameters = NWParameters.tcp
@@ -174,12 +173,19 @@ final class FakeServer: Sendable {
             connection.start(queue: self?.queue ?? .global())
             self?.receive(connection, buffer: Data())
         }
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .ready = state { self?.ready.withLock { $0 = true } }
+        let listener = listener
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready: continuation.resume()
+                case .failed(let error): continuation.resume(throwing: error)
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                default: return
+                }
+                listener.stateUpdateHandler = nil
+            }
+            listener.start(queue: queue)
         }
-        listener.start(queue: queue)
-        for _ in 0..<200 where !ready.withLock({ $0 }) { try await Task.sleep(for: .milliseconds(10)) }
-        guard ready.withLock({ $0 }) else { throw HarnessError.serverExited }
     }
 
     deinit { listener.cancel() }

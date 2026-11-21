@@ -5,12 +5,14 @@ import Observation
 @MainActor @Observable
 public final class TopicDeletionModel {
     private static let pageSize = 50
+    static let debounce = Duration.milliseconds(150)
     public var text = "" {
         didSet {
             pending?.cancel()
             guard !text.allSatisfy(\.isWhitespace) else { return run() }
-            pending = Task { [weak self, debounce] in
-                try? await Task.sleep(for: debounce)
+            let alarm = clock.alarm(after: Self.debounce)
+            pending = Task { [weak self] in
+                try? await alarm()
                 guard !Task.isCancelled else { return }
                 self?.run()
             }
@@ -23,15 +25,15 @@ public final class TopicDeletionModel {
     public private(set) var error: String?
     private let store: Store
     private let topicID: String
-    private let debounce: Duration
+    private let clock: any Clock<Duration>
     private var loadedText = ""
     @ObservationIgnored private var pending: Task<Void, Never>?
     @ObservationIgnored private var observation: AnyDatabaseCancellable?
 
-    public init(store: Store, topicID: String, debounce: Duration = .milliseconds(150)) {
+    public init(store: Store, topicID: String, clock: any Clock<Duration> = ContinuousClock()) {
         self.store = store
         self.topicID = topicID
-        self.debounce = debounce
+        self.clock = clock
         run()
         observation = store.observeChanges(
             onChange: { [weak self] in

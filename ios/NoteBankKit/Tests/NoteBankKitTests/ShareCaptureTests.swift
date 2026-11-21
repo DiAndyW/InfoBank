@@ -1,5 +1,7 @@
+import Clocks
 import Foundation
 import GRDB
+import Synchronization
 import Testing
 @testable import NoteBankKit
 
@@ -115,9 +117,19 @@ extension ShareCaptureTests {
         try store.saveSettings(url: server.url, newSecret: "secret", secrets: secrets)
         let item = try store.capture(text: "offline-safe", to: .inbox, nowUs: 1)
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false, sessionIdentifier: AttachmentTransfers.shareSessionIdentifier)
+        let clock = TestClock()
+        let finished = Mutex(false)
+        let delivery = Task {
+            let result = await deliverSharedCapture(item, store: store, secrets: secrets, transfers: transfers, timeout: .seconds(8), clock: clock)
+            finished.withLock { $0 = true }
+            return result
+        }
+        #expect(try await eventually { server.requests(to: "/sync/push") == 1 })
+        await clock.advance(by: .seconds(8) - .milliseconds(1))
+        #expect(!finished.withLock { $0 })
+        await clock.advance(by: .milliseconds(2))
         let start = ContinuousClock.now
-        let result = await deliverSharedCapture(item, store: store, secrets: secrets, transfers: transfers, timeout: .milliseconds(50))
-        #expect(result == .savedLocally)
+        #expect(await delivery.value == .savedLocally)
         // The Server holds its reply for 10 s, so waiting for it would take far longer.
         #expect(start.duration(to: .now) < .seconds(5))
         #expect(try await store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM outbox") } == 1)

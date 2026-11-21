@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import Testing
 @testable import NoteBankKit
@@ -11,7 +12,8 @@ import Testing
             ids.append(try store.capture(text: "Library note \(n)", to: .topic(topic), nowUs: Int64(n + 2)))
         }
         _ = try store.capture(text: "Library outsider", to: .inbox, nowUs: 90)
-        let model = TopicDeletionModel(store: store, topicID: topic, debounce: .zero)
+        let clock = TestClock()
+        let model = TopicDeletionModel(store: store, topicID: topic, clock: clock)
         #expect(model.total == 60)
         #expect(model.items.count == 50)
         #expect(model.hasMore)
@@ -19,12 +21,18 @@ import Testing
         #expect(model.items.map(\.id) == ids.reversed())
         #expect(!model.hasMore)
         model.kept = [ids[0], ids[59]]
+        model.text = "note"
+        await clock.advance(by: TopicDeletionModel.debounce / 2)
         model.text = "note 59"
-        #expect(await waitUntil { model.items.map(\.id) == [ids[59]] })
+        await clock.advance(by: TopicDeletionModel.debounce - .milliseconds(1))
+        #expect(model.items.count == 60)
+        await clock.advance(by: .milliseconds(2))
+        #expect(model.items.map(\.id) == [ids[59]])
         #expect(model.total == 60)
         #expect(model.kept == [ids[0], ids[59]])
         model.text = "no matches"
-        #expect(await waitUntil { model.items.isEmpty })
+        await clock.advance(by: TopicDeletionModel.debounce + .milliseconds(1))
+        #expect(model.items.isEmpty)
         model.text = ""
         #expect(model.items.count == 50)
         #expect(model.kept == [ids[0], ids[59]])

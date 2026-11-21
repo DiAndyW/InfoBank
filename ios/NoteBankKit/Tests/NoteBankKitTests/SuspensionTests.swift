@@ -1,3 +1,4 @@
+import Clocks
 import GRDB
 import Observation
 import Synchronization
@@ -53,10 +54,12 @@ extension QuickCaptureSuspensionTests {
         defer { observation.cancel(); store.resumeFileDatabaseAccess() }
         let feed = FeedModel(store: store, place: .all)
         let places = PlacesModel(store: store)
-        let search = SearchModel(store: store, debounce: .zero)
+        let clock = TestClock()
+        let search = SearchModel(store: store, clock: clock)
         let deletion = TopicDeletionModel(store: store, topicID: "t")
         search.text = "Fresh"
         store.suspendFileDatabaseAccess()
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
         try await Task.sleep(for: .milliseconds(500))
         #expect(changes.withLock { $0 } == 0)
         #expect(failures.withLock { $0 } == 0)
