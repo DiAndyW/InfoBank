@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import GRDB
 import Testing
@@ -6,6 +7,7 @@ import Testing
 @MainActor
 struct SearchModelTests {
     private static let newYork = TimeZone(identifier: "America/New_York")!
+    private let clock = TestClock()
 
     private func calendar() -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -20,7 +22,7 @@ struct SearchModelTests {
     private func utcUs(_ rfc3339: String) -> Int64 { Time.micros(rfc3339: rfc3339)! }
 
     private func model(_ store: Store, now: Date = Date(timeIntervalSince1970: 1_800_000_000)) -> SearchModel {
-        SearchModel(store: store, calendar: calendar(), now: { now }, debounce: .milliseconds(20))
+        SearchModel(store: store, calendar: calendar(), now: { now }, clock: clock)
     }
 
     private func put(_ store: Store, _ id: String, _ text: String, at captureTimeUs: Int64 = 1, files: Bool = false) throws {
@@ -68,8 +70,10 @@ struct SearchModelTests {
         try put(store, "a", "the invoice")
         let search = model(store)
         search.text = "invoice"
+        await clock.advance(by: SearchModel.debounce - .milliseconds(1))
         #expect(search.results.isEmpty)
-        #expect(await waitUntil { search.results.map(\.id) == ["a"] })
+        await clock.advance(by: .milliseconds(2))
+        #expect(search.results.map(\.id) == ["a"])
     }
 
     @Test func aNewerKeystrokeCancelsThePendingRun() async throws {
@@ -77,11 +81,13 @@ struct SearchModelTests {
         try put(store, "a", "the invoice")
         let search = model(store)
         search.text = "inv"
+        await clock.advance(by: SearchModel.debounce / 2)
         search.text = "zzz"
-        #expect(await waitUntil { search.isEmptyResult })
+        await clock.advance(by: SearchModel.debounce / 2 + .milliseconds(1))
         #expect(search.results.isEmpty)
-        try await Task.sleep(for: .milliseconds(80))
-        #expect(search.results.isEmpty)
+        #expect(!search.isEmptyResult)
+        await clock.advance(by: SearchModel.debounce)
+        #expect(search.isEmptyResult)
     }
 
     @Test func filtersRunAtOnce() async throws {
@@ -90,7 +96,8 @@ struct SearchModelTests {
         try put(store, "withfile", "note two", at: 2, files: true)
         let search = model(store)
         search.text = "note"
-        #expect(await waitUntil { search.results.count == 2 })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(search.results.count == 2)
         search.hasFiles = true
         #expect(search.results.map(\.id) == ["withfile"])
         search.hasFiles = false
@@ -106,7 +113,8 @@ struct SearchModelTests {
         try put(store, "a", "the invoice")
         let search = model(store)
         search.text = "invoice"
-        #expect(await waitUntil { !search.results.isEmpty })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(!search.results.isEmpty)
         search.text = "  "
         #expect(search.results.isEmpty)
         #expect(search.query == nil)
@@ -118,7 +126,8 @@ struct SearchModelTests {
         let (store, _) = try tempStore()
         let search = model(store)
         search.text = "invoice"
-        #expect(await waitUntil { search.isEmptyResult })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(search.isEmptyResult)
 
         let first = try store.capture(text: "invoice one", to: .inbox, nowUs: 1_000)
         #expect(await waitUntil { search.results.map(\.id) == [first] })
@@ -222,12 +231,14 @@ struct SearchModelTests {
         try put(store, "other", "zzz", at: 1)
         let search = model(store)
         search.text = "invoice"
-        #expect(await waitUntil { search.results.count == 100 })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(search.results.count == 100)
         search.text = "zzz"
         search.loadMore()
         #expect(search.results.count == 101)
         #expect(search.results.allSatisfy { $0.item.text!.hasPrefix("invoice") })
-        #expect(await waitUntil { search.results.map(\.id) == ["other"] })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(search.results.map(\.id) == ["other"])
     }
 
     @Test func loadMorePages() async throws {
@@ -235,7 +246,8 @@ struct SearchModelTests {
         for n in 1...101 { try put(store, "i\(n)", "needle \(n)", at: Int64(n)) }
         let search = model(store)
         search.text = "needle"
-        #expect(await waitUntil { search.results.count == 100 })
+        await clock.advance(by: SearchModel.debounce + .milliseconds(1))
+        #expect(search.results.count == 100)
         #expect(search.hasMore)
         search.loadMore()
         #expect(search.results.count == 101)

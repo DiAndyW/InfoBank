@@ -137,8 +137,9 @@ private enum ShareCaptureFailure: Error {
     case refused
 }
 
-public func deliverSharedCapture(_ itemID: String, store: Store, secrets: SecretStore, transfers: AttachmentTransfers, timeout: Duration = .seconds(8)) async -> ShareDelivery {
-    await withTaskGroup(of: ShareDelivery.self) { group in
+public func deliverSharedCapture(_ itemID: String, store: Store, secrets: SecretStore, transfers: AttachmentTransfers, timeout: Duration = .seconds(8), clock: any Clock<Duration> = ContinuousClock()) async -> ShareDelivery {
+    let alarm = clock.alarm(after: timeout)
+    return await withTaskGroup(of: ShareDelivery.self) { group in
         group.addTask {
             do {
                 let inbox = try await pushSharedCapture(itemID, store: store, secrets: secrets)
@@ -149,7 +150,7 @@ public func deliverSharedCapture(_ itemID: String, store: Store, secrets: Secret
             catch { return .savedLocally }
         }
         group.addTask {
-            try? await Task.sleep(for: timeout)
+            try? await alarm()
             return .savedLocally
         }
         let result = await group.next() ?? .savedLocally

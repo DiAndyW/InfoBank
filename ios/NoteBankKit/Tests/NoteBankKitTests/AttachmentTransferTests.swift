@@ -188,8 +188,8 @@ extension AttachmentTransferTests {
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
         #expect(try await eventually { try store.uploadError(file.id) != nil })
-        try? await transfers.synchronize()
-        try await Task.sleep(for: .milliseconds(50))
+        let waiting = await #expect(throws: AttachmentError.self) { try await transfers.synchronize() }
+        #expect(waiting?.message == "An upload is waiting to retry")
         #expect(server.requests(to: "/attachments/" + file.id) == 1)
         #expect(try store.attachment(file.id)?.uploaded == false)
         try store.evictCache(nowUs: Time.nowUs(), maxFileBytes: 0)

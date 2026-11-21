@@ -10,13 +10,15 @@ public enum SearchDates: Hashable, Sendable {
 @MainActor @Observable
 public final class SearchModel {
     private static let pageSize = 100
+    static let debounce = Duration.milliseconds(150)
 
     public var text = "" {
         didSet {
             pending?.cancel()
             guard !text.allSatisfy(\.isWhitespace) else { return run() }
-            pending = Task { [weak self, debounce] in
-                try? await Task.sleep(for: debounce)
+            let alarm = clock.alarm(after: Self.debounce)
+            pending = Task { [weak self] in
+                try? await alarm()
                 guard !Task.isCancelled else { return }
                 self?.run()
             }
@@ -46,7 +48,7 @@ public final class SearchModel {
     private let store: Store
     private let calendar: Calendar
     private let now: @Sendable () -> Date
-    private let debounce: Duration
+    private let clock: any Clock<Duration>
 
     public var query: SearchQuery? {
         guard !text.allSatisfy(\.isWhitespace) else { return nil }
@@ -62,11 +64,11 @@ public final class SearchModel {
     public var hasFilters: Bool { place != .all || dates != .any || hasFiles }
     public var isEmptyResult: Bool { query != nil && query == lastRun && error == nil && results.isEmpty }
 
-    public init(store: Store, calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }, debounce: Duration = .milliseconds(150)) {
+    public init(store: Store, calendar: Calendar = .current, now: @escaping @Sendable () -> Date = { Date() }, clock: any Clock<Duration> = ContinuousClock()) {
         self.store = store
         self.calendar = calendar
         self.now = now
-        self.debounce = debounce
+        self.clock = clock
         observation = store.observeChanges(
             onChange: { [weak self] in self?.databaseChanged() },
             onError: { [weak self] in self?.error = errorMessage($0) })
