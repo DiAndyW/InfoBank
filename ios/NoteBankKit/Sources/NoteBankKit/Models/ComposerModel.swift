@@ -44,12 +44,14 @@ public final class ComposerModel {
     @ObservationIgnored private var generation = 0
     private var isSending = false
     private let store: Store
+    private let clock: any Clock<Duration>
     private let onCaptured: @MainActor () -> Void
 
     public var canSend: Bool { !isImporting && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty) }
 
-    public init(store: Store, destination: Destination, placeholder: String, draft: DraftPlace? = nil, initial: Draft? = nil, onCaptured: @escaping @MainActor () -> Void) {
+    public init(store: Store, destination: Destination, placeholder: String, draft: DraftPlace? = nil, initial: Draft? = nil, clock: any Clock<Duration> = ContinuousClock(), onCaptured: @escaping @MainActor () -> Void) {
         self.store = store
+        self.clock = clock
         self.onCaptured = onCaptured
         self.destination = destination
         self.placeholder = placeholder
@@ -62,8 +64,9 @@ public final class ComposerModel {
     private func scheduleDraftSave() {
         pendingSave?.cancel()
         guard draft != nil else { return }
+        let alarm = clock.alarm(after: .milliseconds(300))
         pendingSave = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(300)) }
+            do { try await alarm() }
             catch { return }
             self?.flushDraft()
         }

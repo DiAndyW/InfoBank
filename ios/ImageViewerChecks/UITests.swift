@@ -1,6 +1,20 @@
 import XCTest
+import UIKit
 
 final class ImageViewerUITests: XCTestCase {
+    @MainActor
+    private func assertPresentingPageIsDimmed(_ app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) throws {
+        let image = try XCTUnwrap(app.screenshot().image.cgImage, file: file, line: line)
+        let pixel = try XCTUnwrap(image.cropping(to: CGRect(x: CGFloat(image.width) * 0.1, y: CGFloat(image.height) * 0.25, width: 1, height: 1)), file: file, line: line)
+        var rgba = [UInt8](repeating: 0, count: 4)
+        let context = try XCTUnwrap(CGContext(data: &rgba, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), file: file, line: line)
+        context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        XCTAssertGreaterThan(rgba[0], 10, "The presenting red page is hidden", file: file, line: line)
+        XCTAssertLessThan(rgba[0], 200, "The presenting page isn't dimmed", file: file, line: line)
+        XCTAssertLessThan(rgba[1], 25, file: file, line: line)
+        XCTAssertLessThan(rgba[2], 25, file: file, line: line)
+    }
+
     @MainActor
     private func waitUntilHittable(_ element: XCUIElement) -> XCTWaiter.Result {
         XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: element)], timeout: 3)
@@ -128,13 +142,28 @@ final class ImageViewerUITests: XCTestCase {
         app.launch()
         app.buttons["Open images"].tap()
         XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 5))
+        let message = app.staticTexts["Attachment failed to open."]
+        XCTAssertTrue(message.exists)
+        try assertPresentingPageIsDimmed(app)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Centered preview failure"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        let failureFrame = message.frame.union(app.buttons["Retry"].frame)
+        XCTAssertLessThan(abs(failureFrame.midX - app.frame.midX), app.frame.width * 0.05)
+        XCTAssertLessThan(abs(failureFrame.midY - app.frame.midY), app.frame.height * 0.1)
         XCTAssertFalse(app.buttons["Share image"].isEnabled)
         XCTAssertTrue(app.staticTexts["first.jpg"].exists)
-        XCTAssertTrue(app.images["first.jpg"].exists)
+        XCTAssertFalse(app.images["first.jpg"].exists)
         app.buttons["Retry"].tap()
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["Share image"])
         waitForExpectations(timeout: 5)
         XCTAssertFalse(app.buttons["Retry"].exists)
+        let loadedScreenshot = XCTAttachment(screenshot: app.screenshot())
+        loadedScreenshot.name = "Preview over dimmed page"
+        loadedScreenshot.lifetime = .keepAlways
+        add(loadedScreenshot)
+        try assertPresentingPageIsDimmed(app)
         app.buttons["Close image"].tap()
         XCTAssertTrue(app.buttons["Open images"].waitForExistence(timeout: 5))
     }

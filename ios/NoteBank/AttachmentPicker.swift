@@ -181,14 +181,9 @@ struct AttachmentChipRow: View {
     }
 
     private func open(_ id: String) async throws -> URL {
-        do {
-            if staging.attachments.contains(where: { $0.id == id }) { return try staging.stagedFile(id) }
-            guard let transfers else { throw AttachmentError("This attachment can't be shown here.") }
-            return try await transfers.open(id)
-        } catch {
-            let name = staging.attachments.first(where: { $0.id == id })?.filename ?? kept.first(where: { $0.id == id })?.filename ?? "Attachment"
-            throw AttachmentError(failureMessage("\(name) failed to open.", error))
-        }
+        if staging.attachments.contains(where: { $0.id == id }) { return try staging.stagedFile(id) }
+        guard let transfers else { throw AttachmentError("This attachment can't be shown here.") }
+        return try await transfers.open(id)
     }
 
     private func thumbnail(_ id: String) async -> URL? {

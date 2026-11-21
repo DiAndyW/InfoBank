@@ -11,7 +11,11 @@ pub fn message<E: Display + 'static>(error: E) -> String {
         eprintln!("File error kind: {:?}, OS code: {:?}", error.kind(), error.raw_os_error());
         "NoteBank couldn't access that file."
     } else if let Some(error) = value.downcast_ref::<reqwest::Error>() {
-        eprintln!("Network status: {:?}, timeout: {}, connect: {}", error.status(), error.is_timeout(), error.is_connect());
+        let io = std::iter::successors(std::error::Error::source(error), |e| e.source()).find_map(|e| e.downcast_ref::<std::io::Error>());
+        eprintln!(
+            "Network status: {:?}, timeout: {}, connect: {}, request: {}, body: {}, decode: {}, io: {:?}",
+            error.status(), error.is_timeout(), error.is_connect(), error.is_request(), error.is_body(), error.is_decode(), io.map(|e| e.kind())
+        );
         "Couldn't reach the Server."
     } else {
         "Something went wrong. Try again."

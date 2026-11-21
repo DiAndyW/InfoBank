@@ -4,6 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
+import { emitHeard, mockBackend } from "./tauri-test";
 // @ts-expect-error Node types are not installed for the frontend.
 import { readFileSync } from "node:fs";
 import { behaviourTest, noticeMessage, type BehaviourExpectation } from "./behaviour-test";
@@ -51,7 +52,7 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
   const calls: { cmd: string; args: any }[] = [];
   mockWindows("main");
   mockConvertFileSrc("macos");
-  mockIPC(
+  mockBackend(
     async (cmd, args) => {
       calls.push({ cmd, args });
       await opts.gates?.[cmd];
@@ -133,7 +134,6 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (["rename_topic", "delete_topic", "move_item"].includes(cmd)) return null;
       if (cmd === "plugin:opener|open_url") return null;
     },
-    { shouldMockEvents: true },
   );
   return calls;
 }
@@ -232,11 +232,12 @@ test("multi-select Search copies results without opening or trashing them", asyn
   expect(calls.some(c => c.cmd === "set_items_trashed")).toBe(false);
 });
 
-test("a failed launch says why, and offers the data folder and Quit", async () => {
+behaviourTest("failure.storage_open", async expected => {
   const calls = backend(configured, { startup: { message: "Couldn't open the database: file is not a database", data_dir: "/Users/me/data" } });
   render(<App />);
   expect(await screen.findByText("NoteBank couldn't start")).toBeInTheDocument();
-  expect(screen.getByRole("alert")).toHaveTextContent("Couldn't open the database: file is not a database");
+  expect(screen.getByRole("alert")).toHaveTextContent(expected.message!);
+  expect(document.body.textContent).not.toContain("file is not a database");
   expect(screen.getByText(/\/Users\/me\/data/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Show folder" }));
   await userEvent.click(screen.getByRole("button", { name: "Quit" }));
@@ -420,7 +421,7 @@ test("a load failure is shown and can be retried", async () => {
     { shouldMockEvents: true },
   );
   render(<App />);
-  expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't read the keychain");
+  expect(await screen.findByRole("alert")).toHaveTextContent("NoteBank failed to open its storage.");
   failing = false;
   await userEvent.click(screen.getByRole("button", { name: "Try again" }));
   expect(await screen.findByText("Nothing here yet.")).toBeInTheDocument();
@@ -765,12 +766,12 @@ for (const operation of ["pick", "drop"]) {
     pasteFailure("old.mov");
     await screen.findByRole("alert");
     if (operation === "pick") await userEvent.click(screen.getByRole("button", { name: "Attach files" }));
-    else await act(() => emit("attachments-staging", "pending-drop"));
+    else await emitHeard("attachments-staging", "pending-drop");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     pasteFailure("newer.mov");
     expect(await screen.findByRole("alert")).toHaveTextContent("newer.mov is over 100 MB");
     if (operation === "pick") await act(async () => { finish(); });
-    else await act(() => emit("attachments-staged", { drop_id: "pending-drop", staged: [scan], errors: [] }));
+    else await emitHeard("attachments-staged", { drop_id: "pending-drop", staged: [scan], errors: [] });
     await screen.findByRole("button", { name: "scan.png" });
     expect(screen.getByRole("alert")).toHaveTextContent("newer.mov is over 100 MB");
   });
@@ -817,9 +818,7 @@ test("files staged from a drop become chips, and failures are named", async () =
   localStorage.setItem("place", "inbox");
   render(<App />);
   await screen.findByLabelText("New Item");
-  await act(() =>
-    emit("attachments-staged", { staged: [scan], errors: ["Photos failed to attach.", "big.bin is over 100 MB"] }),
-  );
+  await emitHeard("attachments-staged", { staged: [scan], errors: ["Photos failed to attach.", "big.bin is over 100 MB"] });
   expect(await screen.findByRole("button", { name: "scan.png" })).toBeInTheDocument();
   expect(screen.getAllByRole("alert").map(el => el.textContent)).toEqual(["Photos failed to attach.", "big.bin is over 100 MB"]);
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -834,7 +833,7 @@ test("a file chip opens the file, and says why it can't", async () => {
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Open report.pdf" }));
   expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: "a1" } });
-  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(await screen.findByText("Attachment failed to open. Can't download while offline")).toBeInTheDocument();
   expect(screen.getByText("2.3 MB")).toBeInTheDocument();
 });
 
@@ -844,11 +843,11 @@ test("a file chip can retry opening after an error", async () => {
   render(<App />);
   const chip = await screen.findByRole("button", { name: "Open report.pdf" });
   await userEvent.click(chip);
-  await screen.findByText("Can't download while offline");
+  await screen.findByText("Attachment failed to open. Can't download while offline");
   options.openError = undefined;
   await userEvent.click(chip);
   await vi.waitFor(() => expect(calls.filter(c => c.cmd === "open_attachment")).toHaveLength(2));
-  expect(screen.queryByText("Can't download while offline")).not.toBeInTheDocument();
+  expect(screen.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
 });
 
 test("an image shows its filename until the thumbnail arrives", async () => {
@@ -942,11 +941,11 @@ test("an attachment error clears after a few seconds", async () => {
     await act(async () => { render(<App />); });
     const chip = await screen.findByRole("button", { name: "Open report.pdf" });
     await user.click(chip);
-    await screen.findByText("Can't download while offline");
+    await screen.findByText("Attachment failed to open. Can't download while offline");
     await act(async () => vi.advanceTimersByTime(3000));
-    expect(screen.getByText("Can't download while offline")).toBeInTheDocument();
+    expect(screen.getByText("Attachment failed to open. Can't download while offline")).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTime(1000));
-    expect(screen.queryByText("Can't download while offline")).not.toBeInTheDocument();
+    expect(screen.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
     expect(chip).not.toHaveClass("is-error");
   } finally {
     vi.useRealTimers();
@@ -1172,13 +1171,14 @@ test("Move to filters its places as you type and keeps New Topic… below the li
   expect(calls).toContainEqual({ cmd: "move_item", args: { itemId: "1", target: { kind: "topic", id: "w" } } });
 });
 
-test("moving an Item to where it is does nothing", async () => {
+behaviourTest("item.move_to_current", async expected => {
   const calls = backend(configured, { topics: [topic("g", "Gym")], items: () => [filed("1", "x", null)] });
   render(<App />);
   await userEvent.click(within(await screen.findByRole("article")).getByRole("button", { name: "Item actions" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Move to" }));
   await userEvent.click(screen.getByRole("menuitemradio", { name: "Inbox" }));
-  expect(calls.some((c) => c.cmd === "move_item")).toBe(false);
+  expect(calls.some((c) => c.cmd === "move_item")).toBe(expected.offered);
+  expect(screen.queryByText(/^Moved to /)).not.toBeInTheDocument();
 });
 
 const grip = (text: string) => within(screen.getByText(text).closest("article") as HTMLElement).getByTitle("Drag to a Topic");
@@ -1891,7 +1891,7 @@ test.each(["drop", "paste", "pick"] as const)("editor refuses Save and Enter dur
   render(<App />);
   await openEdit("receipt");
   const box = screen.getByRole("textbox", { name: "Edit Item" });
-  if (source === "drop") await act(() => emit("attachments-staging", "pending"));
+  if (source === "drop") await emitHeard("attachments-staging", "pending");
   else if (source === "paste") fireEvent.paste(box, {
     clipboardData: { files: [new File(["x"], "scan.png", { type: "image/png" })], getData: () => "" },
   });
@@ -1904,7 +1904,7 @@ test.each(["drop", "paste", "pick"] as const)("editor refuses Save and Enter dur
     expect(save).toBeDisabled();
     await userEvent.click(save);
     expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
-    if (source === "drop") await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+    if (source === "drop") await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
     else await act(async () => { release(); });
     await within(editorOf()).findByRole("button", { name: scan.filename });
     expect(save).toBeEnabled();
@@ -1919,14 +1919,14 @@ test("editor cannot trash an empty Item while a drop is pending", async () => {
   await openEdit("receipt");
   const box = screen.getByRole("textbox", { name: "Edit Item" });
   await userEvent.clear(box);
-  await act(() => emit("attachments-staging", "pending"));
+  await emitHeard("attachments-staging", "pending");
   const primary = within(editorOf()).getByRole("button", { name: /^(Save|Move to Trash)$/ });
   fireEvent.keyDown(box, { key: "Enter" });
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
   expect(primary).toBeDisabled();
   await userEvent.click(primary);
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Save" }));
   expect(calls).toContainEqual({ cmd: "edit_item", args: { itemId: "1", text: "", addIds: [scan.id], removeIds: [], baseRev: 0 } });
 });
@@ -1935,14 +1935,14 @@ test("switching Items while importing asks and discards the pending drop", async
   const calls = backend(configured, { items: () => [filed("1", "receipt", null), filed("2", "second", null)] });
   render(<App />);
   await openEdit("receipt");
-  await act(() => emit("attachments-staging", "pending"));
+  await emitHeard("attachments-staging", "pending");
   await openEdit("second");
   await userEvent.click(screen.getByRole("button", { name: "Keep Editing" }));
   expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("receipt");
   await openEdit("second");
   await userEvent.click(screen.getByRole("button", { name: "Discard" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Edit Item" })).toHaveValue("second"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "pending" });
   expect(within(editorOf()).queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   expect(calls.some(c => c.cmd === "edit_item")).toBe(false);
@@ -1980,8 +1980,8 @@ test("a drop while editing goes to the editor", async () => {
   await userEvent.click(screen.getByRole("textbox", { name: "New Item" }));
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.getAllByText("Drop to attach")).toHaveLength(1);
-  await act(() => emit("attachments-staging", "d1"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" }));
+  await emitHeard("attachments-staging", "d1");
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" });
   expect(await within(editorOf()).findByRole("button", { name: scan.filename })).toBeVisible();
   expect(within(screen.getByLabelText("New Item").closest("form")!).queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls.some(c => c.cmd === "unstage_attachment")).toBe(false);
@@ -1997,8 +1997,8 @@ test("Search closes an unchanged editor and refuses drops under results", async 
   await screen.findByText("No Items match.");
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
-  await act(() => emit("attachments-staging", "d1"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" }));
+  await emitHeard("attachments-staging", "d1");
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "d1" });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   expect(document.querySelector(".nb-editor")).toBeNull();
 });
@@ -2007,14 +2007,14 @@ test("cancelling an editor rejects its pending drop and the next drop goes to th
   const calls = backend(configured, { items: () => [filed("1", "receipt", null)] });
   render(<App />);
   await openEdit("receipt");
-  await act(() => emit("attachments-staging", "cancelled"));
+  await emitHeard("attachments-staging", "cancelled");
   await userEvent.click(within(editorOf()).getByRole("button", { name: "Cancel" }));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "cancelled" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "cancelled" });
   expect(screen.queryByRole("button", { name: scan.filename })).not.toBeInTheDocument();
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: scan.id } });
   const next = { ...scan, id: "next", filename: "next.png" };
-  await act(() => emit("attachments-staging", "next"));
-  await act(() => emit("attachments-staged", { staged: [next], errors: [], drop_id: "next" }));
+  await emitHeard("attachments-staging", "next");
+  await emitHeard("attachments-staged", { staged: [next], errors: [], drop_id: "next" });
   expect(await within(screen.getByLabelText("New Item").closest("form")!).findByRole("button", { name: next.filename })).toBeVisible();
   expect(calls).not.toContainEqual({ cmd: "unstage_attachment", args: { id: next.id } });
 });
@@ -2026,11 +2026,11 @@ test("editor drop warnings clear on start, append failures, and survive success"
   const box = screen.getByRole("textbox", { name: "Edit Item" });
   fireEvent.paste(box, { clipboardData: { files: [{ name: "old.mov", size: MAX_ATTACHMENT_BYTES + 1 }], getData: () => "" } });
   await within(editorOf()).findByRole("alert");
-  await act(() => emit("attachments-staging", "d1"));
+  await emitHeard("attachments-staging", "d1");
   expect(within(editorOf()).queryByRole("alert")).not.toBeInTheDocument();
   fireEvent.paste(box, { clipboardData: { files: [{ name: "new.mov", size: MAX_ATTACHMENT_BYTES + 1 }], getData: () => "" } });
   await within(editorOf()).findByText("new.mov is over 100 MB");
-  await act(() => emit("attachments-staged", { staged: [scan], errors: ["big.bin is over 100 MB"], drop_id: "d1" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: ["big.bin is over 100 MB"], drop_id: "d1" });
   expect(within(editorOf()).getByText("new.mov is over 100 MB")).toBeVisible();
   expect(within(editorOf()).getByText("big.bin is over 100 MB")).toBeVisible();
   expect(within(editorOf()).getByRole("button", { name: scan.filename })).toBeVisible();
@@ -2362,7 +2362,7 @@ test("a drop in Trash attaches nothing and shows no drop target", async () => {
   const calls = backend(configured);
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [] });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
   await userEvent.click(screen.getByRole("button", { name: /^Inbox/ }));
   expect(screen.queryByRole("button", { name: "scan.png" })).not.toBeInTheDocument();
@@ -3284,7 +3284,7 @@ test("a failed Attachment copy shows why on the file", async () => {
   render(<App />);
   await openTunnel();
   await user.click(screen.getByRole("button", { name: "Copy report.pdf" }));
-  expect(await screen.findByText("Can't download while offline")).toBeInTheDocument();
+  expect(await screen.findByText("Attachment failed to copy. Can't download while offline")).toBeInTheDocument();
   expect(screen.queryByText("Copied")).not.toBeInTheDocument();
 });
 
@@ -4224,29 +4224,29 @@ test("viewer stored original never shows loading text", async () => {
   expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
 });
 
-test("viewer keeps thumbnail on download failure and Retry succeeds", async () => {
+test("viewer hides the thumbnail on download failure and Retry succeeds", async () => {
   const options: Options = { original: {} };
   const { calls, ui, dialog } = await startViewer(options);
-  expect(await ui.findByText("Can't download while offline")).toBeVisible();
-  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+  expect(await ui.findByText("Attachment failed to open. Can't download while offline")).toBeVisible();
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
   const retry = ui.getByRole("button", { name: "Retry" });
-  expect(ui.getByText("Can't download while offline")).not.toContainElement(retry);
+  expect(ui.getByText("Attachment failed to open. Can't download while offline")).not.toContainElement(retry);
   expect(retry.querySelector("svg")).not.toBeNull();
   options.original!.a2 = "/data/retried.jpg";
   await userEvent.click(retry);
   await vi.waitFor(() => expect(dialog.querySelector('img[src$="retried.jpg"]')).not.toBeNull());
   fireEvent.load(dialog.querySelector('img[src$="retried.jpg"]')!);
-  expect(ui.queryByText("Can't download while offline")).not.toBeInTheDocument();
+  expect(ui.queryByText("Attachment failed to open. Can't download while offline")).not.toBeInTheDocument();
   expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
 });
 
 for (const stored of [true, false]) {
-  test(`viewer failed display with stored=${stored} preserves thumbnail and correct recovery`, async () => {
+  test(`viewer failed display with stored=${stored} hides the thumbnail and offers the right recovery`, async () => {
     const { ui, dialog } = await startViewer({ stored: stored ? [photo.id] : [] });
     await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
     fireEvent.error(dialog.querySelector('img[src$="original.jpg"]')!);
     expect(await ui.findByText(stored ? "This image can't be shown here." : "Couldn't load this image")).toBeVisible();
-    expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("thumb.jpg"));
+    expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
     expect(!!ui.queryByRole("button", { name: "Retry" })).toBe(!stored);
     expect(ui.getByRole("button", { name: "Open original" })).toBeEnabled();
   });
@@ -4266,7 +4266,7 @@ test("viewer Open original awaits the existing download without fetching twice",
 test("viewer Open original after failure shares its transfer with Retry", async () => {
   const options: Options = { original: {} };
   const { calls, ui, dialog } = await startViewer(options);
-  await ui.findByText("Can't download while offline");
+  await ui.findByText("Attachment failed to open. Can't download while offline");
   let resolve!: (path: string) => void;
   options.original!.a2 = new Promise(done => { resolve = done; });
   await userEvent.click(ui.getByRole("button", { name: "Open original" }));
@@ -4282,10 +4282,18 @@ test("viewer Open original after failure shares its transfer with Retry", async 
   expect(calls.filter(c => c.cmd === "attachment_original")).toHaveLength(2);
 });
 
-test("viewer Open original reports external app errors", async () => {
-  const { ui } = await startViewer({ openError: "No application available" });
+test("viewer Open original reports external app errors and restores a loaded preview after success", async () => {
+  const failing: Record<string, string> = { open_attachment: "No application available" };
+  const { ui, dialog } = await startViewer({ failing });
+  await vi.waitFor(() => expect(dialog.querySelector('img[src$="original.jpg"]')).not.toBeNull());
+  fireEvent.load(dialog.querySelector('img[src$="original.jpg"]')!);
   await userEvent.click(ui.getByRole("button", { name: "Open original" }));
-  expect(await ui.findByText("No application available")).toBeVisible();
+  expect(await ui.findByText("Attachment failed to open.")).toBeVisible();
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
+  delete failing.open_attachment;
+  await userEvent.click(ui.getByRole("button", { name: "Open original" }));
+  expect(await ui.findByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", expect.stringContaining("original.jpg"));
+  expect(ui.queryByText("Attachment failed to open.")).not.toBeInTheDocument();
 });
 
 test("viewer arrows skip videos and runnable images and body Escape returns focus", async () => {
@@ -4445,7 +4453,7 @@ for (const outcome of ["load", "failure"]) {
       fireEvent.load(dialog.querySelector('img[src$="late.jpg"]')!);
     } else {
       await act(async () => reject("Download failed"));
-      expect(ui.getByText("Download failed")).toBeVisible();
+      expect(ui.getByText("Attachment failed to open.")).toBeVisible();
     }
     await act(async () => release());
     expect(ui.queryByText("Loading full image…")).not.toBeInTheDocument();
@@ -4470,19 +4478,23 @@ for (const multiple of [false, true]) {
   });
 }
 
-test("viewer Retry preserves the thumbnail while its lookup is pending", async () => {
+test("viewer shows the cached thumbnail again while Retry loads the original", async () => {
   let retrying = false;
-  const options: Options = { original: {}, thumbnailLookup: () => retrying ? new Promise(() => {}) : "/data/thumb.jpg" };
+  let fail!: (error: Error) => void;
+  const original = new Promise<string>((_, reject) => { fail = reject; });
+  const options: Options = { original: { a2: original }, thumbnailLookup: () => retrying ? new Promise(() => {}) : "/data/thumb.jpg" };
   const { ui } = await startViewer(options);
-  await ui.findByText("Can't download while offline");
-  const thumb = ui.getByRole("img", { name: "photo.jpg" });
+  const thumb = await ui.findByRole("img", { name: "photo.jpg" });
   Object.defineProperty(thumb, "naturalWidth", { value: 300 });
   fireEvent.load(thumb);
+  await act(async () => fail(new Error("offline")));
+  await ui.findByText("Attachment failed to open.");
+  expect(ui.queryByRole("img", { name: "photo.jpg" })).not.toBeInTheDocument();
   retrying = true;
   options.original!.a2 = new Promise(() => {});
   await userEvent.click(ui.getByRole("button", { name: "Retry" }));
-  expect(ui.getByRole("img", { name: "photo.jpg" })).toBe(thumb);
-  expect(thumb).toHaveClass("is-small");
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveAttribute("src", thumb.getAttribute("src"));
+  expect(ui.getByRole("img", { name: "photo.jpg" })).toHaveClass("is-small");
 });
 
 test("viewer Open original ignores repeated clicks until opening settles", async () => {
@@ -4518,7 +4530,7 @@ test("viewer rejects file drops and leaves the Composer empty", async () => {
   const { calls, ui } = await startViewer();
   await act(() => emit("tauri://drag-enter", { paths: ["/tmp/scan.png"], position: { x: 0, y: 0 } }));
   expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [] }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [] });
   expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "s1" } });
   await userEvent.click(ui.getByRole("button", { name: "Close image" }));
   expect(screen.queryByRole("button", { name: "scan.png" })).not.toBeInTheDocument();
@@ -5413,9 +5425,9 @@ behaviourTest("search.topics", async expected => {
   backend(configured);
   render(<App />);
   await screen.findByLabelText("New Item");
-  await act(() => emit("attachments-staging", "tile"));
+  await emitHeard("attachments-staging", "tile");
   expect(screen.getByLabelText("Attachments to send")).toContainElement(screen.getByLabelText("1 import pending"));
-  await act(() => emit("attachments-staged", { staged: [scan], errors: [], drop_id: "tile" }));
+  await emitHeard("attachments-staged", { staged: [scan], errors: [], drop_id: "tile" });
   expect(screen.queryByLabelText("1 import pending")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: scan.filename })).toBeVisible();
 });
@@ -5498,8 +5510,8 @@ for (const editing of [false, true]) {
     await act(() => emit("tauri://drag-enter", { paths: ["/tmp/other.png"], position: { x: 0, y: 0 } }));
     expect(screen.queryByText("Drop to attach")).not.toBeInTheDocument();
     const other = { ...scan, id: "other", filename: "other.png" };
-    await act(() => emit("attachments-staging", "blocked"));
-    await act(() => emit("attachments-staged", { staged: [other], errors: [], drop_id: "blocked" }));
+    await emitHeard("attachments-staging", "blocked");
+    await emitHeard("attachments-staged", { staged: [other], errors: [], drop_id: "blocked" });
     expect(calls).toContainEqual({ cmd: "unstage_attachment", args: { id: "other" } });
     await userEvent.click(within(viewer).getByRole("button", { name: "Close image" }));
     expect(screen.queryByRole("button", { name: "other.png" })).not.toBeInTheDocument();

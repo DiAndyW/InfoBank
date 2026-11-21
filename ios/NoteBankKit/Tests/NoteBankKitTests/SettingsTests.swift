@@ -43,6 +43,15 @@ struct SettingsTests {
         }
     }
 
+    @Test func serverURLComponentsMatchSharedWording() throws {
+        let expected = try Behaviour.rule("failure.server_url_components")
+        for input in ["https://user:pw@example.com", "https://example.com/?key=secret", "https://example.com/#fragment", "https://example.com/?", "https://example.com/#"] {
+            #expect(throws: SettingsError(message: expected.message())) {
+                try Store.normalizedServerURL(input)
+            }
+        }
+    }
+
     @Test func aBlankSecretIsRefused() throws {
         let (store, _) = try tempStore()
         let secrets = SecretStore.memory()
@@ -267,11 +276,7 @@ struct SettingsTests {
         var notices: [SyncNotice] = []
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         try await AttachmentTransfers(store: store, secrets: secrets, background: false).synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(try store.attachment(staged.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         let (other, _) = try tempStore(); let otherSecrets = SecretStore.memory()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: otherSecrets)
         _ = try await cycle(store: other, secrets: otherSecrets, http: .live, queued: &notices)

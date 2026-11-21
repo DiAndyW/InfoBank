@@ -20,7 +20,7 @@ fn menu(app: &AppHandle, hotkey: &Hotkey) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 pub fn build(app: &AppHandle, hotkey: &Hotkey) -> Result<(), String> {
-    let e = |e: tauri::Error| e.to_string();
+    let e = crate::error_message::message;
     let menu = menu(app, hotkey).map_err(e)?;
     #[cfg(target_os = "macos")]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-template.png")).map_err(e)?;

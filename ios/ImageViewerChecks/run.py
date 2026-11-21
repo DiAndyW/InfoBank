@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix="notebank-image-viewer-checks-") as temp
     sdk = run("xcrun", "--sdk", "iphonesimulator", "--show-sdk-path")
     run("xcrun", "swiftc", "-swift-version", "6", "-sdk", sdk, "-target", f"{run('uname', '-m')}-apple-ios26.0-simulator",
         "-parse-as-library", "-module-cache-path", "/tmp/notebank-paste-checks-module-cache",
-        str(repo / "ios/NoteBank/ImageViewer.swift"), str(repo / "ios/ImageViewerChecks/Probe.swift"),
+        str(repo / "ios/NoteBank/ImageViewer.swift"), str(repo / "ios/NoteBankKit/Sources/NoteBankKit/AttachmentFailure.swift"), str(repo / "ios/ImageViewerChecks/Probe.swift"),
         "-o", str(app / "ImageChecks"), env=dict(os.environ, SDKROOT=sdk))
     run("codesign", "--force", "--sign", "-", str(app))
     installed = False

@@ -12,7 +12,7 @@ struct StoreTests {
     }
 
     @Test func migrationRemovesArchiveColumnAndOnlyArchiveOps() throws {
-        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".db")
+        let file = testDirectory.appending(path: UUID().uuidString + ".db")
         let pool = try DatabasePool(path: file.path)
         try DatabaseMigrator.noteBank.migrate(pool, upTo: "v8")
         try pool.write { db in

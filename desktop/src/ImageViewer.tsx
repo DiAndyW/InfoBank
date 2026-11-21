@@ -1,3 +1,4 @@
+import { attachmentFailure } from "./failure";
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { attachmentOriginal, attachmentStored, openAttachment, thumbnail } from "./api";
@@ -111,7 +112,7 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
     fetching.then(path => {
       if (live) setDisplay(d => d && { ...d, originalSrc: convertFileSrc(path) });
     }, err => {
-      if (live) setDisplay(d => d && { ...d, loading: false, note: String(err), retry: true });
+      if (live) setDisplay(d => d && { ...d, loading: false, note: attachmentFailure(err), retry: true });
     });
     return () => { live = false; generation.current++; };
   }, [selected, attempt]);
@@ -196,7 +197,7 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
         loading: false, note: stored ? "This image can't be shown here." : "Couldn't load this image", retry: !stored });
     } catch (err) {
       if (version === generation.current) setDisplay(d => d && { ...d, originalSrc: null, loaded: false,
-        loading: false, note: String(err), retry: true });
+        loading: false, note: attachmentFailure(err), retry: true });
     }
   }
 
@@ -218,8 +219,9 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
         if (version === generation.current) setDisplay(d => d && { ...d, originalSrc: convertFileSrc(path), note: null, retry: false });
       }
       await openAttachment(selected);
+      if (version === generation.current) setDisplay(d => d?.loaded && d.note ? { ...d, note: null } : d);
     } catch (err) {
-      if (version === generation.current) setDisplay(d => d && { ...d, loading: false, note: String(err) });
+      if (version === generation.current) setDisplay(d => d && { ...d, loading: false, note: attachmentFailure(err) });
     } finally {
       opening.current.delete(selected);
     }
@@ -262,26 +264,28 @@ export default function ImageViewer({ images, selected, onSelect, onClose }: Pro
         onLostPointerCapture={() => { drag.current = null; }}>
         {images.length > 1 && <button type="button" className="nb-viewer-previous" aria-label="Previous image" disabled={index === 0} onClick={() => onSelect(images[index - 1].id)}><Icon name="chevron-left" size={32} /></button>}
         <div ref={imageWrapper} className="nb-viewer-images" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}>
-          {current?.thumbSrc && !current.loaded && <img draggable={false} src={current.thumbSrc} alt={filename}
+          {!current?.note && current?.thumbSrc && !current.loaded && <img draggable={false} src={current.thumbSrc} alt={filename}
             className={current.thumbSmall ? "is-small" : undefined}
             onError={() => setDisplay(d => d && { ...d, thumbSrc: null })}
             onLoad={e => {
               const small = Math.max(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight) < 400;
               setDisplay(d => d && { ...d, thumbSmall: small });
             }} />}
-          {current?.originalSrc && <img draggable={false} src={current.originalSrc} alt={current.loaded ? filename : ""}
+          {!current?.note && current?.originalSrc && <img draggable={false} src={current.originalSrc} alt={current.loaded ? filename : ""}
             className={[!current.loaded && "is-loading", current.originalSmall && "is-small"].filter(Boolean).join(" ")}
             onLoad={e => {
               const small = Math.max(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight) < 400;
               setDisplay(d => d && { ...d, loaded: true, loading: false, originalSmall: small });
             }} onError={failedDisplay} />}
         </div>
+        {current?.note && <div className="nb-viewer-failure">
+          <p>{current.note}</p>
+          {current.retry && <button type="button" onClick={() => setAttempt(a => a + 1)}><Icon name="restore" size={14} />Retry</button>}
+        </div>}
         {images.length > 1 && <button type="button" className="nb-viewer-next" aria-label="Next image" disabled={index === images.length - 1} onClick={() => onSelect(images[index + 1].id)}><Icon name="chevron-right" size={32} /></button>}
       </div>
       <div className="nb-viewer-footer">
         {current?.loading && <p>Loading full image…</p>}
-        {current?.note && <p>{current.note}</p>}
-        {current?.note && current.retry && <button type="button" onClick={() => setAttempt(a => a + 1)}><Icon name="restore" size={14} />Retry</button>}
         {images.length > 1 && <p>{index + 1} of {images.length}</p>}
       </div>
     </div>

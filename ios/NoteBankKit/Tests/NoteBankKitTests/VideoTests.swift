@@ -5,7 +5,7 @@ import Testing
 @testable import NoteBankKit
 
 func makeMovie(width: Int = 640, height: Int = 360, rotated: Bool = false, frames: Int = 10, timescale: Int32 = 10) async throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + "/clip.mov")
+    let url = testDirectory.appending(path: UUID().uuidString + "/clip.mov")
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
     let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: width, AVVideoHeightKey: height])
@@ -106,10 +106,7 @@ struct VideoTests {
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
         #expect(try store.localFile(staged.id, kind: "thumbnail") != nil)
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         try await transfers.synchronize()
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         #expect(try store.attachment(staged.id)?.hasThumbnail == true)

@@ -3,32 +3,37 @@ import Network
 import Synchronization
 
 enum HarnessError: Error {
-    case postgres, serverExited, pushRefused(String)
+    case postgres, serverExited, pushRefused(String), notReady(log: String), foreignServer(port: UInt16, status: Int)
 }
 
 private let adminURL = ProcessInfo.processInfo.environment["NOTEBANK_TEST_ADMIN_URL"] ?? "postgres:///postgres"
 
-@discardableResult
-private func run(_ tool: String, _ arguments: [String], in directory: URL? = nil, quietly: Bool = true) throws -> Bool {
+private func tool(_ name: String, _ arguments: [String], in directory: URL? = nil, quietly: Bool = true) -> Process {
     let process = Process()
     process.executableURL = URL(filePath: "/usr/bin/env")
-    process.arguments = [tool] + arguments
+    process.arguments = [name] + arguments
     process.currentDirectoryURL = directory
     if quietly { process.standardOutput = FileHandle.nullDevice }
-    try process.run()
-    process.waitUntilExit()
-    return process.terminationStatus == 0
+    return process
 }
 
-private let serverBinary: URL = {
+// Never wait on a subprocess synchronously: tests share the main actor and the cooperative pool.
+private func run(_ process: Process) async throws -> Bool {
+    try await withCheckedThrowingContinuation { continuation in
+        process.terminationHandler = { continuation.resume(returning: $0.terminationStatus == 0) }
+        do { try process.run() } catch { continuation.resume(throwing: error) }
+    }
+}
+
+private let serverBinary = Task<URL, Never> {
     var repo = URL(filePath: #filePath)
     for _ in 0..<5 { repo.deleteLastPathComponent() }
     let binary = FileManager.default.temporaryDirectory.appending(path: "notebank-ios-test-server/notebank-server")
-    guard (try? run("go", ["build", "-o", binary.path, "./cmd/notebank-server"], in: repo.appending(path: "server"), quietly: false)) == true else {
+    guard (try? await run(tool("go", ["build", "-o", binary.path, "./cmd/notebank-server"], in: repo.appending(path: "server"), quietly: false))) == true else {
         preconditionFailure("go build of the Server failed (is Go installed?)")
     }
     return binary
-}()
+}
 
 private func loopback(port: UInt16) -> sockaddr_in {
     var address = sockaddr_in()
@@ -38,51 +43,51 @@ private func loopback(port: UInt16) -> sockaddr_in {
     return address
 }
 
-private func freePort() -> UInt16 {
+// Bound but not listening: other tests can't take the port, and connections are refused until `start`.
+private func reservePort() throws -> (socket: Int32, port: UInt16) {
     let socket = socket(AF_INET, SOCK_STREAM, 0)
-    defer { close(socket) }
     var address = loopback(port: 0)
     var length = socklen_t(MemoryLayout<sockaddr_in>.size)
-    withUnsafeMutablePointer(to: &address) { pointer in
+    let bound = withUnsafeMutablePointer(to: &address) { pointer in
         pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            _ = bind(socket, $0, length)
-            _ = getsockname(socket, $0, &length)
+            bind(socket, $0, length) == 0 && getsockname(socket, $0, &length) == 0
         }
     }
-    return UInt16(bigEndian: address.sin_port)
-}
-
-private func accepts(port: UInt16) -> Bool {
-    let socket = socket(AF_INET, SOCK_STREAM, 0)
-    defer { close(socket) }
-    var address = loopback(port: port)
-    return withUnsafePointer(to: &address) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(socket, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 }
+    guard bound else {
+        close(socket)
+        throw POSIXError(.EADDRNOTAVAIL)
     }
+    return (socket, UInt16(bigEndian: address.sin_port))
 }
 
 final class TestServer {
     let url: String
-    let secret = "test-secret-that-is-at-least-32-characters"
+    let secret = "test-secret-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     let port: UInt16
+    private var reserved: Int32?
+    private let log = testDirectory.appending(path: "notebank-test-server-\(UUID().uuidString).log")
     private let databaseName = "notebank_ios_test_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-    let attachments = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+    let attachments = testDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
     private var process: Process?
+    private var created = false
 
     init() throws {
-        guard try run("psql", [adminURL, "-v", "ON_ERROR_STOP=1", "-qc", "CREATE DATABASE \(databaseName)"]) else {
-            throw HarnessError.postgres
-        }
         try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
-        port = freePort()
+        (reserved, port) = try reservePort()
         url = "http://127.0.0.1:\(port)"
     }
 
     func start() async throws {
+        guard try await run(tool("psql", [adminURL, "-v", "ON_ERROR_STOP=1", "-qc", "CREATE DATABASE \(databaseName)"])) else {
+            throw HarnessError.postgres
+        }
+        created = true
+        if let reserved { close(reserved) }
+        reserved = nil
         var database = URLComponents(string: adminURL)!
         database.path = "/" + databaseName
         let process = Process()
-        process.executableURL = serverBinary
+        process.executableURL = await serverBinary.value
         process.environment = ProcessInfo.processInfo.environment.merging([
             "NOTEBANK_DATABASE_URL": database.string!,
             "NOTEBANK_SECRET": secret,
@@ -90,16 +95,24 @@ final class TestServer {
             "NOTEBANK_ATTACHMENT_DIR": attachments.path,
         ]) { $1 }
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        process.standardError = try FileHandle(forWritingTo: log)
         try process.run()
         self.process = process
-        // The Server migrates before it listens, so an open port means it's ready.
-        for _ in 0..<100 {
-            if accepts(port: port) { return }
-            guard process.isRunning else { throw HarnessError.serverExited }
-            try await Task.sleep(for: .milliseconds(100))
+        // Only this Server accepts this secret, so a 204 proves the port is ours.
+        var request = URLRequest(url: URL(string: url + "/auth/check")!, timeoutInterval: 2)
+        request.setValue("Bearer " + secret, forHTTPHeaderField: "Authorization")
+        let session = URLSession(configuration: .ephemeral)
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline {
+            guard process.isRunning else { break }
+            if let (_, response) = try? await session.data(for: request), let status = (response as? HTTPURLResponse)?.statusCode {
+                if status == 204 { return }
+                throw HarnessError.foreignServer(port: port, status: status)
+            }
+            try await Task.sleep(for: .milliseconds(50))
         }
-        throw HarnessError.serverExited
+        throw HarnessError.notReady(log: (try? String(contentsOf: log, encoding: .utf8)) ?? "")
     }
 
     func push(device: String, ops: [[String: String]]) async throws {
@@ -120,8 +133,10 @@ final class TestServer {
             // Foundation's run-loop wait can hang after an externally signalled exit.
             while waitpid(process.processIdentifier, nil, 0) == -1 && errno == EINTR {}
         }
-        _ = try? run("psql", [adminURL, "-qc", "DROP DATABASE IF EXISTS \(databaseName) WITH (FORCE)"])
+        if let reserved { close(reserved) }
+        if created { try? tool("psql", [adminURL, "-qc", "DROP DATABASE \(databaseName) WITH (FORCE)"]).run() }
         try? FileManager.default.removeItem(at: attachments)
+        try? FileManager.default.removeItem(at: log)
     }
 }
 

@@ -200,26 +200,37 @@ fn label(conn: &Connection, item_id: &str) -> Option<String> {
 }
 
 pub(crate) async fn send(req: reqwest::RequestBuilder, token: &str) -> Result<reqwest::Response, SyncError> {
-    let res = req.bearer_auth(token).send().await.map_err(|e| SyncError::Failed(e.without_url().to_string()))?;
+    let (client, req) = req.bearer_auth(token).build_split();
+    let req = req.map_err(failed)?;
+    // The path names the stage; the host and query stay out of logs.
+    let stage = format!("{} {}", req.method(), req.url().path());
+    let res = client.execute(req).await.map_err(|e| {
+        eprintln!("Request failed: {stage}");
+        failed(e)
+    })?;
     match res.status() {
         s if s.is_success() => Ok(res),
         reqwest::StatusCode::UNAUTHORIZED => Err(SyncError::Unauthorized),
-        s => Err(SyncError::Failed(format!("the Server answered {s}"))),
+        s => {
+            eprintln!("Request failed: {stage} answered {s}");
+            Err(SyncError::Failed(format!("the Server answered {s}")))
+        }
     }
 }
 
-fn failed(e: impl std::fmt::Display) -> SyncError {
-    SyncError::Failed(e.to_string())
+fn failed(e: impl std::fmt::Display + 'static) -> SyncError {
+    SyncError::Failed(crate::error_message::message(e))
 }
 
 pub fn server_access(state: &AppState) -> Result<(String, String), SyncError> {
     let url: Option<String> =
         state.db.lock().unwrap().query_row("SELECT server_url FROM device", [], |r| r.get(0)).map_err(failed)?;
     let url = url.ok_or(SyncError::NotConfigured)?;
+    crate::settings::normalize_url(&url).map_err(failed)?;
     match state.secret.get_password() {
         Ok(token) => Ok((url, token)),
         Err(keyring_core::Error::NoEntry) => Err(SyncError::NotConfigured),
-        Err(e) => Err(SyncError::Keychain(e.to_string())),
+        Err(e) => Err(SyncError::Keychain(crate::error_message::message(e))),
     }
 }
 
@@ -444,7 +455,10 @@ pub async fn upload_pending(state: &AppState, url: &str, token: &str) -> Result<
         let res = loop {
             let idle_until = *moved.lock().unwrap() + IDLE_TIMEOUT;
             match tokio::time::timeout_at(idle_until, &mut send).await {
-                Ok(res) => break res.map_err(|e| SyncError::Failed(e.without_url().to_string()))?,
+                Ok(res) => break res.map_err(|e| {
+                    eprintln!("Request failed: PUT /attachments/{id}");
+                    failed(e)
+                })?,
                 Err(_) if *moved.lock().unwrap() + IDLE_TIMEOUT <= tokio::time::Instant::now() => {
                     return Err(SyncError::Failed(format!("attachment {id}: the upload stalled")));
                 }
@@ -490,11 +504,11 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
             set_status(&app, "syncing");
         }
         let result = cycle(&state).await;
-        if let Err(SyncError::Keychain(e)) = &result {
-            eprintln!("sync: couldn't read the keychain: {e}");
+        if let Err(SyncError::Keychain(_)) = &result {
+            eprintln!("sync: keychain unavailable");
         }
-        failures = if let Err(SyncError::Failed(e)) = &result {
-            eprintln!("sync: {e}");
+        failures = if let Err(SyncError::Failed(_)) = &result {
+            eprintln!("sync: cycle failed");
             failures + 1
         } else {
             0
@@ -504,7 +518,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>) {
             let now = chrono::Utc::now().timestamp_micros();
             crate::cache::start_prefetch(&app, now);
             if let Err(e) = crate::cache::evict(&state.db.lock().unwrap(), &state.dir, now, crate::cache::FILE_CACHE_BYTES) {
-                eprintln!("cache: eviction failed: {e}");
+                crate::error_message::message(e);
             }
         }
         let notices = std::mem::take(&mut *state.notices.lock().unwrap());
@@ -535,6 +549,13 @@ fn set_status<R: Runtime>(app: &AppHandle<R>, status: &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_failures_classify_before_discarding_the_error_type() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "private SQL and credentials");
+        assert_eq!(failed(error), SyncError::Failed("NoteBank couldn't access that file.".into()));
+    }
+
 
     fn fresh() -> (tempfile::TempDir, Connection) {
         let dir = tempfile::tempdir().unwrap();
@@ -895,25 +916,39 @@ pub(crate) mod server_tests {
         pub(crate) url: String,
         pub(crate) secret: String,
         attachments: tempfile::TempDir,
+        log: tempfile::NamedTempFile,
+        // Bound but not listening: other tests can't take the port, and connections are refused until `start`.
+        reserved: Option<tokio::net::TcpSocket>,
         child: Option<Child>,
+    }
+
+    enum Probe {
+        Ready,
+        NotYet,
+        Foreign(String),
     }
 
     impl TestServer {
         pub(crate) fn new() -> Self {
             let db_name = format!("notebank_desktop_test_{}", uuid::Uuid::new_v4().simple());
             assert!(psql(&format!("CREATE DATABASE {db_name}")), "create test database (is Postgres running?)");
-            let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            let reserved = tokio::net::TcpSocket::new_v4().unwrap();
+            reserved.bind(([127, 0, 0, 1], 0).into()).unwrap();
+            let port = reserved.local_addr().unwrap().port();
             TestServer {
                 db_name,
                 port,
                 url: format!("http://127.0.0.1:{port}"),
-                secret: "test-secret-that-is-at-least-32-characters".into(),
+                secret: format!("test-secret-{}", uuid::Uuid::new_v4().simple()),
                 attachments: tempfile::tempdir().unwrap(),
+                log: tempfile::NamedTempFile::new().unwrap(),
+                reserved: Some(reserved),
                 child: None,
             }
         }
 
         pub(crate) fn start(&mut self) {
+            self.reserved = None;
             let mut db_url = url::Url::parse(&admin_url()).unwrap();
             db_url.set_path(&format!("/{}", self.db_name));
             let child = Command::new(server_binary())
@@ -922,18 +957,51 @@ pub(crate) mod server_tests {
                 .env("NOTEBANK_LISTEN_ADDR", format!("127.0.0.1:{}", self.port))
                 .env("NOTEBANK_ATTACHMENT_DIR", self.attachments.path())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(self.log.reopen().unwrap())
                 .spawn()
                 .unwrap();
             self.child = Some(child);
-            // The Server migrates before it listens, so an open port means it's ready.
-            for _ in 0..100 {
-                if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                    return;
+            // A hang guard only: exits and foreign answers fail at once, and Windows takes ~2 s per refused connect.
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+                    panic!("the Server exited ({status}) before it was ready:\n{}", self.log_text());
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                match self.probe() {
+                    Probe::Ready => return,
+                    Probe::Foreign(status) => panic!("port {} answered {status:?} for another Server", self.port),
+                    Probe::NotYet if std::time::Instant::now() > deadline => {
+                        panic!("the Server on port {} wasn't ready within 60 s:\n{}", self.port, self.log_text())
+                    }
+                    Probe::NotYet => std::thread::sleep(Duration::from_millis(50)),
+                }
             }
-            panic!("the Server didn't start listening on port {}", self.port);
+        }
+
+        // Only this Server accepts this secret, so a 204 proves the port is ours.
+        fn probe(&self) -> Probe {
+            use std::io::{Read, Write};
+            let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", self.port)) else { return Probe::NotYet };
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let request = format!(
+                "GET /auth/check HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+                self.secret
+            );
+            let mut reply = Vec::new();
+            if stream.write_all(request.as_bytes()).is_err() || stream.read_to_end(&mut reply).is_err() {
+                return Probe::NotYet;
+            }
+            let reply = String::from_utf8_lossy(&reply);
+            let status = reply.lines().next().unwrap_or_default();
+            match status.split(' ').nth(1) {
+                Some("204") => Probe::Ready,
+                Some(_) if status.starts_with("HTTP/") => Probe::Foreign(status.to_owned()),
+                _ => Probe::NotYet,
+            }
+        }
+
+        fn log_text(&self) -> String {
+            std::fs::read_to_string(self.log.path()).unwrap_or_default()
         }
     }
 
@@ -1089,6 +1157,14 @@ pub(crate) mod server_tests {
         requests.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    async fn until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     #[tokio::test]
     async fn prefetch_runs_beside_sync_and_one_at_a_time() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1120,13 +1196,9 @@ pub(crate) mod server_tests {
 
         let started = std::time::Instant::now();
         crate::cache::start_prefetch(app.handle(), T0);
-        assert!(started.elapsed() < Duration::from_millis(100), "sync waited for the prefetch");
-        for _ in 0..40 {
-            if seen(&requests) == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        // The stand-in never answers, so waiting for the prefetch would take at least IDLE_TIMEOUT.
+        assert!(started.elapsed() < IDLE_TIMEOUT, "sync waited for the prefetch");
+        until("the prefetch request", || seen(&requests) > 0).await;
         assert_eq!(seen(&requests), 1);
         crate::cache::start_prefetch(app.handle(), T0);
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1141,10 +1213,10 @@ pub(crate) mod server_tests {
         // Settings were saved while sync was idle, so nothing was waiting for the notification.
         app.state::<AppState>().settings_saved.notify_one();
         tokio::spawn(run(app.handle().clone()));
+        until("the unauthorized status", || *app.state::<AppState>().status.lock().unwrap() == "unauthorized").await;
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         assert_eq!(seen(&requests), 1, "each failure counts toward the Server's lockout");
-        assert_eq!(*app.state::<AppState>().status.lock().unwrap(), "unauthorized");
     }
 
     #[tokio::test]
@@ -1164,7 +1236,7 @@ pub(crate) mod server_tests {
         assert_eq!(*state.status.lock().unwrap(), "keychain");
 
         state.wake.notify_one(); // window focus
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        until("the retry after focus", || seen(&requests) > 0).await;
         assert_eq!(seen(&requests), 1);
     }
 
@@ -1964,6 +2036,17 @@ pub(crate) mod server_tests {
             assert_eq!(place(d, &binned), (None, true));
             assert!(topic_names(d).is_empty());
         }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "for another Server")]
+    async fn a_test_server_refuses_a_port_another_server_answers() {
+        let mut first = TestServer::new();
+        first.start();
+        let mut second = TestServer::new();
+        second.port = first.port;
+        second.url = first.url.clone();
+        second.start();
     }
 
     #[tokio::test]

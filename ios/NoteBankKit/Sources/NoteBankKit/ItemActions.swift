@@ -19,9 +19,10 @@ public struct TextConflict: Hashable, Sendable {
 }
 
 extension Store {
-    public func move(itemID: String, to destination: Destination, nowUs: Int64) throws {
+    @discardableResult
+    public func move(itemID: String, to destination: Destination, nowUs: Int64) throws -> Bool {
         try pool.write { db in
-            guard try Bool.fetchOne(db, sql: "SELECT deleted_at IS NULL AND sync_error IS NULL FROM items WHERE id = ?", arguments: [itemID]) == true else {
+            guard let item = try Row.fetchOne(db, sql: "SELECT topic_id, in_tunnel FROM items WHERE id = ? AND deleted_at IS NULL AND sync_error IS NULL", arguments: [itemID]) else {
                 throw ItemActionError.notFound
             }
             var topicID: String?
@@ -31,9 +32,13 @@ extension Store {
                 }
                 topicID = id
             }
+            let currentTopicID: String? = item["topic_id"]
+            let inTunnel: Bool = item["in_tunnel"]
+            guard currentTopicID != topicID || inTunnel != (destination == .tunnel) else { return false }
             try db.execute(sql: "UPDATE items SET topic_id = ?, in_tunnel = ? WHERE id = ?", arguments: [topicID, destination == .tunnel, itemID])
             try db.execute(sql: "UPDATE topics SET activity_at = max(activity_at, ?) WHERE id = ?", arguments: [nowUs, topicID])
             try queue(db, "MoveItem", nowUs: nowUs, ["item_id": itemID, "topic_id": topicID as Any? ?? NSNull(), "tunnel": destination == .tunnel])
+            return true
         }
     }
 

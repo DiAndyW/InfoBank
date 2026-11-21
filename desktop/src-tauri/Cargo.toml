@@ -48,7 +48,7 @@ tauri-plugin-single-instance = "2.5"
 tempfile = "3"
 muda = "0.20"
 tauri = { version = "2.12", features = ["test"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "test-util"] }
 
 # See https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

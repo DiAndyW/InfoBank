@@ -100,7 +100,7 @@ extension ItemEditorModelTests {
         let provider = NSItemProvider()
         provider.suggestedName = "receipt.pdf"
         provider.registerFileRepresentation(forTypeIdentifier: UTType.pdf.identifier, fileOptions: [], visibility: .all) { completed in
-            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".pdf")
+            let file = testDirectory.appending(path: UUID().uuidString + ".pdf")
             try! Data("document".utf8).write(to: file)
             completed(file, false, nil)
             try? FileManager.default.removeItem(at: file)

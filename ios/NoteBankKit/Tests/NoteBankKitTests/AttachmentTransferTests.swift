@@ -50,11 +50,7 @@ struct AttachmentTransferTests {
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(try store.attachment(staged.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         let (other, _) = try tempStore(); let otherSecrets = SecretStore.memory()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: otherSecrets)
         _ = try await cycle(store: other, secrets: otherSecrets, http: .live, queued: &notices)
@@ -64,11 +60,7 @@ struct AttachmentTransferTests {
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         #expect(try store.attachment(staged.id)?.uploaded == false)
         try await transfers.synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(try store.attachment(staged.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         let opened = try await downloads.open(staged.id)
         #expect(try Data(contentsOf: opened) == Data("hello".utf8))
         await downloads.release(staged.id)
@@ -85,10 +77,7 @@ struct AttachmentTransferTests {
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         try await transfers.synchronize()
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         #expect(try store.attachment(staged.id)?.hasThumbnail == true)
@@ -117,11 +106,7 @@ struct AttachmentTransferTests {
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(try store.attachment(staged.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         let (other, _) = try tempStore(); let otherSecrets = SecretStore.memory()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: otherSecrets)
         _ = try await cycle(store: other, secrets: otherSecrets, http: .live, queued: &notices)
@@ -202,11 +187,7 @@ extension AttachmentTransferTests {
         try await store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<100 {
-            if try store.uploadError(file.id) != nil { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(try store.uploadError(file.id) != nil)
+        #expect(try await eventually { try store.uploadError(file.id) != nil })
         try? await transfers.synchronize()
         try await Task.sleep(for: .milliseconds(50))
         #expect(server.requests(to: "/attachments/" + file.id) == 1)
@@ -218,11 +199,7 @@ extension AttachmentTransferTests {
             try db.execute(sql: "UPDATE attachment_uploads SET retry_at = 0 WHERE attachment_id = ?", arguments: [file.id])
         }
         try await transfers.synchronize()
-        for _ in 0..<100 {
-            if try store.attachment(file.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(try store.attachment(file.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(file.id)?.uploaded == true })
         #expect(try store.uploadError(file.id) == nil)
 
     }
@@ -242,10 +219,7 @@ extension AttachmentTransferTests {
         try await store.pool.write { try $0.execute(sql: "DELETE FROM outbox") }
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<100 {
-            if try store.uploadError(file.id) != nil || store.attachment(file.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        #expect(try await eventually { try store.uploadError(file.id) != nil || store.attachment(file.id)?.uploaded == true })
         #expect(try store.attachment(file.id)?.uploaded == false)
         try store.evictCache(nowUs: 100, maxFileBytes: 0)
         #expect(try store.localFile(file.id) != nil)

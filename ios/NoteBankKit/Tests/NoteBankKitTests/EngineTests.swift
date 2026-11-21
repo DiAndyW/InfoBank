@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import GRDB
 import Synchronization
@@ -5,15 +6,6 @@ import Testing
 @testable import NoteBankKit
 
 private let t0: Int64 = 1_760_000_000_000_000
-
-private func eventually(timeout: Duration = .seconds(10), _ condition: () throws -> Bool) async throws -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if try condition() { return true }
-        try await Task.sleep(for: .milliseconds(20))
-    }
-    return try condition()
-}
 
 private final class Statuses: Sendable {
     private let seen = Mutex<[SyncStatus]>([])
@@ -103,6 +95,26 @@ struct EngineTests {
         #expect(fake.requests(to: "/sync/pull") == 1)
 
         await engine.settingsSaved()
+        #expect(try await eventually { fake.requests(to: "/sync/pull") == 2 })
+    }
+
+    @Test func aFailedSyncRetriesOnlyOnceTheBackoffHasPassed() async throws {
+        let fake = try await FakeServer { _ in .json("{}", status: 500) }
+        let a = try Device(url: fake.url, secret: "secret")
+        let clock = TestClock()
+        let engine = SyncEngine(store: a.store, secrets: a.secrets, pollInterval: .seconds(60), clock: clock)
+        let statuses = Statuses(engine.status)
+
+        await engine.start()
+        await engine.wake()
+        #expect(try await eventually { statuses.last == .offline })
+        #expect(fake.requests(to: "/sync/pull") == 1)
+
+        await clock.advance(by: .milliseconds(1999))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(fake.requests(to: "/sync/pull") == 1)
+
+        await clock.advance(by: .milliseconds(2))
         #expect(try await eventually { fake.requests(to: "/sync/pull") == 2 })
     }
 

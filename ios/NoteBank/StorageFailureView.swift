@@ -1,3 +1,4 @@
+import NoteBankKit
 import SwiftUI
 
 struct StorageFailureView: View {
@@ -5,8 +6,7 @@ struct StorageFailureView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("NoteBank couldn't open its storage").font(.headline)
-            Text(error.localizedDescription).font(.subheadline).foregroundStyle(.secondary)
+            Text(storageOpenFailureMessage(error)).font(.headline)
         }
         .multilineTextAlignment(.center)
         .padding()

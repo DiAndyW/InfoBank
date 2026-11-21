@@ -325,7 +325,7 @@ export default function App() {
   async function load() {
     try {
       const failure = await startupError();
-      if (failure) return setStartup(failure);
+      if (failure) return setStartup({ ...failure, message: "NoteBank failed to open its storage." });
       const seen = statusEvents.current;
       const [s, t, st, c, u] = await Promise.all([getSettings(), listTopics(), syncStatus(), navCounts(), updateStatus()]);
       setSettings(s);
@@ -335,7 +335,7 @@ export default function App() {
       setUpdate({ ...u, status: latestUpdate.current ?? u.status });
       setLoadError(null);
     } catch (err) {
-      setLoadError(String(err));
+      setLoadError("NoteBank failed to open its storage.");
     }
   }
 
@@ -345,7 +345,7 @@ export default function App() {
 
   if (startup) {
     return (
-      <div className="nb-empty is-window">
+      <div className="nb-empty is-window nb-startup-failure">
         <Icon name="alert" size={24} />
         <p className="nb-empty-title">NoteBank couldn't start</p>
         <p role="alert">{startup.message}</p>
@@ -365,7 +365,7 @@ export default function App() {
   }
   if (loadError) {
     return (
-      <div className="nb-empty is-window">
+      <div className="nb-empty is-window nb-startup-failure">
         <Icon name="alert" size={24} />
         <p role="alert" className="nb-empty-title">
           {loadError}

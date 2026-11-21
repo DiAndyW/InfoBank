@@ -140,11 +140,9 @@ struct TunnelTests {
         let model = FeedModel(store: store, place: .tunnel)
         #expect(model.trashAfterCopy == nil)
         try store.setTrashAfterCopy(true, nowUs: t0)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(model.trashAfterCopy == true)
+        #expect(await waitUntil { model.trashAfterCopy == true })
         try store.setTrashAfterCopy(false, nowUs: t0 + 1)
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(model.trashAfterCopy == false)
+        #expect(await waitUntil { model.trashAfterCopy == false })
     }
 
     @Test func unansweredMenuCopyStillAsksAndAnswerIsRemembered() throws {

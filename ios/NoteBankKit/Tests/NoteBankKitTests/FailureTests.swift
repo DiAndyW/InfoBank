@@ -55,6 +55,31 @@ import UniformTypeIdentifiers
         #expect(!model.isImporting)
     }
 
+    @Test func attachmentPreviewHidesTechnicalErrorsAndKeepsKnownAvailabilityReasons() throws {
+        let raw = CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "private /Users/example/token=secret"])
+        #expect(attachmentPreviewFailureMessage(raw) == (try Behaviour.rule("failure.attachment_preview").message()))
+        #expect(attachmentPreviewFailureMessage(AttachmentError("Not uploaded yet")) == "Attachment failed to open. Not uploaded yet")
+    }
+
+    @Test func syncKeychainFailureDoesNotCarryUnderlyingDetails() async throws {
+        let store = try tempStore().store
+        try store.saveSettings(url: "https://example.com", newSecret: "secret", secrets: .memory())
+        let secrets = SecretStore(read: { throw CocoaError(.fileReadNoPermission, userInfo: [NSLocalizedDescriptionKey: "private token=secret"]) }, write: { _ in })
+        var notices: [SyncNotice] = []
+        do {
+            _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
+            Issue.record("Sync unexpectedly succeeded without keychain access")
+        } catch {
+            #expect(error == .keychain("NoteBank couldn't access that file."))
+        }
+    }
+
+    @Test func storageStartupHidesUnderlyingErrorDetails() throws {
+        let raw = NSError(domain: "private", code: 1, userInfo: [NSLocalizedDescriptionKey: "private /Users/example/token=secret"])
+        #expect(storageOpenFailureMessage(raw) == (try Behaviour.rule("failure.storage_open").message()))
+        #expect(storageOpenFailureMessage(DatabaseError(resultCode: .SQLITE_ERROR, message: "secret SQL")) == "NoteBank failed to open its storage. NoteBank couldn't read or save its data. Try again.")
+    }
+
     @Test func missingItemHasSharedReason() throws {
         #expect(ItemActionError.notFound.localizedDescription == (try Behaviour.rule("failure.item_gone").message()))
     }

@@ -27,10 +27,14 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
     if !(url.scheme() == "https" || (url.scheme() == "http" && local)) || url.host_str().is_none() {
         return Err("The Server URL must start with https://".into());
     }
+    if !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
+        return Err("The Server URL can't include a user name, query or fragment".into());
+    }
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
 pub async fn check_server(http: &reqwest::Client, url: &str, secret: &str) -> Result<(), String> {
+    let url = normalize_url(url)?;
     let res = http
         .get(format!("{url}/auth/check"))
         .bearer_auth(secret)
@@ -244,6 +248,35 @@ mod tests {
         }
         for input in ["http://notes.example.com", "notes.example.com", "", "ftp://localhost", "https://"] {
             assert!(normalize_url(input).is_err(), "{input:?} accepted");
+        }
+    }
+
+    #[tokio::test]
+    async fn server_url_components_are_rejected_before_check_or_save() {
+        let message = "The Server URL can't include a user name, query or fragment";
+        for input in ["http://user:pw@127.0.0.1:1", "http://127.0.0.1:1/?a=1", "http://127.0.0.1:1/#f", "https://example.com/?", "https://example.com/#"] {
+            assert_eq!(normalize_url(input), Err(message.into()), "{input}");
+            assert_eq!(check_server(&crate::sync::client(), input, "secret").await, Err(message.into()));
+            let (_dir, conn, secret) = env();
+            let db = std::sync::Mutex::new(conn);
+            assert_eq!(save_checked(&db, &secret, &crate::sync::client(), input, Some("secret"), Stranded::default()).await,
+                Err(SaveError::Message(message.into())));
+            assert_eq!(get(&db.lock().unwrap(), &secret).unwrap().server_url, None);
+            assert!(matches!(secret.get_password(), Err(keyring_core::Error::NoEntry)));
+        }
+    }
+
+    #[test]
+    fn saved_server_url_components_block_outbound_access_without_mutation() {
+        for url in ["https://user:pw@example.com", "https://example.com/?key=secret", "https://example.com/#fragment"] {
+            let (dir, conn, secret) = env();
+            conn.execute("UPDATE device SET server_url = ?1, pull_cursor = 42", [url]).unwrap();
+            secret.set_password("saved-secret").unwrap();
+            let state = crate::AppState::new(conn, secret, dir.path().to_path_buf());
+            assert!(crate::sync::server_access(&state).is_err());
+            assert_eq!(get(&state.db.lock().unwrap(), &state.secret).unwrap().server_url.as_deref(), Some(url));
+            assert_eq!(cursor(&state.db.lock().unwrap()), 42);
+            assert_eq!(state.secret.get_password().unwrap(), "saved-secret");
         }
     }
 

@@ -401,30 +401,28 @@ mod tests {
         });
     }
 
-    #[test]
-    fn a_manual_request_checks_once_even_when_a_tick_overlaps() {
-        tauri::async_runtime::block_on(async {
-            for overlaps in [false, true] {
-                let state = UpdateState::new(true);
-                let mut source = Fake::update();
-                source.found = Ok(None);
-                let mut tick = tokio::time::interval(Duration::from_secs(60));
-                if !overlaps { tick.tick().await; }
-                state.request();
-                let mut seen = vec![];
-                let mut emit = |status| seen.push(status);
+    #[tokio::test(start_paused = true)]
+    async fn a_manual_request_checks_once_even_when_a_tick_overlaps() {
+        for overlaps in [false, true] {
+            let state = UpdateState::new(true);
+            let mut source = Fake::update();
+            source.found = Ok(None);
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            if !overlaps { tick.tick().await; }
+            state.request();
+            let mut seen = vec![];
+            let mut emit = |status| seen.push(status);
+            tokio::time::timeout(Duration::from_millis(100), state.check_next(&mut source, &mut emit, &mut tick))
+                .await.expect("manual request did not wake the consumer");
+            if overlaps {
                 tokio::time::timeout(Duration::from_millis(100), state.check_next(&mut source, &mut emit, &mut tick))
-                    .await.expect("manual request did not wake the consumer");
-                if overlaps {
-                    tokio::time::timeout(Duration::from_millis(100), state.check_next(&mut source, &mut emit, &mut tick))
-                        .await.expect("overlapping tick was not consumed");
-                }
-                assert!(tokio::time::timeout(Duration::from_millis(20), state.check_next(&mut source, &mut emit, &mut tick)).await.is_err());
-                assert_eq!(source.calls.load(Ordering::SeqCst), 1);
-                assert_eq!(seen.len(), 2);
-                assert!(matches!(state.status(), UpdateStatus::UpToDate { .. }));
+                    .await.expect("overlapping tick was not consumed");
             }
-        });
+            assert!(tokio::time::timeout(Duration::from_millis(20), state.check_next(&mut source, &mut emit, &mut tick)).await.is_err());
+            assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(seen.len(), 2);
+            assert!(matches!(state.status(), UpdateStatus::UpToDate { .. }));
+        }
     }
 
     #[test]

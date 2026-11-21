@@ -28,8 +28,9 @@ struct ItemActionsView: View {
 
     private func move(_ destination: Destination) {
         run {
-            try store.move(itemID: item.id, to: destination, nowUs: Time.nowUs())
-            onChanged(false, true)
+            if try store.move(itemID: item.id, to: destination, nowUs: Time.nowUs()) {
+                onChanged(false, true)
+            }
         }
     }
 

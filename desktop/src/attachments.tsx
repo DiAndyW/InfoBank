@@ -1,3 +1,4 @@
+import { attachmentFailure } from "./failure";
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { attachmentStored, copyAttachment, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
@@ -40,7 +41,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
     return () => clearTimeout(timer);
   }, [note]);
 
-  async function fetchThen(action: (id: string) => Promise<void>) {
+  async function fetchThen(action: (id: string) => Promise<void>, headline = "Attachment failed to open.") {
     if (busy.current) return false;
     busy.current = true;
     try {
@@ -54,7 +55,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
       }
       return true;
     } catch (err) {
-      setNote(String(err));
+      setNote(attachmentFailure(err, headline));
       return false;
     } finally {
       busy.current = false;
@@ -77,7 +78,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
         <span className="nb-file-name">NoteBank won't open {a.filename} because it can run code.</span>
         {note && <span className="nb-file-meta">{note}</span>}
       </span>
-      <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment)}>
+      <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment, "Attachment failed to reveal.")}>
         <Icon name="reveal" />
         {revealLabel}
       </button>
@@ -115,7 +116,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
   return (
     <div className="nb-attachment">
       {opener}
-      {copyButtonVisible && <button type="button" className="nb-iconbtn nb-reveal nb-attachment-copy" aria-label={`Copy ${a.filename}`} title="Copy" onClick={() => fetchThen(copyAttachment).then((ok) => ok && onCopied(a.filename))}>
+      {copyButtonVisible && <button type="button" className="nb-iconbtn nb-reveal nb-attachment-copy" aria-label={`Copy ${a.filename}`} title="Copy" onClick={() => fetchThen(copyAttachment, "Attachment failed to copy.").then((ok) => ok && onCopied(a.filename))}>
         <Icon name="copy" />
       </button>}
     </div>

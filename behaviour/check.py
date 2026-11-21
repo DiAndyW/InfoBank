@@ -85,6 +85,8 @@ def validate(file):
             fields = {"offered", "label", "message"}
         elif id.startswith(("search.", "composer.")):
             fields = {"offered"}
+        elif id == "item.move_to_current":
+            fields = {"offered"}
         elif id.startswith("item."):
             fields = {"actions"}
         elif id.startswith("editor."):

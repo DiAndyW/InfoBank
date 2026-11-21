@@ -30,7 +30,7 @@ struct SearchIndexTests {
     }
 
     @Test func migrationIndexesExistingItems() throws {
-        let file = FileManager.default.temporaryDirectory
+        let file = testDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
             .appending(path: "notebank.db")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)

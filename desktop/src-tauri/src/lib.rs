@@ -89,8 +89,8 @@ pub struct StartupError {
 }
 
 fn open_store(dir: &Path) -> Result<rusqlite::Connection, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't create the data folder: {e}"))?;
-    let db = store::open(&dir.join("notebank.db")).map_err(|e| format!("Couldn't open the database: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(crate::error_message::message)?;
+    let db = store::open(&dir.join("notebank.db")).map_err(crate::error_message::message)?;
     files::sweep_staged(&db, dir)?;
     cache::sweep_partial_downloads(dir);
     Ok(db)
@@ -114,7 +114,7 @@ pub(crate) fn show_main<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 fn start(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     let db = open_store(dir)?;
     let hotkey = shortcut::get(&db)?;
-    let keychain = |e: keyring_core::Error| format!("Couldn't open the keychain: {e}");
+    let keychain = crate::error_message::message;
     #[cfg(target_os = "macos")]
     let store = apple_native_keyring_store::keychain::Store::new().map_err(keychain)?;
     #[cfg(target_os = "windows")]
@@ -124,10 +124,10 @@ fn start(app: &tauri::AppHandle, dir: &Path) -> Result<(), String> {
     if hotkey.on {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
         if let Err(e) = app.global_shortcut().register(shortcut::parse(&hotkey.shortcut)?) {
-            eprintln!("Couldn't register the quick-capture shortcut {}: {e}", hotkey.shortcut);
+            crate::error_message::message(e);
         }
     }
-    tray::build(app, &hotkey).map_err(|e| format!("Couldn't create the tray icon: {e}"))?;
+    tray::build(app, &hotkey)?;
     tauri::async_runtime::spawn(sync::run(app.clone()));
     if !cfg!(debug_assertions) {
         tauri::async_runtime::spawn(updater::run(app.clone()));
@@ -177,9 +177,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let data_dir = app.path().app_data_dir();
+            let data_dir = app.path().app_data_dir().map_err(crate::error_message::message);
             let failure = match &data_dir {
-                Err(e) => Some(StartupError { message: format!("Couldn't find the data folder: {e}"), data_dir: None }),
+                Err(e) => Some(StartupError { message: e.clone(), data_dir: None }),
                 Ok(dir) => start(app.handle(), dir)
                     .err()
                     .map(|message| StartupError { message, data_dir: Some(dir.display().to_string()) }),
@@ -370,7 +370,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notebank.db"), "not a database ".repeat(100)).unwrap();
         let err = open_store(dir.path()).unwrap_err();
-        assert!(err.starts_with("Couldn't open the database"), "{err}");
+        assert_eq!(err, "NoteBank couldn't read or save its data. Try again.");
     }
 
     #[test]

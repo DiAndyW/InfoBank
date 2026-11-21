@@ -36,3 +36,7 @@ public func errorMessage(_ error: Error) -> String {
         return genericFailure
     }
 }
+
+public func storageOpenFailureMessage(_ error: Error) -> String {
+    failureMessage("NoteBank failed to open its storage.", error)
+}

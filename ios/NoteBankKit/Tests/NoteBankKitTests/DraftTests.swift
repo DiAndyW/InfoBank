@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import GRDB
 import Testing
@@ -324,20 +325,36 @@ struct DraftTests {
 
     @Test func composerLoadsInitialAndSavesAfterDebounce() async throws {
         let (store, _) = try tempStore()
-        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, initial: Draft(text: "a", homeTopicID: nil), onCaptured: {})
+        let clock = TestClock()
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, initial: Draft(text: "a", homeTopicID: nil), clock: clock, onCaptured: {})
         #expect(model.text == "a")
         model.text = "ab"
+        await clock.advance(by: .milliseconds(299))
         #expect(try store.drafts()[.inbox] == nil)
-        try await Task.sleep(for: .milliseconds(400))
+        await clock.advance(by: .milliseconds(2))
+        #expect(try store.drafts()[.inbox]?.text == "ab")
+    }
+
+    @Test func typingAgainRestartsTheDebounce() async throws {
+        let (store, _) = try tempStore()
+        let clock = TestClock()
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, clock: clock, onCaptured: {})
+        model.text = "a"
+        await clock.advance(by: .milliseconds(200))
+        model.text = "ab"
+        await clock.advance(by: .milliseconds(299))
+        #expect(try store.drafts()[.inbox] == nil)
+        await clock.advance(by: .milliseconds(2))
         #expect(try store.drafts()[.inbox]?.text == "ab")
     }
 
     @Test func sendCancelsPendingSave() async throws {
         let (store, _) = try tempStore()
-        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+        let clock = TestClock()
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, clock: clock, onCaptured: {})
         model.text = "send"
         #expect(model.send())
-        try await Task.sleep(for: .milliseconds(400))
+        await clock.advance(by: .seconds(1))
         #expect(try store.drafts()[.inbox] == nil)
         #expect(model.text.isEmpty)
     }
@@ -378,14 +395,15 @@ struct DraftTests {
     @Test func clearAndUndo() async throws {
         let (store, _) = try tempStore()
         let file = try store.stageFile(at: AttachmentTests().source())
-        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, onCaptured: {})
+        let clock = TestClock()
+        let model = ComposerModel(store: store, destination: .inbox, placeholder: "", draft: .inbox, clock: clock, onCaptured: {})
         model.text = "old"
         model.addAttachments([file])
         model.flushDraft()
         #expect(model.canClear)
         model.clear()
         #expect(model.text.isEmpty && model.attachments.isEmpty && !model.canClear)
-        try await Task.sleep(for: .milliseconds(400))
+        await clock.advance(by: .seconds(1))
         #expect(try store.drafts()[.inbox] == nil)
         #expect(try await store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM staged_files WHERE id = ?", arguments: [file.id]) } == 1)
         model.undoClear()
