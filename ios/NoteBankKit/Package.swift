@@ -9,9 +9,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.1.1"),
     ],
     targets: [
         .target(name: "NoteBankKit", dependencies: [.product(name: "GRDB", package: "GRDB.swift")]),
-        .testTarget(name: "NoteBankKitTests", dependencies: ["NoteBankKit", .product(name: "GRDB", package: "GRDB.swift")], resources: [.copy("Fixtures")]),
+        .testTarget(name: "NoteBankKitTests", dependencies: ["NoteBankKit", .product(name: "GRDB", package: "GRDB.swift"), .product(name: "Clocks", package: "swift-clocks")], resources: [.copy("Fixtures")]),
     ]
 )

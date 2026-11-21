@@ -388,7 +388,7 @@ import UniformTypeIdentifiers
         let provider = NSItemProvider()
         provider.suggestedName = "large.png"
         provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completed in
-            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".png")
+            let file = testDirectory.appending(path: UUID().uuidString + ".png")
             FileManager.default.createFile(atPath: file.path, contents: nil)
             let handle = try! FileHandle(forWritingTo: file)
             try! handle.truncate(atOffset: UInt64(Store.maxAttachmentBytes + 1))
@@ -410,7 +410,7 @@ import UniformTypeIdentifiers
         let provider = NSItemProvider()
         provider.suggestedName = "receipt.pdf"
         provider.registerFileRepresentation(forTypeIdentifier: UTType.pdf.identifier, fileOptions: [], visibility: .all) { completed in
-            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + ".pdf")
+            let file = testDirectory.appending(path: UUID().uuidString + ".pdf")
             try! Data("document".utf8).write(to: file)
             completed(file, false, nil)
             try? FileManager.default.removeItem(at: file)

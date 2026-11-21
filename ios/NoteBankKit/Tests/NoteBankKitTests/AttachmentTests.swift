@@ -5,7 +5,7 @@ import Testing
 
 struct AttachmentTests {
     func source(_ data: Data = Data("hello".utf8), name: String = "test.txt") throws -> URL {
-        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let folder = testDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = folder.appending(path: name)
         try data.write(to: file)
@@ -67,7 +67,7 @@ struct AttachmentTests {
 
 extension AttachmentTests {
     @Test func importedNamesFitServerUTF8LimitAndRelaunchCleansOnlyAbandonedFiles() throws {
-        let database = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + "/notebank.db")
+        let database = testDirectory.appending(path: UUID().uuidString + "/notebank.db")
         let ids = try { () -> (String, String) in
             let store = try Store(at: database, observesSuspension: false)
             let staged = try store.stageFile(at: source(), filename: String(repeating: "🌱", count: 100) + ".txt")
@@ -112,7 +112,7 @@ extension AttachmentTests {
 
 extension AttachmentTests {
     @Test func deadStoreRegistrationDoesNotKeepAbandonedFilesForever() throws {
-        let database = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString + "/notebank.db")
+        let database = testDirectory.appending(path: UUID().uuidString + "/notebank.db")
         let id = try { () -> String in
             let store = try Store(at: database, observesSuspension: false)
             let file = try store.stageFile(at: source())

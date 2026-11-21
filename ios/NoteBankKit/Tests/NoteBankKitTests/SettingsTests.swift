@@ -276,11 +276,7 @@ struct SettingsTests {
         var notices: [SyncNotice] = []
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         try await AttachmentTransfers(store: store, secrets: secrets, background: false).synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(try store.attachment(staged.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         let (other, _) = try tempStore(); let otherSecrets = SecretStore.memory()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: otherSecrets)
         _ = try await cycle(store: other, secrets: otherSecrets, http: .live, queued: &notices)

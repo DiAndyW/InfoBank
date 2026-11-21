@@ -53,7 +53,7 @@ struct ClipboardTests {
     }
 
     @Test func mixedItemPreservesTextAndOriginalBytesWithoutAdvertisingPrivateURLs() throws {
-        let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let folder = testDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let image = folder.appending(path: "photo.heic")

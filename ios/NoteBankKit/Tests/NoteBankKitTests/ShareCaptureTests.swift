@@ -105,8 +105,10 @@ extension ShareCaptureTests {
 
 extension ShareCaptureTests {
     @Test func deliveryDeadlineLeavesCaptureQueuedForMainApp() async throws {
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
         let server = try await FakeServer { _ in
-            Thread.sleep(forTimeInterval: 0.4)
+            _ = release.wait(timeout: .now() + 10)
             return .init(status: 503)
         }
         let (store, _) = try tempStore(); let secrets = SecretStore.memory()
@@ -116,7 +118,8 @@ extension ShareCaptureTests {
         let start = ContinuousClock.now
         let result = await deliverSharedCapture(item, store: store, secrets: secrets, transfers: transfers, timeout: .milliseconds(50))
         #expect(result == .savedLocally)
-        #expect(start.duration(to: .now) < .seconds(1))
+        // The Server holds its reply for 10 s, so waiting for it would take far longer.
+        #expect(start.duration(to: .now) < .seconds(5))
         #expect(try await store.pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM outbox") } == 1)
     }
 
@@ -129,11 +132,7 @@ extension ShareCaptureTests {
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false, sessionIdentifier: AttachmentTransfers.shareSessionIdentifier)
         let result = await deliverSharedCapture(item, store: store, secrets: secrets, transfers: transfers)
         #expect(result == .sent)
-        for _ in 0..<200 {
-            if try store.attachment(file.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(try store.attachment(file.id)?.uploaded == true)
+        #expect(try await eventually { try store.attachment(file.id)?.uploaded == true })
         let (other, _) = try tempStore()
         try other.saveSettings(url: server.url, newSecret: server.secret, secrets: secrets)
         var notices: [SyncNotice] = []

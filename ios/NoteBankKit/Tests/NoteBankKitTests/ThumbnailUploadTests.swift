@@ -56,10 +56,7 @@ struct ThumbnailUploadTests {
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         let transfers = AttachmentTransfers(store: store, secrets: secrets, background: false)
         try await transfers.synchronize()
-        for _ in 0..<200 {
-            if try store.attachment(staged.id)?.uploaded == true { break }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        #expect(try await eventually { try store.attachment(staged.id)?.uploaded == true })
         try await transfers.synchronize()
         _ = try await cycle(store: store, secrets: secrets, http: .live, queued: &notices)
         #expect(try store.attachment(staged.id)?.hasThumbnail == true)

@@ -89,3 +89,11 @@ public enum Time {
         return (yoe + era * 400 + (m <= 2 ? 1 : 0), m, d)
     }
 }
+
+extension Clock {
+    // The deadline is fixed now, so a task that starts late still wakes on time.
+    func alarm(after duration: Duration) -> @Sendable () async throws -> Void {
+        let deadline = now.advanced(by: duration)
+        return { try await self.sleep(until: deadline, tolerance: nil) }
+    }
+}

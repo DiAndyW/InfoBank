@@ -284,6 +284,7 @@ public actor SyncEngine {
     private let secrets: SecretStore
     private let http: SyncHTTP
     private let pollInterval: Duration
+    private let clock: any Clock<Duration>
     private let transfers: AttachmentTransfers?
     private let monitor = NWPathMonitor()
 
@@ -292,6 +293,7 @@ public actor SyncEngine {
     private var timer: Task<Void, Never>?
     private var waiter: CheckedContinuation<Void, Never>?
     private var wait: Wait?
+    private var alarm: (@Sendable () async throws -> Void)?
     private var woken = false
     private var saved = false
     private var elapsed = false
@@ -304,12 +306,13 @@ public actor SyncEngine {
     private var queued: [SyncNotice] = []
     private var saves = 0
 
-    public init(store: Store, secrets: SecretStore, http: SyncHTTP = .live, transfers: AttachmentTransfers? = nil, pollInterval: Duration = SyncEngine.defaultPollInterval) {
+    public init(store: Store, secrets: SecretStore, http: SyncHTTP = .live, transfers: AttachmentTransfers? = nil, pollInterval: Duration = SyncEngine.defaultPollInterval, clock: any Clock<Duration> = ContinuousClock()) {
         self.store = store
         self.secrets = secrets
         self.http = http
         self.transfers = transfers
         self.pollInterval = pollInterval
+        self.clock = clock
         (status, statusSink) = AsyncStream.makeStream()
         (notices, noticeSink) = AsyncStream.makeStream()
     }
@@ -322,7 +325,7 @@ public actor SyncEngine {
         }
         monitor.start(queue: DispatchQueue(label: "app.notebank.ios.path"))
         if let transfers { await transfers.setWakeHandler { [weak self] in Task { await self?.wake() } } }
-        wait = .after(.zero)
+        schedule(.after(.zero))
         loop = Task {
             while !Task.isCancelled {
                 await waitForTrigger()
@@ -390,10 +393,15 @@ public actor SyncEngine {
         kick()
     }
 
+    private func schedule(_ next: Wait) {
+        wait = next
+        alarm = if case .after(let duration) = next { clock.alarm(after: duration) } else { nil }
+    }
+
     private func waitForTrigger() async {
-        if case .after(let duration)? = wait {
+        if let alarm {
             timer = Task {
-                try? await Task.sleep(for: duration)
+                try? await alarm()
                 elapse()
             }
         }
@@ -401,6 +409,7 @@ public actor SyncEngine {
         timer?.cancel()
         timer = nil
         wait = nil
+        alarm = nil
     }
 
     private func outboxHasOps() async -> Bool {
@@ -438,6 +447,7 @@ public actor SyncEngine {
         queued = generation == saves ? carried : []
         failures = if case .failure(.failed) = result { failures + 1 } else { 0 }
         let (next, following) = outcome(result, failures: failures, poll: pollInterval)
+        schedule(following)
         if case .success = result, !queued.isEmpty {
             noticeSink.yield(queued)
             queued = []
@@ -445,7 +455,6 @@ public actor SyncEngine {
         let pending = (try? store.pendingUploads().isEmpty) == false
         emit(next == .synced && pending ? .syncing : next)
         if case .success = result, !background, let transfers { Task { await transfers.prefetchThumbnails() } }
-        wait = following
         elapsed = false
         flight = nil
         for waiter in flushed { waiter.resume() }
