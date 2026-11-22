@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension};
 use tokio::io::AsyncWriteExt;
 
-use crate::{AppState, files, sync};
+use crate::{AppState, files, preview, sync, thumbnails};
 
 pub const FILE_CACHE_BYTES: i64 = 500 << 20;
 const THUMBNAIL_KEEP_US: i64 = 60 * 24 * 60 * 60 * 1_000_000;
@@ -50,7 +50,7 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
     }
     let target = state.dir.join(rel);
     let partial = target.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
-    let written: Result<(), String> = async {
+    let written: Result<u64, String> = async {
         let save = |_| "Couldn't save the download".to_string();
         tokio::fs::create_dir_all(target.parent().expect("rel has a directory")).await.map_err(save)?;
         let mut out = tokio::fs::File::create(&partial).await.map_err(save)?;
@@ -68,26 +68,31 @@ async fn download(state: &AppState, id: &str, kind: &str, route: &str, rel: &str
             return Err("The download was incomplete".to_string());
         }
         out.flush().await.map_err(save)?;
-        tokio::fs::rename(&partial, &target).await.map_err(save)
+        Ok(got)
     }
     .await;
-    if written.is_err() {
-        let _ = tokio::fs::remove_file(&partial).await;
-    }
-    written?;
-    let size = tokio::fs::metadata(&target).await.map_err(crate::error_message::message)?.len() as i64;
-    state
-        .db
-        .lock()
-        .unwrap()
-        .execute(
+    let published = written.and_then(|size| {
+        let conn = state.db.lock().unwrap();
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE id = ?1)", [id], |r| r.get(0))
+            .map_err(crate::error_message::message)?;
+        if !exists { return Err("Unknown attachment".into()); }
+        std::fs::rename(&partial, &target).map_err(crate::error_message::message)?;
+        conn.execute(
             "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (attachment_id, kind) DO UPDATE SET
                 path = excluded.path, size_bytes = excluded.size_bytes, last_used_at = excluded.last_used_at",
-            (id, kind, rel, size, now_us),
-        )
-        .map_err(crate::error_message::message)?;
-    Ok(target)
+            (id, kind, rel, size as i64, now_us),
+        ).map_err(crate::error_message::message)?;
+        Ok(target)
+    });
+    if published.is_err() {
+        let _ = tokio::fs::remove_file(&partial).await;
+    }
+    published
+}
+
+fn browser_image(mime_type: &str) -> bool {
+    matches!(mime_type, "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/bmp" | "image/avif" | "image/svg+xml")
 }
 
 pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, String> {
@@ -95,24 +100,71 @@ pub async fn thumbnail(state: &AppState, id: &str, now_us: i64) -> Result<PathBu
     if let Some(path) = cached(state, &id, "thumbnail", now_us)? {
         return Ok(path);
     }
-    let own: Option<String> = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT c.path FROM attachments a JOIN cached_files c ON c.attachment_id = a.id AND c.kind = 'file'
-             WHERE a.id = ?1 AND a.mime_type LIKE 'image/%'",
-            [&id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(crate::error_message::message)?;
-    if own.is_some() {
+    let (mime_type, has_thumbnail): (String, bool) = state
+        .db.lock().unwrap()
+        .query_row("SELECT mime_type, has_thumbnail FROM attachments WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| "Unknown attachment")?;
+    if browser_image(&mime_type) {
         if let Some(path) = cached(state, &id, "file", now_us)? {
             return Ok(path);
         }
+    } else if let Some(path) = local_preview(state, &id, now_us).await {
+        return Ok(path);
+    }
+    if !has_thumbnail {
+        return Err("No preview yet".into());
     }
     download(state, &id, "thumbnail", &format!("/attachments/{id}/thumbnail"), &format!("thumbnails/{id}.jpg"), Size::AtMost(MAX_THUMBNAIL_BYTES), now_us).await
+}
+
+pub(crate) async fn local_preview(state: &AppState, id: &str, now_us: i64) -> Option<PathBuf> {
+    let source = cached(state, id, "file", now_us).ok()??;
+    let mime_type: String = state.db.lock().unwrap()
+        .query_row("SELECT mime_type FROM attachments WHERE id = ?1", [id], |r| r.get(0)).ok()?;
+    if !mime_type.starts_with("video/") && !mime_type.starts_with("image/") {
+        return None;
+    }
+    let key = format!("preview:{id}");
+    if thumbnails::backing_off(state, &key) {
+        return None;
+    }
+    let generated = async {
+        let bytes = preview::make(source).await?;
+        publish_preview(state, id, &bytes, now_us).await
+    }.await;
+    if generated.is_some() {
+        state.thumbnail_retries.lock().unwrap().remove(&key);
+    } else {
+        thumbnails::note_failure(state, &key);
+    }
+    generated
+}
+
+async fn publish_preview(state: &AppState, id: &str, bytes: &[u8], now_us: i64) -> Option<PathBuf> {
+    let relative = format!("thumbnails/{id}.jpg");
+    let target = state.dir.join(&relative);
+    let temporary = target.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(target.parent()?).await.ok()?;
+    let written = async {
+        tokio::fs::write(&temporary, bytes).await.ok()?;
+        let conn = state.db.lock().unwrap();
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE id = ?1)", [id], |r| r.get(0)).ok()?;
+        if !exists {
+            return None;
+        }
+        std::fs::rename(&temporary, &target).ok()?;
+        conn.execute(
+            "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, 'thumbnail', ?2, ?3, ?4)
+             ON CONFLICT(attachment_id, kind) DO UPDATE SET path = excluded.path, size_bytes = excluded.size_bytes, last_used_at = excluded.last_used_at",
+            (id, relative, bytes.len() as i64, now_us),
+        ).ok()?;
+        Some(())
+    }.await;
+    if written.is_none() {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return None;
+    }
+    Some(target)
 }
 
 pub fn stored(state: &AppState, id: &str, now_us: i64) -> Result<bool, String> {
@@ -255,6 +307,106 @@ mod tests {
         stmt.query_map([kind], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
     }
 
+    #[tokio::test]
+    async fn a_late_download_does_not_restore_removed_content() {
+        use tokio::io::AsyncReadExt;
+        for kind in ["thumbnail", "file"] {
+            for removal in ["attachment", "discard", "purge"] {
+                let (d, conn) = fresh();
+                let id = uuid::Uuid::new_v4().to_string();
+                put(&d, &conn, &id, "file", 1, 0, 0, true);
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}", listener.local_addr().unwrap());
+                conn.execute("UPDATE device SET server_url = ?1", [&url]).unwrap();
+                let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+                secret.set_password("test-secret").unwrap();
+                let state = AppState::new(conn, secret, d.path().to_path_buf());
+                let (requested, received) = tokio::sync::oneshot::channel();
+                let (release, released) = tokio::sync::oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        request.push(stream.read_u8().await.unwrap());
+                    }
+                    requested.send(()).unwrap();
+                    released.await.unwrap();
+                    stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 1\r\nconnection: close\r\n\r\nx").await.unwrap();
+                });
+                let rel = if kind == "thumbnail" { format!("thumbnails/{id}.jpg") } else { format!("files/{id}/f.png") };
+                let remove = async {
+                    received.await.unwrap();
+                    {
+                        let conn = state.db.lock().unwrap();
+                        let item = format!("item-{id}");
+                        match removal {
+                            "attachment" => { conn.execute("DELETE FROM attachments WHERE id = ?1", [&id]).unwrap(); }
+                            "discard" => {
+                                conn.execute("UPDATE items SET sync_error = 'refused' WHERE id = ?1", [&item]).unwrap();
+                                crate::feed::discard_item(&conn, d.path(), &item).unwrap();
+                            }
+                            _ => { conn.execute("DELETE FROM items WHERE id = ?1", [&item]).unwrap(); }
+                        }
+                        evict(&conn, d.path(), 1, FILE_CACHE_BYTES).unwrap();
+                    }
+                    release.send(()).unwrap();
+                };
+                let (result, ()) = tokio::join!(download(&state, &id, kind, "/content", &rel, Size::Exactly(1), 2), remove);
+                server.await.unwrap();
+                assert!(!d.path().join(&rel).exists(), "{kind}/{removal}: final file restored");
+                assert!(kept(&state.db.lock().unwrap(), kind).is_empty(), "{kind}/{removal}: cache row restored");
+                assert!(result.is_err(), "{kind}/{removal}");
+                assert_eq!(std::fs::read_dir(d.path().join(&rel).parent().unwrap()).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tiff_uses_a_native_preview_before_upload() {
+        let (d, conn) = fresh();
+        let staged = files::stage_bytes(d.path(), "photo.tiff", include_bytes!("../fixtures/photo.tiff")).unwrap();
+        crate::feed::capture(&conn, d.path(), "", std::slice::from_ref(&staged.id), &crate::feed::Target::Inbox, None, 1).unwrap();
+        let mime: String = conn.query_row("SELECT mime_type FROM attachments WHERE id = ?1", [&staged.id], |r| r.get(0)).unwrap();
+        assert_eq!(mime, "image/tiff");
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let path = thumbnail(&state, &staged.id, 2).await.unwrap();
+        assert_eq!(path, d.path().join(format!("thumbnails/{}.jpg", staged.id)));
+        assert!(std::fs::read(path).unwrap().starts_with(&[0xff, 0xd8]));
+        assert_eq!(kept(&state.db.lock().unwrap(), "thumbnail"), [staged.id]);
+    }
+
+    #[tokio::test]
+    async fn a_late_preview_does_not_restore_removed_content() {
+        for removal in ["attachment", "discard", "purge"] {
+            let (d, conn) = fresh();
+            let id = uuid::Uuid::new_v4().to_string();
+            put(&d, &conn, &id, "file", 1, 0, 0, false);
+            let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+            let state = AppState::new(conn, secret, d.path().to_path_buf());
+            let bytes = b"\xff\xd8generated poster";
+            {
+                let conn = state.db.lock().unwrap();
+                let item_id = format!("item-{id}");
+                match removal {
+                    "attachment" => { conn.execute("DELETE FROM attachments WHERE id = ?1", [&id]).unwrap(); }
+                    "discard" => {
+                        conn.execute("UPDATE items SET sync_error = 'refused' WHERE id = ?1", [&item_id]).unwrap();
+                        crate::feed::discard_item(&conn, d.path(), &item_id).unwrap();
+                    }
+                    _ => { conn.execute("DELETE FROM items WHERE id = ?1", [&item_id]).unwrap(); }
+                }
+                evict(&conn, d.path(), 1, FILE_CACHE_BYTES).unwrap();
+            }
+            let result = publish_preview(&state, &id, bytes, 1).await;
+            let poster_exists = d.path().join(format!("thumbnails/{id}.jpg")).exists();
+            let rows = kept(&state.db.lock().unwrap(), "thumbnail");
+            assert!(!poster_exists && rows.is_empty(), "{removal}: poster exists = {poster_exists}, cached thumbnails = {rows:?}");
+            assert!(result.is_none(), "{removal}");
+            assert_eq!(std::fs::read_dir(d.path().join("thumbnails")).unwrap().count(), 0, "{removal}: temporary file retained");
+        }
+    }
+
     #[test]
     fn the_cap_keeps_500_mb_of_the_most_recently_used_files() {
         let (d, conn) = fresh();
@@ -385,7 +537,7 @@ mod tests {
         let (d, conn) = fresh();
         let id = uuid::Uuid::new_v4().to_string();
         put(&d, &conn, &id, "file", 1, 0, 0, true);
-        conn.execute("UPDATE attachments SET mime_type = 'image/heic', has_thumbnail = 0 WHERE id = ?1", [&id]).unwrap();
+        conn.execute("UPDATE attachments SET mime_type = 'image/png', has_thumbnail = 0 WHERE id = ?1", [&id]).unwrap();
         let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         let state = AppState::new(conn, secret, d.path().to_path_buf());
         let path = thumbnail(&state, &id, 1).await.unwrap();

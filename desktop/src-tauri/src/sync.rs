@@ -375,7 +375,6 @@ pub async fn cycle(state: &AppState) -> Result<bool, SyncError> {
         // The Feed must still hear about what was pulled; the next cycle retries and reports the error.
         Err(_) => {}
     }
-    #[cfg(target_os = "macos")]
     if crate::thumbnails::upload(state, &url, &token).await.unwrap_or(false) {
         changed = true;
         let _ = pull(state, &url, &token).await;
@@ -1318,6 +1317,143 @@ pub(crate) mod server_tests {
             .unwrap()
     }
 
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    #[tokio::test]
+    async fn a_video_captured_here_shows_its_poster_before_upload() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = crate::files::stage_bytes(&a.dir, "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        let path = crate::cache::thumbnail(&a, &id, T0).await.unwrap();
+        assert!(path.starts_with(a.dir.join("thumbnails")));
+        assert!(std::fs::read(path).unwrap().starts_with(&[0xff, 0xd8]));
+        let rows: i64 = a.db.lock().unwrap().query_row("SELECT count(*) FROM cached_files WHERE attachment_id = ?1 AND kind = 'thumbnail'", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 1);
+        assert!(!flag(&a, "uploaded", &id));
+    }
+
+    #[tokio::test]
+    async fn a_video_with_no_local_copy_or_server_poster_asks_nothing() {
+        let (url, requests) = reject_all("401 Unauthorized");
+        let a = device_at(&url, "secret");
+        let id = uuid::Uuid::new_v4().to_string();
+        {
+            let conn = a.db.lock().unwrap();
+            conn.execute("INSERT INTO items (id, capture_time) VALUES ('item', ?1)", [T0]).unwrap();
+            conn.execute("INSERT INTO attachments (id, item_id, filename, mime_type, size_bytes, uploaded, has_thumbnail) VALUES (?1, 'item', 'clip.mp4', 'video/mp4', 1, 1, 0)", [&id]).unwrap();
+        }
+        assert!(crate::cache::thumbnail(&a, &id, T0).await.is_err());
+        assert_eq!(seen(&requests), 0);
+    }
+
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    #[tokio::test]
+    async fn a_video_captured_here_publishes_its_poster() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let id = crate::files::stage_bytes(&a.dir, "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "has_thumbnail", &id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        let path = crate::cache::thumbnail(&b, &id, T0).await.unwrap();
+        assert!(std::fs::read(path).unwrap().starts_with(&[0xff, 0xd8]));
+        let rows: i64 = b.db.lock().unwrap().query_row("SELECT count(*) FROM cached_files WHERE attachment_id = ?1 AND kind = 'file'", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[tokio::test]
+    async fn an_image_the_server_cannot_preview_gets_one_from_this_device() {
+        let mut server = TestServer::new();
+        server.start();
+        let a = device(&server, &server.secret);
+        let mut bmp = vec![0u8; 54];
+        bmp[..2].copy_from_slice(b"BM");
+        bmp[2..6].copy_from_slice(&70u32.to_le_bytes());
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&2i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&2i32.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+        bmp[34..38].copy_from_slice(&16u32.to_le_bytes());
+        bmp.extend_from_slice(&[0, 0, 255, 0, 0, 255, 0, 0, 0, 0, 255, 0, 0, 255, 0, 0]);
+        let id = crate::files::stage_bytes(&a.dir, "photo.bmp", &bmp).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        let mime: String = a.db.lock().unwrap().query_row("SELECT mime_type FROM attachments WHERE id = ?1", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(mime, "image/bmp");
+        sync(&a).await.unwrap();
+        assert!(flag(&a, "has_thumbnail", &id));
+        let b = device(&server, &server.secret);
+        sync(&b).await.unwrap();
+        let path = crate::cache::thumbnail(&b, &id, T0).await.unwrap();
+        assert!(std::fs::read(path).unwrap().starts_with(&[0xff, 0xd8]));
+        let rows: i64 = b.db.lock().unwrap().query_row("SELECT count(*) FROM cached_files WHERE attachment_id = ?1 AND kind = 'file'", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_heic_photo_shows_a_preview_not_the_original() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = crate::files::stage_bytes(&a.dir, "photo.heic", include_bytes!("../../../ios/NoteBankKit/Tests/NoteBankKitTests/Fixtures/synthetic.heic")).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        let path = crate::cache::thumbnail(&a, &id, T0).await.unwrap();
+        assert!(path.starts_with(a.dir.join("thumbnails")));
+        assert!(std::fs::read(path).unwrap().starts_with(&[0xff, 0xd8]));
+    }
+
+    #[tokio::test]
+    async fn a_png_still_shows_its_original() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = capture_png(&a, "");
+        let path = crate::cache::thumbnail(&a, &id, T0).await.unwrap();
+        assert!(path.starts_with(a.dir.join("files")));
+        assert_eq!(std::fs::read(path).unwrap(), PIXEL_PNG);
+    }
+
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    #[tokio::test]
+    async fn a_failed_preview_backs_off() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = crate::files::stage_bytes(&a.dir, "broken.mp4", b"broken.mp4").unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        assert!(crate::cache::thumbnail(&a, &id, T0).await.is_err());
+        let key = format!("preview:{id}");
+        assert!(a.thumbnail_retries.lock().unwrap().contains_key(&key));
+        let original = crate::cache::file(&a, &id, T0).await.unwrap();
+        std::fs::write(original, include_bytes!("../fixtures/clip.mp4")).unwrap();
+        assert!(crate::cache::thumbnail(&a, &id, T0).await.is_err(), "generation must still back off after repair");
+        a.thumbnail_retries.lock().unwrap().get_mut(&key).unwrap().1 = std::time::Instant::now() - Duration::from_secs(1);
+        assert!(crate::cache::thumbnail(&a, &id, T0).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_evicted_original_leaves_the_chip() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = crate::files::stage_bytes(&a.dir, "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        let original = crate::cache::file(&a, &id, T0).await.unwrap();
+        std::fs::remove_file(original).unwrap();
+        assert!(crate::cache::thumbnail(&a, &id, T0).await.is_err());
+        let rows: i64 = a.db.lock().unwrap().query_row("SELECT count(*) FROM cached_files WHERE attachment_id = ?1 AND kind = 'file'", [&id], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    #[tokio::test]
+    async fn concurrent_previews_never_tear() {
+        let a = device_at("http://127.0.0.1:1", "secret");
+        let id = crate::files::stage_bytes(&a.dir, "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap().id;
+        feed::capture(&a.db.lock().unwrap(), &a.dir, "", std::slice::from_ref(&id), &feed::Target::Inbox, None, T0).unwrap();
+        let (first, second) = tokio::join!(crate::cache::thumbnail(&a, &id, T0), crate::cache::thumbnail(&a, &id, T0));
+        let first = first.unwrap();
+        assert_eq!(first, second.unwrap());
+        let bytes = std::fs::read(first).unwrap();
+        image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).unwrap();
+    }
+
     #[tokio::test]
     async fn an_attachment_captured_offline_uploads_after_a_relaunch() {
         let mut server = TestServer::new();
@@ -1377,7 +1513,6 @@ pub(crate) mod server_tests {
         assert_eq!(std::fs::read(recovered).unwrap(), PIXEL_PNG);
     }
 
-    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn a_missing_server_thumbnail_is_reuploaded_from_a_cached_device() {
         let mut server = TestServer::new();

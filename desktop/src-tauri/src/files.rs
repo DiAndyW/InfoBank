@@ -117,6 +117,7 @@ pub fn unstage(conn: &Connection, dir: &Path, id: &str) -> Result<(), String> {
     if !captured { require_unowned(conn, &id, None)?; }
     if !captured {
         let _ = std::fs::remove_dir_all(dir.join("files").join(&id));
+        let _ = std::fs::remove_file(dir.join("thumbnails").join(format!("{id}.jpg")));
     }
     Ok(())
 }
@@ -133,6 +134,7 @@ pub fn sweep_staged(conn: &Connection, dir: &Path) -> Result<(), String> {
             .map_err(crate::error_message::message)?;
         if !known {
             let _ = std::fs::remove_dir_all(entry.path());
+            let _ = std::fs::remove_file(dir.join("thumbnails").join(format!("{}.jpg", entry.file_name().to_string_lossy())));
         }
     }
     Ok(())
@@ -283,6 +285,17 @@ mod tests {
     }
 
     #[test]
+    fn unstaging_removes_a_staged_poster() {
+        let (d, conn) = fresh();
+        let staged = stage_bytes(d.path(), "clip.mp4", b"video").unwrap();
+        std::fs::create_dir_all(d.path().join("thumbnails")).unwrap();
+        let poster = d.path().join("thumbnails").join(format!("{}.jpg", staged.id));
+        std::fs::write(&poster, b"poster").unwrap();
+        unstage(&conn, d.path(), &staged.id).unwrap();
+        assert!(!poster.exists());
+    }
+
+    #[test]
     fn unstaging_never_deletes_a_captured_file() {
         let (d, conn) = fresh();
         let draft = stage_bytes(d.path(), "draft.txt", b"x").unwrap();
@@ -318,6 +331,24 @@ mod tests {
         sweep_staged(&conn, d.path()).unwrap();
         assert!(!d.path().join("files").join(&left.id).exists());
         assert!(d.path().join("files").join(&kept.id).exists());
+    }
+
+    #[test]
+    fn sweeping_abandoned_staging_removes_posters_but_preserves_live_drafts() {
+        let (d, conn) = fresh();
+        let abandoned = stage_bytes(d.path(), "clip.mp4", b"video").unwrap();
+        let draft = stage_bytes(d.path(), "draft.mp4", b"video").unwrap();
+        conn.execute("INSERT INTO drafts (place, text) VALUES ('home', '')", []).unwrap();
+        conn.execute("INSERT INTO draft_attachments (attachment_id, place, position, filename, mime_type, size_bytes) VALUES (?1, 'home', 0, 'draft.mp4', 'video/mp4', 5)", [&draft.id]).unwrap();
+        std::fs::create_dir_all(d.path().join("thumbnails")).unwrap();
+        for id in [&abandoned.id, &draft.id] {
+            std::fs::write(d.path().join(format!("thumbnails/{id}.jpg")), b"poster").unwrap();
+        }
+        sweep_staged(&conn, d.path()).unwrap();
+        assert!(!d.path().join(format!("files/{}", abandoned.id)).exists());
+        assert!(!d.path().join(format!("thumbnails/{}.jpg", abandoned.id)).exists());
+        assert!(d.path().join(format!("files/{}", draft.id)).exists());
+        assert!(d.path().join(format!("thumbnails/{}.jpg", draft.id)).exists());
     }
 
     #[test]

@@ -881,6 +881,25 @@ test("a video with a poster shows it with a play badge and opens in the default 
   expect(calls).toContainEqual({ cmd: "open_attachment", args: { id: "a4" } });
 });
 
+test("a video gets its poster from this device", async () => {
+  const clip: FeedAttachment = { ...photo, id: "v1", filename: "clip.mp4", mime_type: "video/mp4", has_thumbnail: false, uploaded: false };
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [clip])], thumbnail: "/data/thumbnails/v1.jpg" });
+  render(<App />);
+  const button = await screen.findByRole("button", { name: "Play clip.mp4" });
+  expect(button.querySelector("img")).not.toBeNull();
+});
+
+test("a video with no poster stays a file chip", async () => {
+  const clip: FeedAttachment = { ...photo, id: "v1", filename: "clip.mp4", mime_type: "video/mp4", has_thumbnail: false, uploaded: false };
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [clip])] });
+  render(<App />);
+  const button = await screen.findByRole("button", { name: "Open clip.mp4" });
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "thumbnail", args: { id: "v1" } }));
+  expect(button).toHaveTextContent("clip.mp4");
+  expect(button).toHaveTextContent("879 KB");
+  expect(button.querySelector("img")).toBeNull();
+});
+
 test("a video without a poster stays a file chip", async () => {
   const clip: FeedAttachment = { ...report, id: "a4", filename: "clip.mov", mime_type: "video/quicktime", size_bytes: 40_000_000 };
   const calls = backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [clip])] });
@@ -889,7 +908,7 @@ test("a video without a poster stays a file chip", async () => {
   expect(chip).toHaveClass("nb-file");
   expect(screen.getByText("38.1 MB")).toBeInTheDocument();
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
-  expect(calls.some((c) => c.cmd === "thumbnail")).toBe(false);
+  expect(calls.some((c) => c.cmd === "thumbnail")).toBe(true);
 });
 
 test("a stored theme that isn't one falls back to Warm paper", async () => {

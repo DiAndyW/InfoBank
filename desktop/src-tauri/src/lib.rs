@@ -6,6 +6,7 @@ mod drafts;
 mod feed;
 mod files;
 mod ops;
+mod preview;
 mod quick;
 mod search;
 mod settings;
@@ -234,6 +235,7 @@ pub fn run() {
             commands::set_items_trashed,
             commands::open_attachment,
             commands::open_staged_attachment,
+            commands::staged_thumbnail,
             commands::reveal_attachment,
             commands::list_items,
             commands::search_items,
@@ -303,6 +305,7 @@ mod tests {
             "pick_files",
             "picker_topic",
             "stage_attachment_bytes",
+            "staged_thumbnail",
             "unlisten",
             "unstage_attachment",
         ]
