@@ -40,10 +40,7 @@ func newSyncEnv(t *testing.T) *syncEnv {
 	// A day after at(0), so tests' Device timestamps are in the past unless a test means otherwise.
 	clock := &testClock{now: syncBase.Add(24 * time.Hour)}
 	dir := t.TempDir()
-	h, err := New(Config{Secret: testSecret, Now: clock.Now, DB: db, AttachmentDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := openTestServer(t, Config{Secret: testSecret, Now: clock.Now, DB: db, AttachmentDir: dir})
 	return &syncEnv{t: t, h: h, clock: clock, dir: dir}
 }
 

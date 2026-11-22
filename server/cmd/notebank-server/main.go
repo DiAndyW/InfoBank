@@ -37,11 +37,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("check %s and %s: %v", server.EnvSecret, server.EnvAttachmentDir, err)
 	}
+	defer handler.Close()
 
 	if err := server.Migrate(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
+	purgeDone := make(chan struct{})
 	go func() {
+		defer close(purgeDone)
 		for {
 			if err := handler.Purge(ctx); err != nil {
 				log.Printf("purge: %v", err)
@@ -59,15 +62,22 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: server.ReadHeaderTimeout,
 	}
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), server.ShutdownTimeout)
 		defer cancel()
-		srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+			srv.Close()
+		}
 	}()
 
 	log.Printf("listening on %s", listenAddr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+	<-shutdownDone
+	<-purgeDone
 }

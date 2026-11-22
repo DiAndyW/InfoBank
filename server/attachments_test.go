@@ -357,6 +357,7 @@ func TestStoreKeepsKeysInsideItsDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { store.Close() })
 	for _, key := range []string{"../escaped", "/tmp/escaped", "sub/../../escaped"} {
 		if err := store.Put(key, strings.NewReader("x"), 1); err == nil {
 			t.Errorf("Put(%q) succeeded, want error", key)
@@ -377,6 +378,7 @@ func TestFailedPutLeavesNoFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { store.Close() })
 	if err := store.Put("key", strings.NewReader("1234"), 5); err != errSizeMismatch {
 		t.Fatalf("Put of 4 bytes declared as 5 = %v, want errSizeMismatch", err)
 	}
@@ -492,10 +494,7 @@ func TestStorageErrorsDoNotQueueRecovery(t *testing.T) {
 	e := newSyncEnv(t)
 	_, id := e.capturePhoto()
 	cursor := e.pull(0).Cursor
-	if err := os.Remove(filepath.Join(e.dir, id)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(id, filepath.Join(e.dir, id)); err != nil {
+	if err := e.h.Close(); err != nil {
 		t.Fatal(err)
 	}
 	for _, method := range []string{"GET", "PUT"} {
