@@ -2538,6 +2538,7 @@ dependencies = [
  "apple-native-keyring-store",
  "block2",
  "chrono",
+ "dunce",
  "futures-util",
  "image",
  "keyring-core",

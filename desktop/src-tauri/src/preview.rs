@@ -117,7 +117,13 @@ fn generate(path: &Path) -> Option<Vec<u8>> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().ok()?;
         let result = (|| {
-            let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            // Shell parsing rejects forward slashes and verbatim disk prefixes.
+            let path = std::path::absolute(path).ok()?;
+            let path: Vec<u16> = dunce::simplified(&path)
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
             let item: IShellItem = SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None).ok()?;
             let provider: IThumbnailProvider =
                 item.BindToHandler(None, &BHID_ThumbnailHandler).ok()?;
