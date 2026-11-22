@@ -16,7 +16,6 @@ mod sync;
 mod topics;
 mod tray;
 mod updater;
-#[cfg(target_os = "macos")]
 mod thumbnails;
 
 use std::collections::HashSet;
@@ -38,7 +37,6 @@ pub struct AppState {
     status: Mutex<&'static str>,
     update: updater::UpdateState,
     skipped_uploads: Mutex<HashSet<String>>,
-    #[cfg(target_os = "macos")]
     thumbnail_retries: Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
     notices: Mutex<Vec<sync::SyncNotice>>,
     picking_files: AtomicBool,
@@ -61,7 +59,6 @@ impl AppState {
             status: Mutex::new("synced"),
             update: updater::UpdateState::new(!cfg!(debug_assertions)),
             skipped_uploads: Mutex::new(HashSet::new()),
-            #[cfg(target_os = "macos")]
             thumbnail_retries: Mutex::new(std::collections::HashMap::new()),
             notices: Mutex::new(Vec::new()),
             picking_files: AtomicBool::new(false),
