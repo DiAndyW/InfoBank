@@ -6,6 +6,7 @@ mod drafts;
 mod feed;
 mod files;
 mod ops;
+mod preview;
 mod quick;
 mod search;
 mod settings;
@@ -15,7 +16,6 @@ mod sync;
 mod topics;
 mod tray;
 mod updater;
-#[cfg(target_os = "macos")]
 mod thumbnails;
 
 use std::collections::HashSet;
@@ -37,7 +37,6 @@ pub struct AppState {
     status: Mutex<&'static str>,
     update: updater::UpdateState,
     skipped_uploads: Mutex<HashSet<String>>,
-    #[cfg(target_os = "macos")]
     thumbnail_retries: Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>,
     notices: Mutex<Vec<sync::SyncNotice>>,
     picking_files: AtomicBool,
@@ -60,7 +59,6 @@ impl AppState {
             status: Mutex::new("synced"),
             update: updater::UpdateState::new(!cfg!(debug_assertions)),
             skipped_uploads: Mutex::new(HashSet::new()),
-            #[cfg(target_os = "macos")]
             thumbnail_retries: Mutex::new(std::collections::HashMap::new()),
             notices: Mutex::new(Vec::new()),
             picking_files: AtomicBool::new(false),
@@ -234,6 +232,7 @@ pub fn run() {
             commands::set_items_trashed,
             commands::open_attachment,
             commands::open_staged_attachment,
+            commands::staged_thumbnail,
             commands::reveal_attachment,
             commands::list_items,
             commands::search_items,
@@ -303,6 +302,7 @@ mod tests {
             "pick_files",
             "picker_topic",
             "stage_attachment_bytes",
+            "staged_thumbnail",
             "unlisten",
             "unstage_attachment",
         ]

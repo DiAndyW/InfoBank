@@ -15,19 +15,27 @@ type testClock struct{ now time.Time }
 func (c *testClock) Now() time.Time          { return c.now }
 func (c *testClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
-func newTestServer(t *testing.T) (http.Handler, *testClock) {
+func openTestServer(t *testing.T, cfg Config) *Server {
 	t.Helper()
-	clock := &testClock{now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
-	h, err := New(Config{Secret: testSecret, Now: clock.Now, AttachmentDir: t.TempDir()})
+	h, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Close() })
+	return h
+}
+
+func newTestServer(t *testing.T) (http.Handler, *testClock) {
+	t.Helper()
+	clock := &testClock{now: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	h := openTestServer(t, Config{Secret: testSecret, Now: clock.Now, AttachmentDir: t.TempDir()})
 	return h, clock
 }
 
 func TestShortSecretIsRefused(t *testing.T) {
 	for _, secret := range []string{"", "short", testSecret[:31]} {
-		if _, err := New(Config{Secret: secret, Now: time.Now, AttachmentDir: t.TempDir()}); err == nil {
+		if h, err := New(Config{Secret: secret, Now: time.Now, AttachmentDir: t.TempDir()}); err == nil {
+			h.Close()
 			t.Errorf("New with %d-char secret succeeded, want error", len(secret))
 		}
 	}

@@ -27,13 +27,13 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
   const video = a.mime_type.startsWith("video/");
 
   useEffect(() => {
-    if (!image || src) return;
+    if (a.runnable || (!image && !video) || src) return;
     let live = true;
     thumbnail(a.id).then((path) => live && setSrc(convertFileSrc(path)), () => {});
     return () => {
       live = false;
     };
-  }, [a.id, image, closedCount]);
+  }, [a.id, a.runnable, image, video, closedCount]);
 
   useEffect(() => {
     if (!note || note === downloading) return;
@@ -50,7 +50,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
       setNote(stored ? null : downloading);
       await action(a.id);
       setNote(null);
-      if (image && !src) {
+      if ((image || video) && !src) {
         try { setSrc(convertFileSrc(await thumbnail(a.id))); } catch {}
       }
       return true;
@@ -83,7 +83,7 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
         {revealLabel}
       </button>
     </div>
-  ) : image ? (
+  ) : image || (video && !!src) ? (
     <button type="button" className="nb-thumb" data-attachment-id={a.id} onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
       {src ? (
         <>

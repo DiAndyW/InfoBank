@@ -75,11 +75,7 @@ func TestUploadTokenSurvivesRestartButNotSecretRotation(t *testing.T) {
 	_, id := e.captureFile("x", "text/plain", []byte("x"))
 	token := issuedToken(t, e, id)
 	for _, secret := range []string{testSecret, strings.Repeat("other-secret", 4)} {
-		h, err := New(Config{Secret: secret, Now: e.clock.Now, DB: e.h.api.db, AttachmentDir: e.dir})
-		if err != nil {
-			t.Fatal(err)
-		}
-		e.h = h
+		e.h = openTestServer(t, Config{Secret: secret, Now: e.clock.Now, DB: e.h.api.db, AttachmentDir: e.dir})
 		got := e.send("PUT", "/attachments/"+id, bytes.NewBufferString("x"), "Authorization", "Bearer "+token).Code
 		want := 204
 		if secret != testSecret {

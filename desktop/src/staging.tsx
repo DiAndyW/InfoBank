@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type ClipboardEvent, type RefObject } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, thumbnail, openAttachment, openStagedAttachment, type Staged, type StagedFiles } from "./api";
+import { MAX_ATTACHMENT_BYTES, pickFiles, stageBytes, unstage, stagedThumbnail, thumbnail, openAttachment, openStagedAttachment, type Staged, type StagedFiles } from "./api";
 import { appDataDir, join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import ImageViewer, { type ViewerImage } from "./ImageViewer";
@@ -192,6 +192,8 @@ export function useStaging({ acceptsDrops, state, frozen, scope = "" }: {
   return { dropTarget, setDragging, setViewing, wait, isImporting, pendingImportCount, retire, staged, onPaste, remove, pick, discard, errors, clearErrors: () => setErrors(all => all.filter(e => e.scope !== scope)) };
 }
 
+const browserImages = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif", "image/svg+xml"];
+
 type Chip = { id: string; filename: string; mime_type: string; size_bytes: number; has_thumbnail?: boolean };
 
 async function stagedSource(file: Pick<Chip, "id" | "filename">) {
@@ -200,18 +202,19 @@ async function stagedSource(file: Pick<Chip, "id" | "filename">) {
 
 function PreviewTile({ file, kept, onOpen, onRemove }: { file: Chip; kept: boolean; onOpen: () => void; onRemove: () => void }) {
   const image = file.mime_type.startsWith("image/");
+  const generated = !kept && (file.mime_type.startsWith("video/") || (image && !browserImages.includes(file.mime_type)));
   const [src, setSrc] = useState<string | null>(null);
-  const [loading, setLoading] = useState(image || (kept && !!file.has_thumbnail));
+  const [loading, setLoading] = useState(generated || image || (kept && !!file.has_thumbnail));
   useEffect(() => {
     let live = true;
     setSrc(null);
-    setLoading(image || (kept && !!file.has_thumbnail));
-    if (image || (kept && file.has_thumbnail)) {
-      const source = kept ? thumbnail(file.id).then(convertFileSrc) : stagedSource(file);
+    setLoading(generated || image || (kept && !!file.has_thumbnail));
+    if (generated || image || (kept && file.has_thumbnail)) {
+      const source = kept ? thumbnail(file.id).then(convertFileSrc) : generated ? stagedThumbnail(file.id).then(convertFileSrc) : stagedSource(file);
       source.then(value => { if (live) setSrc(value); }, () => { if (live) setLoading(false); });
     }
     return () => { live = false; };
-  }, [file.id, file.filename, file.has_thumbnail, kept, image]);
+  }, [file.id, file.filename, file.has_thumbnail, kept, image, generated]);
   const content = <>{!loading && <Icon name={image ? "image" : "play"} />}{src && <img src={src} alt="" style={{ visibility: loading ? "hidden" : "visible" }} onLoad={event => {
       const image = event.currentTarget;
       if (image.decode) void image.decode().then(() => setLoading(false), () => { setSrc(null); setLoading(false); });

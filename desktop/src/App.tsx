@@ -288,7 +288,8 @@ export default function App() {
     }
   }, [topics, !!settings]);
 
-  useEffect(() => {
+  // Undo must be ready when its notice first appears.
+  useLayoutEffect(() => {
     const undo = notice?.action?.label === "Undo" ? notice.action : null;
     const undoID = notice?.id;
     if (!undo || editing || (covered && !notice?.inSearch)) return;

@@ -24,6 +24,10 @@ func openAttachmentStore(dir string) (*attachmentStore, error) {
 	return &attachmentStore{root: root}, nil
 }
 
+func (s *attachmentStore) Close() error {
+	return s.root.Close()
+}
+
 var errSizeMismatch = errors.New("file size does not match the declared size")
 
 // Put stores r under key only if it holds exactly sizeBytes, so a key never names a partial file.

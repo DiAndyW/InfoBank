@@ -111,13 +111,18 @@ fn staged_attachments(dir: &Path, ids: &[String]) -> Result<Vec<ops::NewAttachme
 }
 
 // The pinned local copy: eviction skips it until the Server has the file.
-fn pin(conn: &Connection, a: &ops::NewAttachment, now_us: i64) -> Result<(), String> {
+fn pin(conn: &Connection, dir: &Path, a: &ops::NewAttachment, now_us: i64) -> Result<(), String> {
     conn.execute(
         "INSERT INTO cached_files (attachment_id, kind, path, size_bytes, last_used_at) VALUES (?1, 'file', ?2, ?3, ?4)",
         (&a.id, format!("files/{}/{}", a.id, a.filename), a.size_bytes, now_us),
     )
-    .map(|_| ())
-    .map_err(crate::error_message::message)
+    .map_err(crate::error_message::message)?;
+    let poster = dir.join("thumbnails").join(format!("{}.jpg", a.id));
+    match std::fs::remove_file(poster) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(crate::error_message::message(error)),
+    }
 }
 
 pub fn capture(
@@ -158,7 +163,7 @@ pub fn capture(
             (&a.id, &item_id, &a.filename, &a.mime_type, a.size_bytes),
         )
         .map_err(crate::error_message::message)?;
-        pin(&tx, a, now_us)?;
+        pin(&tx, dir, a, now_us)?;
     }
     ops::queue(&tx, ops::Op::CaptureItem { item_id, topic_id: topic_id.map(String::from), tunnel, text, attachments }, now_us)?;
     if let Some(place) = draft {
@@ -214,7 +219,7 @@ pub fn edit_item(
     }
     // The Server trashes an Item that any single op leaves empty, so files go in first and out last.
     for a in adding {
-        pin(&tx, &a, now_us)?;
+        pin(&tx, dir, &a, now_us)?;
         ops::queue(&tx, ops::Op::AddAttachment { item_id: item(), attachment: a }, now_us)?;
     }
     if text != current {
@@ -754,6 +759,9 @@ mod tests {
     fn discard_removes_a_refused_capture_and_its_files() {
         let (d, conn) = fresh();
         let id = png(&d);
+        let poster = d.path().join(format!("thumbnails/{id}.jpg"));
+        std::fs::create_dir_all(poster.parent().unwrap()).unwrap();
+        std::fs::write(&poster, b"poster").unwrap();
         capture(&conn, d.path(), "hi", std::slice::from_ref(&id), &Target::Inbox, None, 1).unwrap();
         conn.execute("UPDATE items SET sync_error = 'invalid'", []).unwrap();
         let file = d.path().join("files").join(&id).join("scan.png");
@@ -764,6 +772,22 @@ mod tests {
             assert_eq!(count(&conn, table), 0, "{table}");
         }
         assert!(!file.exists());
+        assert!(!poster.exists());
+    }
+
+    #[test]
+    fn an_editor_attachment_does_not_leave_an_untracked_staged_poster() {
+        let (d, conn) = fresh();
+        conn.execute("INSERT INTO items (id, text, capture_time) VALUES ('i', 'text', 1)", []).unwrap();
+        let id = png(&d);
+        let poster = d.path().join(format!("thumbnails/{id}.jpg"));
+        std::fs::create_dir_all(poster.parent().unwrap()).unwrap();
+        std::fs::write(&poster, b"poster").unwrap();
+        edit_item(&conn, d.path(), "i", "text", std::slice::from_ref(&id), &[], 0, 2).unwrap();
+        assert!(!poster.exists());
+        edit_item(&conn, d.path(), "i", "text", &[], std::slice::from_ref(&id), 0, 3).unwrap();
+        crate::cache::evict(&conn, d.path(), 4, crate::cache::FILE_CACHE_BYTES).unwrap();
+        assert!(!d.path().join(format!("files/{id}")).exists());
     }
 
     #[test]

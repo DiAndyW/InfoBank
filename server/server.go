@@ -84,6 +84,11 @@ func New(cfg Config) (*Server, error) {
 	return &Server{Handler: root, api: api}, nil
 }
 
+// Close releases the attachment store after HTTP requests and purge jobs stop.
+func (s *Server) Close() error {
+	return s.api.files.Close()
+}
+
 // clientIP trusts X-Forwarded-For only from loopback (Caddy), and only its last entry, which Caddy appends.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

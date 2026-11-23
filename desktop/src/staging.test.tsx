@@ -1,11 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { behaviourTest } from "./behaviour-test";
 import { mockConvertFileSrc } from "@tauri-apps/api/mocks";
-import { thumbnail, attachmentOriginal, attachmentStored, openAttachment, openStagedAttachment } from "./api";
+import { stagedThumbnail, thumbnail, attachmentOriginal, attachmentStored, openAttachment, openStagedAttachment } from "./api";
 import { Chips } from "./staging";
 vi.mock("@tauri-apps/api/path", () => ({ appDataDir: async () => "/app", join: async (...parts: string[]) => parts.join("/") }));
-vi.mock("./api", () => ({ openAttachment: vi.fn(async () => {}), openStagedAttachment: vi.fn(async () => {}), thumbnail: vi.fn(async () => "/thumb"), attachmentStored: vi.fn(async () => true), attachmentOriginal: vi.fn(async () => "/original") }));
+vi.mock("./api", () => ({ stagedThumbnail: vi.fn(async () => "/poster"), openAttachment: vi.fn(async () => {}), openStagedAttachment: vi.fn(async () => {}), thumbnail: vi.fn(async () => "/thumb"), attachmentStored: vi.fn(async () => true), attachmentOriginal: vi.fn(async () => "/original") }));
 beforeEach(() => { mockConvertFileSrc("macos"); vi.clearAllMocks(); });
 afterEach(cleanup);
 behaviourTest("editor.attachment_preview", async expected => {
@@ -118,4 +118,40 @@ behaviourTest("editor.attachment_preview", async () => {
   expect(screen.getByRole("button", { name: "Remove decode.png" })).toBeEnabled();
   fireEvent.click(button);
   expect(await screen.findByRole("dialog", { name: "decode.png" })).toBeTruthy();
+});
+
+
+test("a staged video shows a poster", async () => {
+  render(<Chips label="Attachments" list={[{ id: "v1", filename: "clip.mp4", mime_type: "video/mp4", size_bytes: 30 }]} onRemove={() => {}} />);
+  const button = screen.getByRole("button", { name: "Play clip.mp4" });
+  await waitFor(() => expect(button.querySelector("img")).not.toBeNull());
+  expect(stagedThumbnail).toHaveBeenCalledWith("v1");
+  expect(button.querySelector(".nb-thumb-play")).not.toBeNull();
+  fireEvent.load(button.querySelector("img")!);
+  expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test("a staged video without a poster shows the play icon", async () => {
+  vi.mocked(stagedThumbnail).mockRejectedValueOnce("No preview");
+  render(<Chips label="Attachments" list={[{ id: "v1", filename: "clip.mp4", mime_type: "video/mp4", size_bytes: 30 }]} onRemove={() => {}} />);
+  await waitFor(() => expect(stagedThumbnail).toHaveBeenCalledWith("v1"));
+  expect(screen.queryByRole("progressbar")).toBeNull();
+  const button = screen.getByRole("button", { name: "Play clip.mp4" });
+  expect(button.querySelector("img")).toBeNull();
+  expect(button.querySelector(".nb-thumb-play svg")).not.toBeNull();
+});
+
+
+test.each(["image/tiff", "image/heic", "image/heif", "image/x-custom"])("a staged %s photo uses a native poster", async mime => {
+  render(<Chips label="Attachments" list={[{ id: "photo", filename: "photo.tiff", mime_type: mime, size_bytes: 30 }]} onRemove={() => {}} />);
+  const button = screen.getByRole("button", { name: "photo.tiff" });
+  await waitFor(() => expect(button.querySelector("img")?.getAttribute("src")).toContain("poster"));
+  fireEvent.load(button.querySelector("img")!);
+  expect(screen.queryByRole("progressbar")).toBeNull();
+});
+
+test.each(["image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp", "image/avif", "image/svg+xml"])("a staged %s photo uses its original", async mime => {
+  render(<Chips label="Attachments" list={[{ id: "photo", filename: "photo.img", mime_type: mime, size_bytes: 30 }]} onRemove={() => {}} />);
+  const button = screen.getByRole("button", { name: "photo.img" });
+  await waitFor(() => expect(button.querySelector("img")?.getAttribute("src")).toContain("files%2Fphoto%2Fphoto.img"));
 });

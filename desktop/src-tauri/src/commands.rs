@@ -360,6 +360,36 @@ pub async fn open_staged_attachment<R: Runtime>(app: AppHandle<R>, window: tauri
 }
 
 #[tauri::command]
+pub async fn staged_thumbnail<R: Runtime>(window: tauri::WebviewWindow<R>, state: State<'_, AppState>, id: String) -> Result<String, String> {
+    if window.label() != "main" { files::require_unowned(&state.db.lock().unwrap(), &id, None)?; }
+    let source = files::staged_open_path(&state.dir, &id)?;
+    let key = format!("preview:{id}");
+    if crate::thumbnails::backing_off(&state, &key) { return Err("No preview".into()); }
+    let Some(bytes) = crate::preview::make(source).await else {
+        crate::thumbnails::note_failure(&state, &key);
+        return Err("No preview".into());
+    };
+    let target = state.dir.join("thumbnails").join(format!("{id}.jpg"));
+    let temporary = target.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(target.parent().unwrap()).await.map_err(crate::error_message::message)?;
+    let published = async {
+        tokio::fs::write(&temporary, bytes).await.map_err(crate::error_message::message)?;
+        let conn = state.db.lock().unwrap();
+        if window.label() != "main" { files::require_unowned(&conn, &id, None)?; }
+        let owned: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM attachments WHERE id = ?1)", [&id], |r| r.get(0)).map_err(crate::error_message::message)?;
+        if owned { return Err("No preview".into()); }
+        files::staged_open_path(&state.dir, &id)?;
+        std::fs::rename(&temporary, &target).map_err(crate::error_message::message)
+    }.await;
+    if let Err(error) = published {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(error);
+    }
+    state.thumbnail_retries.lock().unwrap().remove(&key);
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let path = cache::file(&state, &id, now_us()).await?;
     app.opener().reveal_item_in_dir(path).map_err(crate::error_message::message)
@@ -521,7 +551,7 @@ mod tests {
         let owned = files::stage_bytes(dir.path(), "owned.txt", b"private").unwrap();
         let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
         let app = mock_builder()
-            .invoke_handler(tauri::generate_handler![list_drafts, save_draft, unstage_attachment, open_staged_attachment, capture])
+            .invoke_handler(tauri::generate_handler![list_drafts, save_draft, unstage_attachment, open_staged_attachment, staged_thumbnail, capture])
             .build(tauri::generate_context!(test = true)).unwrap();
         app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
         let send = |label: &str, cmd: &str, body: serde_json::Value| {
@@ -535,7 +565,7 @@ mod tests {
         let body = serde_json::json!({"place":"home", "text":"", "homeTopicId":null, "attachmentIds":[owned.id]});
         send("main", "save_draft", body.clone()).unwrap();
         assert_eq!(drafts::list(&app.state::<AppState>().db.lock().unwrap()).unwrap().len(), 1);
-        for cmd in ["list_drafts", "save_draft", "open_staged_attachment", "unstage_attachment", "capture"] {
+        for cmd in ["list_drafts", "save_draft", "open_staged_attachment", "staged_thumbnail", "unstage_attachment", "capture"] {
             let args = match cmd {
                 "list_drafts" => serde_json::json!({}),
                 "save_draft" => body.clone(),
@@ -551,6 +581,135 @@ mod tests {
             assert!(files::staged_open_path(dir.path(), &owned.id).is_ok());
         }
         assert!(send("main", "list_drafts", serde_json::json!({})).is_ok());
+    }
+
+    #[test]
+    fn a_quick_capture_window_cannot_preview_an_owned_attachment() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let owned = files::stage_bytes(dir.path(), "clip.mp4", b"video").unwrap();
+        drafts::save_with_attachments(&conn, dir.path(), "home", "", None, std::slice::from_ref(&owned.id)).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![staged_thumbnail])
+            .build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let window = WebviewWindowBuilder::new(&app, "quick-capture", WebviewUrl::default()).build().unwrap();
+        let error = get_ipc_response(&window, tauri::webview::InvokeRequest {
+            cmd: "staged_thumbnail".into(), callback: tauri::ipc::CallbackFn(0), error: tauri::ipc::CallbackFn(1),
+            url: window.url().unwrap(), body: serde_json::json!({"id": owned.id}).into(),
+            headers: Default::default(), invoke_key: INVOKE_KEY.to_string(),
+        }).unwrap_err();
+        assert_eq!(error, serde_json::json!("Attachment belongs to another saved Item or draft"));
+        assert!(!dir.path().join("thumbnails").exists());
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    fn unstaging_during_preview_publication_leaves_no_poster() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let staged = files::stage_bytes(dir.path(), "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder().build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default()).build().unwrap();
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        let id = staged.id.clone();
+        let worker = std::thread::spawn(move || {
+            let handle = window.app_handle().clone();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let result = runtime.block_on(staged_thumbnail(window, handle.state::<AppState>(), id));
+            runtime.shutdown_background();
+            result
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let pending = loop {
+            if std::fs::read_dir(dir.path().join("thumbnails")).is_ok_and(|mut entries| entries.next().is_some()) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline { break false; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        files::unstage(&conn, dir.path(), &staged.id).unwrap();
+        drop(conn);
+        let result = worker.join().unwrap();
+        assert!(pending, "preview must reach temporary publication");
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("thumbnails")).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    fn capture_during_staged_publication_leaves_no_untracked_poster() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let staged = files::stage_bytes(dir.path(), "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder().build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default()).build().unwrap();
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().unwrap();
+        let id = staged.id.clone();
+        let worker = std::thread::spawn(move || {
+            let handle = window.app_handle().clone();
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let result = runtime.block_on(staged_thumbnail(window, handle.state::<AppState>(), id));
+            runtime.shutdown_background();
+            result
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let pending = loop {
+            if std::fs::read_dir(dir.path().join("thumbnails")).is_ok_and(|mut entries| entries.next().is_some()) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline { break false; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        feed::capture(&conn, dir.path(), "", std::slice::from_ref(&staged.id), &feed::Target::Inbox, None, 1).unwrap();
+        drop(conn);
+        let result = worker.join().unwrap();
+        assert!(pending, "preview must reach temporary publication");
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(dir.path().join("thumbnails")).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    #[cfg_attr(target_os = "windows", ignore = "Windows CI lacks Media Foundation; run with --ignored on a PC")]
+    async fn a_staged_poster_is_a_local_jpeg_without_a_cache_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let staged = files::stage_bytes(dir.path(), "clip.mp4", include_bytes!("../fixtures/clip.mp4")).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder().build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default()).build().unwrap();
+        let path = staged_thumbnail(window, app.state::<AppState>(), staged.id.clone()).await.unwrap();
+        assert_eq!(std::path::PathBuf::from(&path), dir.path().join("thumbnails").join(format!("{}.jpg", staged.id)));
+        let bytes = std::fs::read(path).unwrap();
+        assert!(bytes.starts_with(&[0xff, 0xd8]));
+        assert!(bytes.len() as u64 <= crate::cache::MAX_THUMBNAIL_BYTES);
+        let count: i64 = app.state::<AppState>().db.lock().unwrap().query_row("SELECT COUNT(*) FROM cached_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_staged_previews_share_generation_backoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::store::open(&dir.path().join("notebank.db")).unwrap();
+        let staged = files::stage_bytes(dir.path(), "clip.mp4", b"broken video").unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let app = mock_builder().build(tauri::generate_context!(test = true)).unwrap();
+        app.manage(AppState::new(conn, secret, dir.path().to_path_buf()));
+        let window = WebviewWindowBuilder::new(&app, "main", WebviewUrl::default()).build().unwrap();
+        let key = format!("preview:{}", staged.id);
+        assert_eq!(staged_thumbnail(window.clone(), app.state::<AppState>(), staged.id.clone()).await.unwrap_err(), "No preview");
+        let retry = app.state::<AppState>().thumbnail_retries.lock().unwrap()[&key];
+        assert_eq!(retry.0, 1);
+        assert_eq!(staged_thumbnail(window, app.state::<AppState>(), staged.id).await.unwrap_err(), "No preview");
+        assert_eq!(app.state::<AppState>().thumbnail_retries.lock().unwrap()[&key], retry);
     }
 
     #[test]

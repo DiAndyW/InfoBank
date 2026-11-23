@@ -24,6 +24,7 @@ keyring-core = "1.0"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 tokio = { version = "1", features = ["sync", "time", "fs", "io-util"] }
 mime_guess = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 tauri-plugin-opener = "2.7"
 tauri-plugin-dialog = "2.8"
@@ -38,10 +39,15 @@ apple-native-keyring-store = { version = "1.0", features = ["keychain"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication", "NSEvent", "NSPasteboard", "NSPasteboardItem", "NSImage"] }
 
 objc2 = "0.6"
+objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = ["std", "QLThumbnailGenerationRequest", "QLThumbnailGenerator", "QLThumbnailRepresentation", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "objc2"] }
+block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSData"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+dunce = "1"
 windows-native-keyring-store = "1.1"
+windows = { version = "0.62", features = ["Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Foundation"] }
 tauri-plugin-single-instance = "2.5"
 
 [dev-dependencies]
