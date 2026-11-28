@@ -4,7 +4,7 @@ import { Icon } from "./icons";
 import type { NoticeData } from "./Notice";
 
 type Item = { id: string; sync_error: string | null };
-export type ShowNotice = (message: string, action?: NoticeData["action"]) => void;
+export type ShowNotice = (message: string, action?: NoticeData["action"]) => number;
 
 export function useItemSelection({ items, scope, enabled, onNotice, onError }: {
   items: Item[]; scope: string; enabled: boolean; onNotice: ShowNotice; onError: (title: string, error: unknown) => void;

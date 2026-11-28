@@ -25,11 +25,11 @@ def expectation(value, where, fields, partial=False):
         raise ValueError(f"{where}: empty expectation")
     for key, entry in value.items():
         valid = False
-        if key in {"message", "label"}:
+        if key in {"message", "label", "ellipsis"}:
             valid = nonempty(entry)
         elif key in {"offered", "row"}:
             valid = isinstance(entry, bool)
-        elif key in {"initial_items", "older_items"}:
+        elif key in {"initial_items", "older_items", "max_characters"}:
             valid = type(entry) is int and entry > 0
         elif key == "order":
             valid = entry == "input"
@@ -42,7 +42,7 @@ def expectation(value, where, fields, partial=False):
         elif key == "duration_seconds":
             valid = type(entry) in (int, float) and 0 < entry < float("inf")
         elif key == "buttons":
-            valid = isinstance(entry, list) and bool(entry) and all(button in {"Show", "Undo", "close"} for button in entry) and len(set(entry)) == len(entry) and "close" in entry
+            valid = isinstance(entry, list) and bool(entry) and all(button in {"Show", "Undo", "Download", "close"} for button in entry) and len(set(entry)) == len(entry) and "close" in entry
         elif key in {"menu", "batch"}:
             if isinstance(entry, list):
                 for action in entry:
@@ -69,6 +69,8 @@ def validate(file):
             raise ValueError(f"{id}: summary is required")
         if id == "notice.duration":
             fields = {"duration_seconds"}
+        elif id == "notice.filename":
+            fields = {"max_characters", "ellipsis"}
         elif id.startswith("notice."):
             fields = {"message", "buttons", "offered"}
         elif id.startswith("failure."):

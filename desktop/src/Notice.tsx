@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { Icon } from "./icons";
 
-export type NoticeData = { id: number; message: string; inSearch?: boolean; action?: { label: "Undo" | "Show"; onAction: () => void | boolean | Promise<void | boolean> } };
+export type NoticeData = { id: number; message: string; inSearch?: boolean; action?: { label: "Undo" | "Show" | "Download"; onAction: () => void | boolean | Promise<void | boolean> } };
+
+export function noticeFilename(filename: string): string {
+  const characters = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(filename)];
+  return characters.length > 40 ? characters.slice(0, 40).map(s => s.segment).join("") + "…" : filename;
+}
 
 export default function Notice({ message, action, onClose }: { message: string; action?: NoticeData["action"]; onClose: () => void }) {
   const [held, setHeld] = useState(false);

@@ -4,22 +4,26 @@ import SwiftUI
 
 extension EnvironmentValues {
     @Entry var attachmentTransfers: AttachmentTransfers? = nil
+    @Entry var notices: NoticeCenter? = nil
 }
 
 struct AttachmentView: View {
     let attachment: FeedAttachment
     var attachments: [FeedAttachment] = []
     @Environment(\.attachmentTransfers) private var transfers
+    @Environment(\.notices) private var notices
     @Environment(\.palette) private var palette
     @Environment(\.ruledLine) private var ruledLine
     @State private var thumbnail: URL?
     @State private var thumbnailPending = true
     @State private var preview: URL?
+    @State private var shareURL: SharedAttachment?
     @State private var showingImage = false
     @State private var loading = false
     @State private var error: String?
     @State private var pinned = false
     @State private var visible = false
+    @State private var noticeID: UUID?
 
     private var isVideo: Bool { attachment.mimeType.hasPrefix("video/") }
 
@@ -27,6 +31,7 @@ struct AttachmentView: View {
         VStack(alignment: .leading, spacing: ruledLine == nil ? 4 : 0) {
             Button {
                 guard !loading, let transfers, (try? transfers.canOpen(attachment.id)) == true else { return }
+                guard attachment.opensInApp else { noticeID = notices?.postUnsupported(attachment); return }
                 if attachment.mimeType.hasPrefix("image/") || isVideo {
                     showingImage = true
                     return
@@ -97,6 +102,9 @@ struct AttachmentView: View {
             thumbnailPending = false
         }
         .quickLookPreview($preview)
+        .sheet(item: $shareURL, onDismiss: { release() }) { file in
+            AttachmentShareSheet(file: file.url)
+        }
         .fullScreenCover(isPresented: $showingImage, onDismiss: {
             if thumbnail == nil { Task { thumbnail = try? await transfers?.thumbnail(attachment.id) } }
         }) {
@@ -122,8 +130,30 @@ struct AttachmentView: View {
         .onChange(of: preview) { _, value in
             if value == nil { release() }
         }
+        .onChange(of: notices?.download) { _, request in
+            if request?.attachmentID == attachment.id && visible { download() }
+        }
         .onAppear { visible = true }
-        .onDisappear { visible = false; release() }
+        .onDisappear {
+            visible = false
+            if let noticeID { notices?.dismiss(id: noticeID) }
+            release()
+        }
+    }
+
+    private func download() {
+        guard !loading, shareURL == nil, let transfers, (try? transfers.canOpen(attachment.id)) == true else { return }
+        loading = true
+        Task {
+            do {
+                let file = try await transfers.open(attachment.id)
+                guard visible else { await transfers.release(attachment.id); loading = false; return }
+                pinned = true
+                shareURL = SharedAttachment(url: file)
+                error = nil
+            } catch { self.error = attachmentPreviewFailureMessage(error, headline: "Attachment failed to download.") }
+            loading = false
+        }
     }
 
     private func release() {
@@ -131,4 +161,9 @@ struct AttachmentView: View {
         pinned = false
         Task { await transfers?.release(attachment.id) }
     }
+}
+
+private struct SharedAttachment: Identifiable {
+    let url: URL
+    var id: URL { url }
 }

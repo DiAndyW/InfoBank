@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 
+from behaviour.check import validate
+
 
 class CheckTests(unittest.TestCase):
     def setUp(self):
@@ -40,6 +42,33 @@ class CheckTests(unittest.TestCase):
             for value in [0, -1, True, 1.5, "30", None]:
                 self.file["rules"]["feed.opening"]["expect"] = {"initial_items": 30, "older_items": 30, field: value}
                 self.assertNotEqual(self.run_check().returncode, 0)
+
+    def test_filename_rule_shape(self):
+        expected = {"max_characters": 40, "ellipsis": "…"}
+        rule = {"summary": "Shorten filenames in notices", "expect": expected}
+        self.file["rules"]["notice.filename"] = rule
+        validate(self.file)
+        for invalid in [
+            {**expected, "extra": True},
+            {"max_characters": 40},
+            {"ellipsis": "…"},
+            {**expected, "max_characters": 0},
+            {**expected, "max_characters": "40"},
+            {**expected, "max_characters": True},
+            {**expected, "ellipsis": ""},
+        ]:
+            with self.subTest(expected=invalid):
+                rule["expect"] = invalid
+                with self.assertRaises(ValueError):
+                    validate(self.file)
+
+    def test_download_is_a_notice_button(self):
+        rule = {"summary": "Offer Download", "expect": {"message": "x {filename}", "buttons": ["Download", "close"]}}
+        self.file["rules"]["notice.unsupported_attachment"] = rule
+        validate(self.file)
+        rule["expect"]["buttons"] = ["Download"]
+        with self.assertRaises(ValueError):
+            validate(self.file)
 
     def test_item_actions_are_strict_and_ordered(self):
         self.file["rules"]["item.menu"] = {"summary": "Commands", "expect": {"actions": ["edit", "move", "copy_item", "copy_text", "trash"]}}

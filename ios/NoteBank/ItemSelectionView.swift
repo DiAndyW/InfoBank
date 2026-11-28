@@ -162,6 +162,7 @@ struct ItemNoticeView: View {
             NoticeView(message: notice.message, actionTitle: notice.actionTitle, onAction: notice.action.map { action in {
                 do {
                     switch action {
+                    case .download(let id): notices.requestDownload(id); return
                     case .undoClear(let place): onUndoClear(place); notices.dismiss(); return
                     case .undoTrash: try store.restore(itemID: notice.itemID, nowUs: Time.nowUs())
                     case .undoBatchTrash(let ids): try store.restore(itemIDs: ids, nowUs: Time.nowUs())

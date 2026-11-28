@@ -3,21 +3,52 @@ import Observation
 
 public struct Notice: Equatable, Identifiable {
     public static let durationSeconds: Double = 4
-    public let id = UUID()
-    public enum Action: Equatable { case show, undoTrash, undoClear(DraftPlace), undoMove(Destination), undoBatchTrash([String]) }
+    public static let maxFilenameCharacters = 40
 
-    public var actionTitle: String? { guard let action else { return nil }; return action == .show ? "Show" : "Undo" }
+    public static func filename(_ name: String) -> String {
+        name.count > maxFilenameCharacters ? String(name.prefix(maxFilenameCharacters)) + "…" : name
+    }
+
+    public let id = UUID()
+    public enum Action: Equatable { case download(attachmentID: String), show, undoTrash, undoClear(DraftPlace), undoMove(Destination), undoBatchTrash([String]) }
+
+    public var actionTitle: String? {
+        guard let action else { return nil }
+        switch action {
+        case .download: return "Download"
+        case .show: return "Show"
+        default: return "Undo"
+        }
+    }
 
     public let message: String
     public let itemID: String
     public let action: Action?
 }
 
+public struct DownloadRequest: Equatable {
+    public let id: UUID
+    public let attachmentID: String
+}
+
 @MainActor @Observable
 public final class NoticeCenter {
     public private(set) var current: Notice?
+    public private(set) var download: DownloadRequest?
 
     public init() {}
+
+    @discardableResult
+    public func postUnsupported(_ attachment: FeedAttachment) -> UUID {
+        let notice = Notice(message: attachment.unsupportedMessage, itemID: "", action: .download(attachmentID: attachment.id))
+        current = notice
+        return notice.id
+    }
+
+    public func requestDownload(_ attachmentID: String) {
+        download = DownloadRequest(id: UUID(), attachmentID: attachmentID)
+        dismiss()
+    }
 
     public func post(_ notices: [SyncNotice]) {
         guard let last = notices.last else { return }
@@ -61,6 +92,10 @@ public final class NoticeCenter {
 
     public func postTopicDeleted(_ message: String) {
         current = Notice(message: message, itemID: "", action: nil)
+    }
+
+    public func dismiss(id: UUID) {
+        if current?.id == id { current = nil }
     }
 
     public func dismiss() { current = nil }

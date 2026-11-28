@@ -13,6 +13,10 @@
       "summary": "An attachment preview failure shows an authored error over the dimmed note or feed while the preview is hidden",
       "expect": { "message": "Attachment failed to open." }
     },
+    "failure.attachment_download": {
+      "summary": "An attachment download failure shows an authored error, followed by an app-authored reason where one exists",
+      "expect": { "message": "Attachment failed to download." }
+    },
     "failure.storage_open": {
       "summary": "A storage startup failure shows authored wording without the underlying error",
       "expect": { "message": "NoteBank failed to open its storage." }
@@ -238,7 +242,7 @@
           "expect": {
             "offered": false
           },
-          "reason": "Quick Look's Share sheet already offers Copy"
+          "reason": "The Share sheet from the image viewer, Quick Look or Download already offers Copy"
         }
       }
     },
@@ -378,7 +382,7 @@
       }
     },
     "notice.attachment_copied": {
-      "summary": "Attachment copied",
+      "summary": "Attachment copied (filename shortened per notice.filename)",
       "expect": {
         "message": "Copied {filename}",
         "buttons": [
@@ -585,8 +589,36 @@
         "message": "{count} items"
       }
     },
+    "notice.unsupported_attachment": {
+      "summary": "Tapping an attachment other than an image, video or PDF, when it is on the Server or this Device, posts a notice offering Download and leaves the row unchanged. Download asks where to save on desktop and opens the Share sheet on iPhone. When the source row disappears, it dismisses only the notice it posted; a replacement notice stays.",
+      "expect": {
+        "message": "NoteBank can't show {filename}'s contents.",
+        "buttons": ["Download", "close"]
+      }
+    },
+    "notice.runnable_attachment": {
+      "summary": "Tapping a file that can run code posts a notice offering Download instead of opening it.",
+      "expect": {
+        "message": "NoteBank won't open {filename} because it can run code.",
+        "buttons": ["Download", "close"],
+        "offered": true
+      },
+      "differs": {
+        "ios": {
+          "expect": {"offered": false},
+          "reason": "iOS can't run files, so they get the unsupported notice"
+        }
+      }
+    },
+    "notice.filename": {
+      "summary": "Filenames in notices longer than the limit keep their first characters and end with an ellipsis",
+      "expect": {
+        "max_characters": 40,
+        "ellipsis": "…"
+      }
+    },
     "feed.attachment_pending": {
-      "summary": "An attachment not yet on the Server says so before it is opened; opening or copying one that is not on this Device does nothing instead of failing, and attachment errors clear after a few seconds",
+      "summary": "An attachment not yet on the Server says so before it is opened; tapping, downloading or copying one that is not on this Device does nothing instead of failing, and attachment errors clear after a few seconds",
       "expect": {
         "offered": true,
         "label": "Not uploaded yet"

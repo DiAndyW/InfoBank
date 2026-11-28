@@ -20,7 +20,7 @@ type Options = {
   doubleClickIntervalMs?: number;
   pulledTrashAfterCopy?: () => boolean | null | Promise<boolean | null>;
   // A function runs per save_settings call (0-based): it may throw or wait.
-  saveError?: unknown;
+  settingsSaveError?: unknown;
   captureError?: string;
   items?: (args: any) => FeedItem[] | Promise<FeedItem[]>;
   status?: SyncStatus;
@@ -29,6 +29,7 @@ type Options = {
   thumbnail?: string;
   thumbnailLookup?: () => string | Promise<string>;
   openError?: string;
+  saveError?: string;
   openHang?: boolean;
   stored?: string[];
   original?: Record<string, string | Promise<string>>;
@@ -78,8 +79,8 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
       if (cmd === "resolve_conflict") return { trashed: false };
       if (cmd === "save_settings") {
         const call = calls.filter((c) => c.cmd === "save_settings").length - 1;
-        if (typeof opts.saveError === "function") await opts.saveError(call);
-        else if (opts.saveError) throw opts.saveError;
+        if (typeof opts.settingsSaveError === "function") await opts.settingsSaveError(call);
+        else if (opts.settingsSaveError) throw opts.settingsSaveError;
         return null;
       }
       if (cmd === "capture") {
@@ -115,7 +116,10 @@ function backend(given: Omit<Settings, "quick_capture"> & Partial<Settings>, opt
         if (original === undefined) throw "Can't download while offline";
         return original;
       }
-      if (cmd === "reveal_attachment") return null;
+      if (cmd === "save_attachment") {
+        if (opts.saveError) throw opts.saveError;
+        return;
+      }
       if (cmd === "open_attachment") {
         if (opts.openHang) return new Promise(() => {});
         if (opts.openError) throw opts.openError;
@@ -302,7 +306,7 @@ async function switchServer() {
 }
 
 test("a switch that would strand work asks first", async () => {
-  backend(configured, { saveError: stranded });
+  backend(configured, { settingsSaveError: stranded });
   render(<App />);
   await switchServer();
   const dialog = await screen.findByRole("alertdialog", { name: "Discard unsent work?" });
@@ -312,7 +316,7 @@ test("a switch that would strand work asks first", async () => {
 });
 
 test("Switch anyway resubmits with the confirmed counts", async () => {
-  const calls = backend(configured, { saveError: stranded });
+  const calls = backend(configured, { settingsSaveError: stranded });
   render(<App />);
   await switchServer();
   await userEvent.click(await screen.findByRole("button", { name: "Switch anyway" }));
@@ -326,7 +330,7 @@ test("Switch anyway resubmits with the confirmed counts", async () => {
 });
 
 test("Switch anyway closes Settings once the confirmed save succeeds", async () => {
-  backend(configured, { saveError: (call: number) => { if (call === 0) throw stranded; } });
+  backend(configured, { settingsSaveError: (call: number) => { if (call === 0) throw stranded; } });
   render(<App />);
   await switchServer();
   await userEvent.click(await screen.findByRole("button", { name: "Switch anyway" }));
@@ -334,7 +338,7 @@ test("Switch anyway closes Settings once the confirmed save succeeds", async () 
 });
 
 test("Cancel in the discard dialog keeps what was typed", async () => {
-  const calls = backend(configured, { saveError: stranded });
+  const calls = backend(configured, { settingsSaveError: stranded });
   render(<App />);
   await switchServer();
   const dialog = await screen.findByRole("alertdialog");
@@ -346,7 +350,7 @@ test("Cancel in the discard dialog keeps what was typed", async () => {
 });
 
 test("a check error shows in the red line", async () => {
-  backend(configured, { saveError: "The Server rejected this secret." });
+  backend(configured, { settingsSaveError: "The Server rejected this secret." });
   render(<App />);
   await switchServer();
   expect(await screen.findByRole("alert")).toHaveTextContent("The Server rejected this secret.");
@@ -355,7 +359,7 @@ test("a check error shows in the red line", async () => {
 
 test("an error from an earlier attempt is gone when the discard dialog appears", async () => {
   backend(configured, {
-    saveError: (call: number) => {
+    settingsSaveError: (call: number) => {
       throw call === 0 ? "Couldn't reach the Server." : stranded;
     },
   });
@@ -368,7 +372,7 @@ test("an error from an earlier attempt is gone when the discard dialog appears",
 });
 
 test("a thrown Error shows in the red line, not the discard dialog", async () => {
-  backend(configured, { saveError: new Error("boom") });
+  backend(configured, { settingsSaveError: new Error("boom") });
   render(<App />);
   await switchServer();
   expect(await screen.findByRole("alert")).toHaveTextContent("boom");
@@ -379,7 +383,7 @@ test("submitting again while Switch anyway is saving saves once more only", asyn
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   const calls = backend(configured, {
-    saveError: async (call: number) => {
+    settingsSaveError: async (call: number) => {
       if (call === 0) throw stranded;
       await gate;
     },
@@ -394,7 +398,7 @@ test("submitting again while Switch anyway is saving saves once more only", asyn
 });
 
 test("a save error is shown inline", async () => {
-  backend({ server_url: null, has_secret: false }, { saveError: "The Server URL must start with https://" });
+  backend({ server_url: null, has_secret: false }, { settingsSaveError: "The Server URL must start with https://" });
   render(<App />);
   await userEvent.type(await screen.findByLabelText("Server URL"), "http://notes.example.com");
   await userEvent.type(screen.getByLabelText("Secret"), "s3cret");
@@ -684,6 +688,7 @@ test("dark is a theme of its own, not the system's setting", async () => {
 
 const scan: Staged = { id: "s1", filename: "scan.png", size_bytes: 1_200_000, mime_type: "image/png" };
 const report: FeedAttachment = { id: "a1", filename: "report.pdf", mime_type: "application/pdf", size_bytes: 2_400_000, uploaded: true, has_thumbnail: false, runnable: false };
+const archive: FeedAttachment = { ...report, id: "zip", filename: "archive.zip", mime_type: "application/zip" };
 const photo: FeedAttachment = { id: "a2", filename: "photo.jpg", mime_type: "image/jpeg", size_bytes: 900_000, uploaded: true, has_thumbnail: true, runnable: false };
 const installer: FeedAttachment = { id: "a3", filename: "setup.command", mime_type: "application/octet-stream", size_bytes: 300, uploaded: true, has_thumbnail: false, runnable: true };
 
@@ -919,14 +924,150 @@ test("a stored theme that isn't one falls back to Warm paper", async () => {
   expect(document.documentElement.dataset.theme).toBe("paper");
 });
 
-test("a file that can run code is never opened, only shown in Finder", async () => {
-  const calls = backend(configured, { items: () => [feedItem("1", "", at(2026, 10, 14, 9, 41), false, [installer])] });
+behaviourTest("notice.unsupported_attachment", async expected => {
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [archive])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  await checkNotice(expected, { filename: "archive.zip" });
+  expect(screen.getByRole("button", { name: "Open archive.zip" })).toBeInTheDocument();
+  expect(document.querySelector(".is-refused, .is-blocked")).toBeNull();
+  expect(calls.some(c => c.cmd === "open_attachment")).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "Download" }));
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "save_attachment", args: { id: "zip" } }));
+  await waitFor(() => expect(document.querySelector('.nb-notice[role="status"]')).not.toBeInTheDocument());
+});
+
+test("removing an attachment row dismisses its unsupported notice without saving", async () => {
+  let items = [feedItem("1", "", 1, false, [archive])];
+  const calls = backend(configured, { items: () => items });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  expect(await screen.findByText("NoteBank can't show archive.zip's contents.")).toBeVisible();
+  items = [];
+  await act(() => emit("items-changed"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Open archive.zip" })).not.toBeInTheDocument());
+  expect(screen.queryByText("NoteBank can't show archive.zip's contents.")).not.toBeInTheDocument();
+  expect(calls.some(c => c.cmd === "save_attachment")).toBe(false);
+});
+
+test("removing an attachment row preserves a newer notice", async () => {
+  let items = [feedItem("1", "", 1, false, [archive, report])];
+  const calls = backend(configured, { items: () => items });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  expect(await screen.findByText("NoteBank can't show archive.zip's contents.")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Copy report.pdf" }));
+  expect(await screen.findByText("Copied report.pdf")).toBeVisible();
+  items = [];
+  await act(() => emit("items-changed"));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Open archive.zip" })).not.toBeInTheDocument());
+  expect(screen.getByText("Copied report.pdf")).toBeVisible();
+  expect(calls.some(c => c.cmd === "save_attachment")).toBe(false);
+});
+
+behaviourTest("failure.attachment_download", async expected => {
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [archive])], saveError: "Can't download while offline" });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Download" }));
+  const error = await screen.findByText(`${expected.message} Can't download while offline`);
+  expect(error.closest(".nb-file")).toHaveClass("is-error");
+  await waitFor(() => expect(document.querySelector('.nb-notice[role="status"]')).not.toBeInTheDocument());
+});
+
+test("an unsupported file's name shows unchanged in its notice", async () => {
+  const filename = `Q3 "notes" – d'été.zip`;
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...archive, filename }])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: `Open ${filename}` }));
+  expect(await screen.findByText(`NoteBank can't show ${filename}'s contents.`)).toBeVisible();
+});
+
+test("Download clicked twice runs one save", async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [archive])], gates: { save_attachment: gate } });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  const download = await screen.findByRole("button", { name: "Download" });
+  expect(download.closest('[role="status"]')).not.toBeNull();
+  await userEvent.click(download);
+  await waitFor(() => expect(calls.filter(c => c.cmd === "save_attachment")).toHaveLength(1));
+  expect(download).toBeDisabled();
+  await userEvent.click(download);
+  expect(calls.filter(c => c.cmd === "save_attachment")).toHaveLength(1);
+  await act(async () => { finish(); await gate; });
+  await waitFor(() => expect(screen.queryByText("Downloading…")).not.toBeInTheDocument());
+  expect(screen.queryByText(/Attachment failed to download/)).not.toBeInTheDocument();
+});
+
+test.each([archive, installer])("an unavailable $filename keeps its pending row when tapped", async attachment => {
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...attachment, uploaded: false }])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: `Open ${attachment.filename}` }));
+  expect(screen.queryByText(/NoteBank can't show|NoteBank won't open/)).not.toBeInTheDocument();
+  expect(screen.getByText("Not uploaded yet")).toBeVisible();
+  expect(document.querySelector('.nb-notice[role="status"]')).not.toBeInTheDocument();
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "attachment_stored", args: { id: attachment.id } }));
+  expect(calls.some(c => ["save_attachment", "open_attachment"].includes(c.cmd))).toBe(false);
+  expect(screen.queryByText(/Attachment failed|Downloading…/)).not.toBeInTheDocument();
+});
+
+test("an unsupported locally stored file can Download before upload", async () => {
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...archive, uploaded: false }])], stored: ["zip"] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  expect((await screen.findByText("NoteBank can't show archive.zip's contents.")).closest('[role="status"]')).not.toBeNull();
+  await userEvent.click(await screen.findByRole("button", { name: "Download" }));
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "save_attachment", args: { id: "zip" } }));
+});
+
+behaviourTest("notice.runnable_attachment", async expected => {
+  expect(expected.offered).toBe(true);
+  const calls = backend(configured, { items: () => [feedItem("1", "", 1, false, [installer])] });
   render(<App />);
   await userEvent.click(await screen.findByRole("button", { name: "Open setup.command" }));
-  expect(screen.getByText("NoteBank won't open setup.command because it can run code.")).toBeInTheDocument();
-  expect(calls.some((c) => c.cmd === "open_attachment")).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "Show in Finder" }));
-  expect(calls).toContainEqual({ cmd: "reveal_attachment", args: { id: "a3" } });
+  await checkNotice(expected, { filename: "setup.command" });
+  expect(screen.getByRole("button", { name: "Open setup.command" })).toBeInTheDocument();
+  expect(document.querySelector(".is-refused, .is-blocked")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Download" }));
+  await waitFor(() => expect(calls).toContainEqual({ cmd: "save_attachment", args: { id: "a3" } }));
+  expect(calls.some(c => c.cmd === "open_attachment")).toBe(false);
+});
+
+behaviourTest("notice.filename", async expected => {
+  const long = "Function Palooza starter code and grading tests (final).zip";
+  const shortened = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(long)].slice(0, expected.max_characters).map(s => s.segment).join("") + expected.ellipsis;
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...archive, filename: long }])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: `Open ${long}` }));
+  expect((await screen.findByText(`NoteBank can't show ${shortened}'s contents.`)).closest('[role="status"]')).not.toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: `Copy ${long}` }));
+  expect(await screen.findByText(`Copied ${shortened}`)).toBeVisible();
+});
+
+test("notice filenames count emoji as one character", async () => {
+  const filename = "a".repeat(39) + "👩‍💻" + "b.zip";
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...archive, filename }])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: `Open ${filename}` }));
+  expect((await screen.findByText(`NoteBank can't show ${"a".repeat(39)}👩‍💻…'s contents.`)).closest('[role="status"]')).not.toBeNull();
+});
+
+test("a 40-character filename is not shortened", async () => {
+  const filename = "a".repeat(36) + ".zip";
+  backend(configured, { items: () => [feedItem("1", "", 1, false, [{ ...archive, filename }])] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: `Open ${filename}` }));
+  expect((await screen.findByText(`NoteBank can't show ${filename}'s contents.`)).closest('[role="status"]')).not.toBeNull();
+});
+
+test("an unsupported file in Trash still posts its notice", async () => {
+  backend(configured, { items: ({ view }) => view.kind === "trash" ? [inTrash({ ...filed("1", "", null), attachments: [archive] }, 3)] : [] });
+  render(<App />);
+  await userEvent.click(await screen.findByRole("button", { name: /^Trash/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Open archive.zip" }));
+  expect((await screen.findByText("NoteBank can't show archive.zip's contents.")).closest('[role="status"]')).not.toBeNull();
 });
 
 behaviourTest("feed.attachment_pending", async expected => {

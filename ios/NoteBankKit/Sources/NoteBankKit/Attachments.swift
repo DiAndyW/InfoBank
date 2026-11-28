@@ -21,6 +21,8 @@ public struct StagedAttachment: Codable, Hashable, Identifiable, Sendable {
 
 public struct FeedAttachment: Hashable, Identifiable, Sendable {
     public static let pendingLabel = "Not uploaded yet"
+    public var opensInApp: Bool { AttachmentPresentation(mimeType: mimeType).opensInViewer || mimeType == "application/pdf" }
+    public var unsupportedMessage: String { "NoteBank can't show \(Notice.filename(filename))'s contents." }
     public let id: String
     public let filename: String
     public let mimeType: String

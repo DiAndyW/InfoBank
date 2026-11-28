@@ -233,7 +233,7 @@ pub fn run() {
             commands::open_attachment,
             commands::open_staged_attachment,
             commands::staged_thumbnail,
-            commands::reveal_attachment,
+            commands::save_attachment,
             commands::list_items,
             commands::search_items,
             commands::sync_status,

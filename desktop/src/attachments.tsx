@@ -1,7 +1,9 @@
 import { attachmentFailure } from "./failure";
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { attachmentStored, copyAttachment, openAttachment, revealAttachment, thumbnail, type FeedAttachment } from "./api";
+import { attachmentStored, copyAttachment, openAttachment, saveAttachment, thumbnail, type FeedAttachment } from "./api";
+import { noticeFilename } from "./Notice";
+import type { ShowNotice } from "./Selection";
 import { Icon } from "./icons";
 
 export function formatSize(bytes: number) {
@@ -17,12 +19,15 @@ export function viewable(a: FeedAttachment): boolean {
   return !a.runnable && a.mime_type.startsWith("image/");
 }
 
-function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount }: { a: FeedAttachment; onView: (id: string) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
-  const revealLabel = navigator.userAgent.includes("Windows") ? "Show in Explorer" : "Show in Finder";
+function Attachment({ a, onView, onNotice, onDismissNotice, onCopied, copyButtonVisible = true, closedCount }: { a: FeedAttachment; onView: (id: string) => void; onNotice: ShowNotice; onDismissNotice: (id: number) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
   const [src, setSrc] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const busy = useRef(false);
-  const [refused, setRefused] = useState(false);
+  const noticeId = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (noticeId.current !== null) onDismissNotice(noticeId.current);
+  }, [onDismissNotice]);
   const image = !a.runnable && (a.has_thumbnail || a.mime_type.startsWith("image/"));
   const video = a.mime_type.startsWith("video/");
 
@@ -63,27 +68,24 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
   }
 
   function open() {
-    if (a.runnable) setRefused(true);
-    else if (viewable(a)) {
+    const opens = !a.runnable && (/^(image|video)\//.test(a.mime_type) || a.mime_type === "application/pdf");
+    if (!opens) {
+      const show = () => {
+        noticeId.current = onNotice(
+          a.runnable ? `NoteBank won't open ${noticeFilename(a.filename)} because it can run code.` : `NoteBank can't show ${noticeFilename(a.filename)}'s contents.`,
+          { label: "Download", onAction: async () => { await fetchThen(saveAttachment, "Attachment failed to download."); } },
+        );
+      };
+      if (a.uploaded) show();
+      else attachmentStored(a.id).then((stored) => stored && show(), () => {});
+    } else if (viewable(a)) {
       if (a.uploaded) onView(a.id);
       else attachmentStored(a.id).then((stored) => stored && onView(a.id), () => {});
     } else fetchThen(openAttachment);
   }
 
   const status = note ?? (a.uploaded ? null : pendingLabel);
-  const opener = refused ? (
-    <div className="nb-file is-blocked">
-      <Icon name="alert" />
-      <span className="nb-file-text">
-        <span className="nb-file-name">NoteBank won't open {a.filename} because it can run code.</span>
-        {note && <span className="nb-file-meta">{note}</span>}
-      </span>
-      <button type="button" className="nb-btn nb-btn-quiet" onClick={() => fetchThen(revealAttachment, "Attachment failed to reveal.")}>
-        <Icon name="reveal" />
-        {revealLabel}
-      </button>
-    </div>
-  ) : image || (video && !!src) ? (
+  const opener = image || (video && !!src) ? (
     <button type="button" className="nb-thumb" data-attachment-id={a.id} onClick={open} aria-label={`${video ? "Play" : "Open"} ${a.filename}`}>
       {src ? (
         <>
@@ -123,12 +125,12 @@ function Attachment({ a, onView, onCopied, copyButtonVisible = true, closedCount
   );
 }
 
-export function Attachments({ list, onView, onCopied, copyButtonVisible, closedCount }: { list: FeedAttachment[]; onView: (id: string) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
+export function Attachments({ list, onView, onNotice, onDismissNotice, onCopied, copyButtonVisible, closedCount }: { list: FeedAttachment[]; onView: (id: string) => void; onNotice: ShowNotice; onDismissNotice: (id: number) => void; onCopied?: (filename: string) => void; copyButtonVisible?: boolean; closedCount: number }) {
   return (
     <div className="nb-item-files">
       {list.map((a) => (
         // has_thumbnail in the key remounts it, and so refetches, once the Server makes one.
-        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} onView={onView} onCopied={onCopied} copyButtonVisible={copyButtonVisible} closedCount={closedCount} />
+        <Attachment key={`${a.id}:${a.has_thumbnail}`} a={a} onView={onView} onNotice={onNotice} onDismissNotice={onDismissNotice} onCopied={onCopied} copyButtonVisible={copyButtonVisible} closedCount={closedCount} />
       ))}
     </div>
   );

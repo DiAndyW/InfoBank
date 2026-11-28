@@ -86,7 +86,7 @@ export const attachmentStored = (id: string): Promise<boolean> => invoke<boolean
 export const attachmentOriginal = (id: string): Promise<string> => invoke<string>("attachment_original", { id });
 export const openStagedAttachment = (id: string) => invoke<void>("open_staged_attachment", { id });
 export const openAttachment = (id: string) => invoke<void>("open_attachment", { id });
-export const revealAttachment = (id: string) => invoke<void>("reveal_attachment", { id });
+export const saveAttachment = (id: string) => invoke<void>("save_attachment", { id });
 export type Before = { capture_time_us: number; id: string; purge_at_us?: number | null };
 // Nested keys aren't renamed by Tauri, so `before` and `query` keep Rust's snake_case.
 export const listItems = (view: View, before: Before | null, limit?: number) => invoke<FeedItem[]>("list_items", { view, before, ...(limit === undefined ? {} : { limit }) });

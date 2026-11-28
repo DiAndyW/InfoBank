@@ -44,7 +44,7 @@
     "allow-discard-copy-items",
     "allow-set-items-trashed",
     "allow-open-attachment",
-    "allow-reveal-attachment",
+    "allow-save-attachment",
     "allow-list-items",
     "allow-search-items",
     "allow-sync-status",
