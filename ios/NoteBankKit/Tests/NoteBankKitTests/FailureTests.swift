@@ -61,6 +61,13 @@ import UniformTypeIdentifiers
         #expect(attachmentPreviewFailureMessage(AttachmentError("Not uploaded yet")) == "Attachment failed to open. Not uploaded yet")
     }
 
+    @Test func attachmentDownloadHidesTechnicalErrors() throws {
+        let rule = try Behaviour.rule("failure.attachment_download")
+        let raw = CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "private /Users/example/token=secret"])
+        #expect(attachmentPreviewFailureMessage(raw, headline: rule.message()) == rule.message())
+        #expect(attachmentPreviewFailureMessage(AttachmentError("Not uploaded yet"), headline: rule.message()) == "Attachment failed to download. Not uploaded yet")
+    }
+
     @Test func syncKeychainFailureDoesNotCarryUnderlyingDetails() async throws {
         let store = try tempStore().store
         try store.saveSettings(url: "https://example.com", newSecret: "secret", secrets: .memory())

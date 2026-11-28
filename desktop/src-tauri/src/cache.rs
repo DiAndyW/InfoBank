@@ -195,6 +195,22 @@ pub async fn file(state: &AppState, id: &str, now_us: i64) -> Result<PathBuf, St
     Ok(path)
 }
 
+pub async fn save(state: &AppState, id: &str, now_us: i64, destination: &Path) -> Result<(), String> {
+    let cached = file(state, id, now_us).await?;
+    let temporary = destination.with_file_name(format!(".dl-{}", uuid::Uuid::new_v4()));
+    let out = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(crate::error_message::message)?;
+    drop(out);
+    // Publish only a complete copy so a failed save cannot damage an existing file.
+    let saved = std::fs::copy(&cached, &temporary)
+        .and_then(|_| std::fs::rename(&temporary, destination))
+        .map_err(crate::error_message::message);
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    saved
+}
+
 pub fn start_prefetch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, now_us: i64) {
     use tauri::Manager;
     if app.state::<AppState>().prefetching.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -305,6 +321,102 @@ mod tests {
     fn kept(conn: &Connection, kind: &str) -> Vec<String> {
         let mut stmt = conn.prepare("SELECT attachment_id FROM cached_files WHERE kind = ?1 ORDER BY attachment_id").unwrap();
         stmt.query_map([kind], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_copies_the_cached_original_to_the_destination() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 17, 0, 0, false);
+        put(&d, &conn, &id, "thumbnail", 1, 0, 0, false);
+        let original = d.path().join(format!("files/{id}/f.png"));
+        std::fs::write(&original, b"original contents").unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let destination = d.path().join("saved.png");
+
+        save(&state, &id, 10, &destination).await.unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"original contents");
+        assert_eq!(std::fs::read(&original).unwrap(), b"original contents");
+        assert_eq!(kept(&state.db.lock().unwrap(), "file"), [id]);
+    }
+
+    #[tokio::test]
+    async fn save_downloads_the_original_first_when_it_isnt_cached() {
+        let mut server = crate::sync::server_tests::TestServer::new();
+        server.start();
+        let (d, conn) = fresh();
+        conn.execute("UPDATE device SET server_url = ?1", [&server.url]).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        secret.set_password(&server.secret).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let staged = files::stage_bytes(d.path(), "original.txt", b"original contents").unwrap();
+        crate::feed::capture(&state.db.lock().unwrap(), d.path(), "", std::slice::from_ref(&staged.id), &crate::feed::Target::Inbox, None, 1).unwrap();
+        sync::cycle(&state).await.unwrap();
+        evict(&state.db.lock().unwrap(), d.path(), 2, 0).unwrap();
+        assert!(kept(&state.db.lock().unwrap(), "file").is_empty());
+        let original = d.path().join(format!("files/{}/original.txt", staged.id));
+        assert!(!original.exists());
+        let destination = d.path().join("saved.txt");
+
+        save(&state, &staged.id, 3, &destination).await.unwrap();
+
+        assert_eq!(std::fs::read(destination).unwrap(), b"original contents");
+        assert_eq!(std::fs::read(original).unwrap(), b"original contents");
+        assert_eq!(kept(&state.db.lock().unwrap(), "file"), [staged.id]);
+    }
+
+    #[tokio::test]
+    async fn save_copy_failure_preserves_existing_destination_and_removes_temporary_file() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, false);
+        let original = d.path().join(format!("files/{id}/f.png"));
+        std::fs::remove_file(&original).unwrap();
+        std::fs::create_dir(&original).unwrap();
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let output = tempfile::tempdir().unwrap();
+        let destination = output.path().join("saved.png");
+        std::fs::write(&destination, b"existing contents").unwrap();
+
+        assert!(save(&state, &id, 10, &destination).await.is_err());
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing contents");
+        assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn save_replaces_existing_destination_without_temporary_siblings() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, false);
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+        let output = tempfile::tempdir().unwrap();
+        let destination = output.path().join("saved.png");
+        std::fs::write(&destination, b"existing contents").unwrap();
+
+        save(&state, &id, 10, &destination).await.unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"x");
+        assert_eq!(std::fs::read_dir(output.path()).unwrap().count(), 1);
+    }
+
+    #[tokio::test]
+    async fn save_onto_cached_original_preserves_contents() {
+        let (d, conn) = fresh();
+        let id = uuid::Uuid::new_v4().to_string();
+        put(&d, &conn, &id, "file", 1, 0, 0, false);
+        let original = d.path().join(format!("files/{id}/f.png"));
+        let secret = keyring_core::mock::Store::new().unwrap().build("svc", "shared-secret", None).unwrap();
+        let state = AppState::new(conn, secret, d.path().to_path_buf());
+
+        save(&state, &id, 10, &original).await.unwrap();
+
+        assert_eq!(std::fs::read(&original).unwrap(), b"x");
+        assert_eq!(std::fs::read_dir(original.parent().unwrap()).unwrap().count(), 1);
     }
 
     #[tokio::test]

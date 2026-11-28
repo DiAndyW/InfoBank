@@ -7,7 +7,7 @@ import { behaviourTest, noticeMessage, type BehaviourExpectation } from "./behav
 vi.mock("./api", () => ({ prepareCopyItems: vi.fn(), finishCopyItems: vi.fn(), discardCopyItems: vi.fn(async () => {}), setItemsTrashed: vi.fn() }));
 
 function Harness({ ids = ["a", "b", "c"], place = "tunnel", enabled = true, trashAfterCopy = true, onNotice = vi.fn(), onError = vi.fn() }: {
-  trashAfterCopy?: boolean | null; ids?: string[]; place?: string; enabled?: boolean; onNotice?: (...args: any[]) => void; onError?: (...args: any[]) => void;
+  trashAfterCopy?: boolean | null; ids?: string[]; place?: string; enabled?: boolean; onNotice?: (...args: any[]) => number; onError?: (...args: any[]) => void;
 }) {
   const selection = useItemSelection({ items: ids.map(id => ({ id, sync_error: null })), scope: place, enabled, onNotice, onError });
   return <>

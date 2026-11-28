@@ -59,6 +59,49 @@ import Testing
         #expect(Notice.durationSeconds == (try Behaviour.rule("notice.duration")).duration_seconds)
     }
 
+    @Test func unsupportedAttachment() throws {
+        let expected = try Behaviour.rule("notice.unsupported_attachment")
+        let zip = FeedAttachment(id: "zip", filename: "archive.zip", mimeType: "application/zip", sizeBytes: 10, uploaded: true, hasThumbnail: false, uploadError: nil)
+        let center = NoticeCenter()
+        center.postUnsupported(zip)
+        check(center, expected, values: ["filename": "archive.zip"])
+        #expect(center.current?.action == .download(attachmentID: "zip"))
+        #expect(center.current?.itemID == "")
+        for (mimeType, opens) in [("image/heic", true), ("video/quicktime", true), ("application/pdf", true), ("application/zip", false), ("text/plain", false), ("audio/mpeg", false)] {
+            let attachment = FeedAttachment(id: mimeType, filename: "file", mimeType: mimeType, sizeBytes: 10, uploaded: true, hasThumbnail: false, uploadError: nil)
+            #expect(attachment.opensInApp == opens)
+        }
+    }
+
+    @Test func runnableAttachment() throws {
+        let expected = try Behaviour.rule("notice.runnable_attachment")
+        #expect(expected.offered == false)
+        let roots = [appSources(), appSources().deletingLastPathComponent().appending(path: "NoteBankKit/Sources/NoteBankKit")]
+        for root in roots {
+            let files = try #require(FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil))
+            for case let file as URL in files where file.pathExtension == "swift" {
+                #expect(try !String(contentsOf: file, encoding: .utf8).contains("can run code"))
+            }
+        }
+    }
+
+    @Test func noticeFilename() throws {
+        let expected = try Behaviour.rule("notice.filename")
+        let limit = try #require(expected.max_characters)
+        let ellipsis = try #require(expected.ellipsis)
+        #expect(Notice.maxFilenameCharacters == limit)
+        let long = String(repeating: "a", count: 60)
+        #expect(Notice.filename(long) == String(long.prefix(limit)) + ellipsis)
+        let exact = String(repeating: "a", count: 40)
+        #expect(Notice.filename(exact) == exact)
+        let emoji = String(repeating: "a", count: 39) + "👩‍💻"
+        #expect(Notice.filename(emoji + "b.zip") == emoji + ellipsis)
+        let attachment = FeedAttachment(id: "long", filename: emoji + "b.zip", mimeType: "application/zip", sizeBytes: 10, uploaded: true, hasThumbnail: false, uploadError: nil)
+        let center = NoticeCenter()
+        center.postUnsupported(attachment)
+        check(center, try Behaviour.rule("notice.unsupported_attachment"), values: ["filename": emoji + ellipsis])
+    }
+
     private func checkCopy(_ expected: Behaviour.Expectation, place: Place, trashAfterCopy: Bool? = false) {
         let actions = CopyActions(place: place, hasText: true, trashAfterCopy: trashAfterCopy)
         #expect(actions.menu.map { Behaviour.Action(id: $0.kind.rawValue, label: $0.label) } == expected.menu)
@@ -168,7 +211,6 @@ extension BehaviourTests {
         #expect(!files.isEmpty)
         let source = try files.map { try String(contentsOf: $0, encoding: .utf8) }.joined()
         #expect(source.contains(".quickLookPreview($preview)"))
-        #expect(source.contains("NoticeCenter") == expected.offered)
         #expect(source.contains("postCopied") == expected.offered)
     }
 

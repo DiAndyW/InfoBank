@@ -22,7 +22,7 @@ test("attachment failures hide raw strings and preserve authored download status
 
 test.each([new Error("private credential"), "private credential"])("file opening hides technical errors: %s", async error => {
   vi.mocked(openAttachment).mockRejectedValueOnce(error);
-  render(<Attachments list={[{ id: "file", filename: "file.pdf", mime_type: "application/pdf", size_bytes: 10, uploaded: true, has_thumbnail: false, runnable: false }]} onView={() => {}} closedCount={0} />);
+  render(<Attachments list={[{ id: "file", filename: "file.pdf", mime_type: "application/pdf", size_bytes: 10, uploaded: true, has_thumbnail: false, runnable: false }]} onView={() => {}} onNotice={() => 1} onDismissNotice={() => {}} closedCount={0} />);
   fireEvent.click(screen.getByRole("button", { name: "Open file.pdf" }));
   expect(await screen.findByText("Attachment failed to open.")).toBeVisible();
   expect(document.body.textContent).not.toContain("private credential");

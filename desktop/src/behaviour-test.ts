@@ -2,6 +2,7 @@ import { test, vi } from "vitest";
 import file from "../../behaviour/behaviour.json";
 
 export type BehaviourExpectation = {
+  max_characters?: number; ellipsis?: string;
   initial_items?: number; older_items?: number;
   message?: string; buttons?: string[]; duration_seconds?: number;
   menu?: { id: string; label: string }[]; row?: boolean; batch?: { id: string; label: string }[];

@@ -390,9 +390,20 @@ pub async fn staged_thumbnail<R: Runtime>(window: tauri::WebviewWindow<R>, state
 }
 
 #[tauri::command]
-pub async fn reveal_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let path = cache::file(&state, &id, now_us()).await?;
-    app.opener().reveal_item_in_dir(path).map_err(crate::error_message::message)
+pub async fn save_attachment(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let filename: String = state.db.lock().unwrap()
+        .query_row("SELECT filename FROM attachments WHERE id = ?1", [&id], |r| r.get(0))
+        .map_err(|_| "Unknown attachment")?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.picking_files.store(true, std::sync::atomic::Ordering::SeqCst);
+    app.dialog().file().set_file_name(&filename).save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let picked = rx.await;
+    state.picking_files.store(false, std::sync::atomic::Ordering::SeqCst);
+    let Some(path) = picked.map_err(crate::error_message::message)? else { return Ok(()) };
+    let path = path.into_path().map_err(crate::error_message::message)?;
+    cache::save(&state, &id, now_us(), &path).await
 }
 
 fn register(shortcuts: &GlobalShortcut<tauri::Wry>, shortcut: &Shortcut) -> Result<(), String> {

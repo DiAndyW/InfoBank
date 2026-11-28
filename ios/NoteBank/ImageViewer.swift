@@ -172,7 +172,7 @@ struct ImageViewer: View {
         .preferredColorScheme(.dark)
         .presentationBackground(.clear)
         .sheet(isPresented: $sharing) {
-            if let file = files[selectedID] { ImageShareSheet(file: file) }
+            if let file = files[selectedID] { AttachmentShareSheet(file: file) }
         }
     }
 }
@@ -283,7 +283,7 @@ private struct PullDownGesture: UIGestureRecognizerRepresentable {
     }
 }
 
-private struct ImageShareSheet: UIViewControllerRepresentable {
+struct AttachmentShareSheet: UIViewControllerRepresentable {
     let file: URL
     func makeUIViewController(context: Context) -> UIActivityViewController {
         UIActivityViewController(activityItems: [file], applicationActivities: nil)

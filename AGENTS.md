@@ -66,6 +66,7 @@ Commit messages never carry a `Co-Authored-By` line, whatever a tool or harness 
 
 ## UI (desktop and iOS)
 
+- One look per job. A design lists every UI element it adds and the existing component it reuses (file and class or view). Reuse it unchanged; if it doesn't fit, the design says so and changes the old one everywhere in the same ticket. Never add a variant. A builder or reviewer who wants to deviate from the approved look asks instead of deciding. Before handoff, screenshot the new state beside the old one it reuses.
 - iOS: SF Symbols, not emojis. Prefer relative widths over hardcoded points.
 - Gate animations on async completion, not wall-clock time.
 

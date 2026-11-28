@@ -46,7 +46,7 @@ struct NoteBankApp: App {
     var body: some Scene {
         WindowGroup {
             switch services {
-            case .success(let services): RootView(services: services).environment(\.attachmentTransfers, services.transfers)
+            case .success(let services): RootView(services: services).environment(\.attachmentTransfers, services.transfers).environment(\.notices, services.notices)
             case .failure(let error): StorageFailureView(error: error)
             }
         }

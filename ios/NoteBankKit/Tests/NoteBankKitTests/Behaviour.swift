@@ -6,6 +6,8 @@ struct Behaviour {
         let label: String
     }
     struct Expectation: Decodable {
+        var max_characters: Int?
+        var ellipsis: String?
         var initial_items: Int?
         var older_items: Int?
         var message: String?

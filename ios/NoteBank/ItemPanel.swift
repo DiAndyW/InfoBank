@@ -28,6 +28,7 @@ private struct NativeItemSheet<SheetContent: View>: UIViewControllerRepresentabl
     @Environment(\.palette) private var palette
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.attachmentTransfers) private var transfers
+    @Environment(\.notices) private var notices
 
     func makeUIViewController(context: Context) -> Controller { Controller() }
 
@@ -38,7 +39,7 @@ private struct NativeItemSheet<SheetContent: View>: UIViewControllerRepresentabl
             guard let controller else { return }
             controller.apply(presentation: presentation, expanded: expanded,
                              background: UIColor(palette.surface), style: colorScheme == .dark ? .dark : .light,
-                             content: AnyView(content.environment(\.palette, palette).environment(\.colorScheme, colorScheme).environment(\.attachmentTransfers, transfers)),
+                             content: AnyView(content.environment(\.palette, palette).environment(\.colorScheme, colorScheme).environment(\.attachmentTransfers, transfers).environment(\.notices, notices)),
                              onDismissed: onDismissed)
         }
         // Creating the hosting graph during a Feed update hoists its toolbar into Feed.

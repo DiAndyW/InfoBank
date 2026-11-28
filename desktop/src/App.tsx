@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getSettings, itemTarget, listTopics, moveItem, navCounts, quit, restoreItem, showDataFolder, startupError, syncStatus, updateStatus, checkForUpdates, restartToUpdate, type UpdateInfo, type UpdateStatus, type Counts, type FeedItem, type Settings as SettingsData, type StartupFailure, type SyncNotice, type SyncStatus, type Topic, type Target } from "./api";
 import type { ComposerHandle } from "./Composer";
@@ -64,7 +64,14 @@ export default function App() {
   const [deleting, setDeleting] = useState<Topic | null>(null);
   const [notice, setNotice] = useState<NoticeData | null>(null);
   const noticeId = useRef(0);
-  const show = (message: string, action?: NoticeData["action"]) => setNotice({ id: ++noticeId.current, message, action });
+  const show = (message: string, action?: NoticeData["action"]) => {
+    const id = ++noticeId.current;
+    setNotice({ id, message, action });
+    return id;
+  };
+  const dismissNotice = useCallback((id?: number) => {
+    setNotice(current => id === undefined || current?.id === id ? null : current);
+  }, []);
   const editor = useRef<EditorHandle>(null);
   const [leavePrompt, setLeavePrompt] = useState(false);
   const leaveAnswer = useRef<((leave: boolean) => void) | null>(null);
@@ -434,7 +441,7 @@ export default function App() {
         beforeLeave={beforeLeave}
         composer={composer}
         notice={notice}
-        onDismissNotice={() => setNotice(null)}
+        onDismissNotice={dismissNotice}
         onNotice={show}
         onError={showError}
         onTrashed={(id, copied = false) =>
@@ -464,9 +471,13 @@ export default function App() {
           topics={topics}
           hidden={!resultsOpen}
           notice={notice?.inSearch ? notice : null}
-          onNotice={(message, action) => setNotice({ id: ++noticeId.current, message, action, inSearch: true })}
+          onNotice={(message, action) => {
+            const id = ++noticeId.current;
+            setNotice({ id, message, action, inSearch: true });
+            return id;
+          }}
           onError={showError}
-          onDismissNotice={() => setNotice(null)}
+          onDismissNotice={() => dismissNotice()}
           onOpenTopic={async (topic) => {
             await select(topic.id);
           }}

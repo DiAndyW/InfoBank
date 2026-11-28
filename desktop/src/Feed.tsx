@@ -16,7 +16,7 @@ import { Icon } from "./icons";
 import ItemEditor, { type EditorHandle } from "./ItemEditor";
 import { linkify } from "./links";
 import Menu from "./Menu";
-import Notice, { type NoticeData } from "./Notice";
+import Notice, { noticeFilename, type NoticeData } from "./Notice";
 import { SelectionBar, useItemSelection, type ShowNotice } from "./Selection";
 
 const HIGHLIGHT_MS = 2000;
@@ -38,7 +38,7 @@ type Props = {
   editor: RefObject<EditorHandle | null>;
   composer: Ref<ComposerHandle>;
   notice: NoticeData | null;
-  onDismissNotice: () => void;
+  onDismissNotice: (id?: number) => void;
   onNotice: ShowNotice;
   onError: (title: string, err: unknown) => void;
   onTrashed: (id: string, copied?: boolean) => void;
@@ -513,7 +513,7 @@ export default function Feed({ home, view, topics, covered, editor, beforeLeave,
                             )}
                           </p>
                         )}
-                        {it.attachments.length > 0 && <Attachments list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} onCopied={copyParts ? (filename) => onNotice(`Copied ${filename}`) : undefined} copyButtonVisible={!selection.selecting} closedCount={closedCount} />}
+                        {it.attachments.length > 0 && <Attachments onNotice={onNotice} onDismissNotice={onDismissNotice} list={it.attachments} onView={attachment => setViewing({ item: it.id, attachment, images: it.attachments.filter(viewable), view: viewKey })} onCopied={copyParts ? (filename) => onNotice(`Copied ${noticeFilename(filename)}`) : undefined} copyButtonVisible={!selection.selecting} closedCount={closedCount} />}
                       </div>
                       <div className="nb-item-meta" inert={selection.selecting}>
                         {place && (
@@ -652,7 +652,7 @@ export default function Feed({ home, view, topics, covered, editor, beforeLeave,
           }
         />
       )}
-      <div className="nb-notice-slot">{!covered && notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={onDismissNotice} />}</div>
+      <div className="nb-notice-slot">{!covered && notice && <Notice key={notice.id} message={notice.message} action={notice.action} onClose={() => onDismissNotice()} />}</div>
       {selection.selecting && <SelectionBar selection={selection} trash={trash} tunnel={view.kind === "tunnel"} trashAfterCopy={copyPreference} />}
       {trash && (
         <div className="nb-trash-bar">
